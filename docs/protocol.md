@@ -144,7 +144,7 @@ declare global {
 | `ojsb.*` | 未来扩展保留 |
 | `rpc.*` | JSON-RPC 保留，OJSB v1 禁止在 wire 消息中使用 |
 
-- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。设备和网络接口见 [原生基础能力](native-profiles.md)。
+- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。已定义的设备和网络接口见 [原生基础能力](native-profiles.md)。系统能力的候选归属见 [原生能力目录提案](native-capability-catalog.md)。
 - 厂商/业务扩展 SHOULD 使用反域名或公司前缀：`acme.pay.create`，避免与未来标准冲突。
 - Method 版本在 schema 中用 `x-ojsb-version` 声明。调用 MAY 写 `device.getInfo@2`。后缀使用无前导零的十进制正整数。省略时选择 Host 声明支持的最低版本。
 
