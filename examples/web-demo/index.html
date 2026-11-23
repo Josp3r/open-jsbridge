@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="在浏览器和原生 WebView 中体验 Open JSBridge Web SDK 的自动握手和 echo 调用。">
+    <title>Web 快速起步 · Open JSBridge</title>
+    <link rel="stylesheet" href="./tokens.css">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./demo.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <span class="project-name">Open JSBridge</span>
+        <a href="#example-code">查看接入代码</a>
+      </div>
+    </header>
+    <main class="container">
+      <div class="intro">
+        <h1>Web 快速起步</h1>
+        <p id="demo-description">页面启动时注入 Mock 通道。直接发送 echo，查看 SDK 自动握手和调用的 JSON-RPC 消息。</p>
+      </div>
+      <noscript>开启 JavaScript 后可试用下方示例。接入代码仍可查看。</noscript>
+
+      <div class="workbench">
+        <section class="controls" aria-labelledby="call-title">
+          <div class="section-heading">
+            <h2 id="call-title">发起调用</h2>
+            <p id="connection-status" class="connection-status" role="status">未连接</p>
+          </div>
+          <form id="echo-form">
+            <label for="message">发送内容</label>
+            <input id="message" name="message" value="你好" autocomplete="off">
+            <div class="actions">
+              <button class="key key-primary" id="send" type="submit" disabled>发送 echo</button>
+              <button class="key" id="connect" type="button" disabled>开始握手</button>
+              <button class="key" id="try-error" type="button" disabled>试试报错</button>
+            </div>
+          </form>
+
+          <div class="result">
+            <h3>SDK 返回</h3>
+            <pre id="result" role="status" tabindex="0">发送 echo 或手动握手后显示结果。</pre>
+          </div>
+        </section>
+
+        <section class="inspector" aria-labelledby="wire-title" id="inspector">
+          <div class="section-heading inspector-heading">
+            <h2 id="wire-title">JSON-RPC 消息</h2>
+            <p id="operation">等待操作</p>
+          </div>
+          <div class="frames">
+            <div class="frame">
+              <h3 id="request-title">Web 请求</h3>
+              <pre id="request" aria-labelledby="request-title" tabindex="0">等待发送请求。</pre>
+            </div>
+            <div class="frame">
+              <h3 id="response-title">Mock 响应</h3>
+              <pre id="response" aria-labelledby="response-title" tabindex="0">等待宿主响应。</pre>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="example" id="example-code" aria-labelledby="example-title">
+        <h2 id="example-title">Web 端接入代码</h2>
+        <pre tabindex="0"><code>import { bridge } from '/dist/packages/web-sdk/src/index.js';
+
+const result = await bridge.call('conformance.echo', { text: '你好' }, { timeout: 3000 });
+console.log(result);</code></pre>
+      </section>
+    </main>
+  </body>
+</html>

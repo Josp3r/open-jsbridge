@@ -16,6 +16,13 @@ async function negotiate(adapter) {
   return rpc.result.sid;
 }
 
+test('Mock does not advertise optional capabilities it cannot execute', async () => {
+  const adapter = createMockAdapter();
+  const raw = frame({ id: 'hello', method: 'bridge.hello', params: { protocols: [1], wants: ['cancel'] } });
+  const { rpc } = JSON.parse(await adapter.send(raw));
+  assert.deepEqual(rpc.result.capabilities.features, []);
+});
+
 test('Mock drops an oversized hello before it establishes a session', async () => {
   const adapter = createMockAdapter();
   const raw = frame({

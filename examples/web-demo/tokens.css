@@ -1,0 +1,29 @@
+/* Hallmark · Cobalt tokens for the Open JSBridge app screen */
+:root {
+  --paper: #f3f6fb;
+  --surface: #ffffff;
+  --surface-muted: #edf2f9;
+  --ink: #172235;
+  --ink-muted: #46556d;
+  --rule: #cdd7e6;
+  --field-edge: #78869a;
+  --key-edge: #aebed2;
+  --accent: #174dbd;
+  --accent-edge: #10347e;
+  --on-accent: #ffffff;
+  --focus: #1955cf;
+  --focus-inverse: #9dbdff;
+  --graphite: #17202f;
+  --graphite-toolbar: #222d3e;
+  --graphite-rule: #3c4a62;
+  --graphite-ink: #e5edfa;
+  --graphite-muted: #abbad2;
+  --ready: #1f684d;
+  --error: #a02e35;
+  --font-body: system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-code: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --radius: 8px;
+  --measure: 1280px;
+  --gutter: clamp(16px, 4vw, 54px);
+  --dur-micro: 120ms;
+}

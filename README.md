@@ -90,8 +90,8 @@ open-jsbridge/
 │   ├── runner-web/                # 跑在 WebView 内的测试页 + 执行器
 │   └── reports/                   # 输出格式定义（JUnit XML / JSON）
 ├── examples/
-│   ├── ios-demo/
-│   ├── android-demo/
+│   ├── native-ios/                # Swift + WKWebView 示例
+│   ├── native-android/            # Kotlin + AndroidX WebKit 示例
 │   ├── flutter-demo/
 │   ├── rn-demo/
 │   └── web-demo/
@@ -108,7 +108,11 @@ npm test
 
 `npm test` 先编译 TypeScript，再运行 wire 正反例与 Web SDK / Mock 一致性用例。单独运行 `npm run build` 可将 TypeScript 编译产物输出到 `dist/`。
 
-在仓库根目录，可以用已编译的 SDK 和 Mock 执行一次握手和调用。
+使用 `npm run demo:web` 可以在浏览器里体验 Mock 通道注入、自动握手、调用和错误处理。[Web SDK 快速上手](examples/web-demo/README.md)
+
+同一个 demo 也可在原生 WebView 中运行。Native 开发者可从 [最小接入要求](docs/native-host.md) 开始，并在 [Swift / iOS 示例](examples/native-ios/README.md) 或 [Kotlin / Android 示例](examples/native-android/README.md) 验证自动握手和 echo。
+
+在 Node.js 脚本中，可以显式创建带 Mock Adapter 的实例。首次调用会自动握手。
 
 ```sh
 node --input-type=module <<'JS'
@@ -116,7 +120,6 @@ import { createBridge } from './dist/packages/web-sdk/src/index.js';
 import { createMockAdapter } from './dist/packages/web-mock/src/index.js';
 
 const bridge = createBridge({ adapter: createMockAdapter() });
-await bridge.ready();
 console.log(await bridge.call('conformance.echo', { text: '你好' }));
 JS
 ```
@@ -144,6 +147,7 @@ JS
 ## 7. 文档索引
 
 - [协议规范 docs/protocol.md](docs/protocol.md)（核心）
+- [Native Host 最小接入 docs/native-host.md](docs/native-host.md)
 - [iOS 实现层 docs/native-ios.md](docs/native-ios.md)
 - [Android 实现层 docs/native-android.md](docs/native-android.md)
 - [Flutter 宿主 docs/flutter.md](docs/flutter.md)
