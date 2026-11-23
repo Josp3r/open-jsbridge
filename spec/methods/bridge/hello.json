@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/bridge.hello",
+  "title": "bridge.hello",
+  "description": "为当前 document 建立或恢复活动会话，并返回能力和限制。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "required": ["protocols"],
+    "properties": {
+      "protocols": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "sdk": {
+        "type": "object",
+        "required": ["name", "version"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      },
+      "wants": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+    }
+  },
+  "result": {
+    "type": "object",
+    "required": ["jsb", "sid", "host", "capabilities", "limits"],
+    "properties": {
+      "jsb": { "const": "1.0" },
+      "sid": { "type": "string", "minLength": 1 },
+      "host": {
+        "type": "object",
+        "required": ["platform", "name", "version"],
+        "properties": {
+          "platform": { "type": "string" },
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "appId": { "type": "string" },
+          "appVersion": { "type": "string" }
+        }
+      },
+      "capabilities": {
+        "type": "object",
+        "required": ["methods", "events", "features"],
+        "properties": {
+          "methods": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["versions"],
+              "properties": {
+                "versions": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              }
+            }
+          },
+          "events": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "features": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+        }
+      },
+      "limits": {
+        "type": "object",
+        "required": ["maxMessageBytes", "maxInflight", "defaultTimeoutMs"],
+        "properties": {
+          "maxMessageBytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "maxInflight": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "defaultTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+        }
+      }
+    }
+  }
+}

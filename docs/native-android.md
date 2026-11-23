@@ -8,25 +8,24 @@
 
 | 优先级 | 通道 | 条件 | 可信 origin | frame 定向推送 | trust |
 |-------|------|------|------------|---------------|-------|
-| 1 | `WebViewCompat.addWebMessageListener` | `WebViewFeature.WEB_MESSAGE_LISTENER` | ✅ `sourceOrigin` + `isMainFrame` | ✅ `JavaScriptReplyProxy` | `full` |
-| 2 | `addJavascriptInterface` + `@JavascriptInterface` | 总是可用 | ❌（只能读 `webView.url`，有竞态） | ❌（只能 `evaluateJavascript` 到主 frame） | `degraded` |
+| 1 | `WebViewCompat.addWebMessageListener` | 首版参考实现要求 `WEB_MESSAGE_LISTENER` 和 `DOCUMENT_START_SCRIPT` | ✅ `sourceOrigin` + `isMainFrame` | 主 frame 的 `JavaScriptReplyProxy` | `full` |
+| 2 | `addJavascriptInterface` + `@JavascriptInterface` | 受限内容的可选扩展，默认关闭 | ❌ | 首版无此通道 | `degraded` |
 
 shim 注入：
 
 | 优先级 | 方式 | 条件 |
 |-------|------|------|
 | 1 | `WebViewCompat.addDocumentStartJavaScript(webView, shim, allowedOriginRules)` | `WebViewFeature.DOCUMENT_START_SCRIPT` |
-| 2 | `onPageStarted` 中 `evaluateJavascript(shim)` | 总是可用，但**不保证**早于页面脚本；SDK 通过等待 `ojsb:transportready`（protocol T2）容忍晚到 |
+| 2 | 提交后注入 shim（候选） | 后续验证注入确实发生在目标 document，且 SDK 能等到 `ojsb:transportready` |
+
+`onPageStarted` 与目标 document 就绪的时序可能不同。该回调中直接调用 `evaluateJavascript` 可能只触及当时显示的页面，SDK 等待 ready 事件无法弥补漏注入。[Android `evaluateJavascript` 文档](https://developer.android.com/reference/android/webkit/WebView#evaluateJavascript(java.lang.String,android.webkit.ValueCallback%3Cjava.lang.String%3E))
 
 ```mermaid
 flowchart TD
-  A[OJSBridge.attach] --> B{WEB_MESSAGE_LISTENER?}
+  A[OJSBridge.attach] --> B{支持 WebMessageListener 和 document-start 注入?}
   B -- yes --> C[addWebMessageListener<br/>name=__ojsb_wml, allowedOriginRules=ACL origins]
-  B -- no --> D[addJavascriptInterface<br/>name=__ojsb_jsi<br/>trust=degraded]
-  C --> E{DOCUMENT_START_SCRIPT?}
-  D --> E
-  E -- yes --> F["addDocumentStartJavaScript(shim, rules)"]
-  E -- no --> G["onPageStarted → evaluateJavascript(shim)"]
+  C --> F["addDocumentStartJavaScript(shim, rules)"]
+  B -- no --> D[通道不可用]
 ```
 
 ## 2. `addJavascriptInterface` 的安全风险
@@ -36,7 +35,7 @@ flowchart TD
 3. **线程**：`@JavascriptInterface` 方法在 WebView 内部的后台线程（JavaBridge 线程）调用，不在主线程；而 `WebView` 的方法（含 `getUrl()`）只能在主线程调用，因此"在回调里读 `webView.url` 校验 origin"天然存在竞态（读到的可能已是导航后的 URL）。
 4. **对象生命周期**：注入在下次页面加载后才生效，且会跨导航保留。
 
-因此回退通道下：会话 `trust = degraded`，只开放 ACL 中 `allowDegraded: true` 的 method（protocol S2），且只允许 main frame（无法区分 frame，按最保守处理）。
+首版参考实现不启用此通道。需要兼容的宿主只能在显式配置、独立隔离的受限 WebView 中接入，且必须在该 WebView 的整个生命周期控制并验证可加载的内容，包括导航、重定向和嵌入 frame。会话始终标记 `trust = degraded`，仅开放 ACL 中 `allowDegraded: true` 的 method。入口无法验证 origin 或 frame 时，拒绝需要可信 origin 或主 frame 的能力。[Android JavaScript bridge 安全说明](https://developer.android.com/develop/ui/views/layout/webapps/native-api-access-jsbridge)
 
 ## 3. 首选通道：`addWebMessageListener`
 
@@ -47,7 +46,10 @@ private fun installWebMessageListener(webView: WebView) {
         WML_OBJECT,                                 // "__ojsb_wml"，只注入到匹配的 origin 的 frame
         acl.originRules(),                          // Set<String>，如 "https://m.acme.com", "https://*.acme.com"
     ) { view, message, sourceOrigin, isMainFrame, replyProxy ->
-        // 该回调在 UI 线程（以 androidx.webkit 文档为准）
+        if (message.type != WebMessageCompat.TYPE_STRING) {
+            core.logDrop("unsupported_payload_type")
+            return@addWebMessageListener
+        }
         val raw = message.data ?: return@addWebMessageListener
         core.receive(raw, Caller(Origin.of(sourceOrigin), isMainFrame, FrameTarget.Proxy(replyProxy)))
     }
@@ -56,15 +58,16 @@ private fun installWebMessageListener(webView: WebView) {
 
 要点：
 
-- `allowedOriginRules` 让 **白名单外的 origin 根本拿不到注入对象**，比 iOS 的"注入到所有页面再逐条校验"更进一步。规则语法有限（scheme + host 可含最左通配 + 可选端口），与 protocol S3 的匹配规则一致；Native 侧**仍然**用 `sourceOrigin` 再走一遍完整 SecurityChain（method ACL 与 frame 规则无法用 originRules 表达）。
+- `allowedOriginRules` 仅向匹配的 origin 注入对象。规则由 scheme、host（可含最左通配）和可选端口组成。Native 入口对每条消息还要执行调用者授权，验证 `sourceOrigin` 及 `isMainFrame`，然后检查适用的会话和 method 或事件 ACL。
 - 注入对象在**下一次导航**才生效，`attach()` 必须在 `loadUrl` 之前调用。
-- 推送使用回调给的 `JavaScriptReplyProxy.postMessage(String)`，消息只到达发起该会话的 frame（protocol F3）。会话中保存 proxy；frame 导航后旧 proxy 投递的消息由 SDK 的 sid 校验丢弃。
+- 将回调给出的 `JavaScriptReplyProxy` 与当前 document 的 sid 绑定。首版只处理主 frame 的调用，对回复和推送使用该会话的 proxy。宿主在导航提交时使旧 sid 失效，旧 proxy 随会话一起清理。
 - 二进制：新版 androidx.webkit 提供 ArrayBuffer 消息能力（`WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER`）。协议统一使用字符串，此能力仅作为未来 `blob` 优化的可选项，不进入 1.0。
 
 Android shim（WML 版）：
 
 ```js
 (function () {
+  if (window !== window.top) return;
   if (window.__OJSB_TRANSPORT__) return;
   var o = window.__ojsb_wml; if (!o) return;          // 不在 allowedOriginRules 内的 frame 没有该对象
   var buf = [], recv;
@@ -80,22 +83,13 @@ Android shim（WML 版）：
 })();
 ```
 
-JSI 回退版只替换 `name: 'android-jsi'` 与 `postMessage: function (s) { window.__ojsb_jsi.postMessage(s); }`，推送走 `evaluateJavascript` 调 `__OJSB_RECEIVE__`。两份 shim 由同一模板生成。
+## 4. 入站授权和会话校验
 
-## 4. 回退通道：`@JavascriptInterface`
-
-```kotlin
-internal class JsiEndpoint(private val core: BridgeCore, private val main: Handler) {
-    @JavascriptInterface
-    fun postMessage(raw: String) {                       // JavaBridge 后台线程
-        if (raw.length > core.limits.maxMessageChars) return  // 先挡超大消息，避免切线程拷贝
-        main.post {                                       // 切到主线程，与 Core 单线程模型一致
-            val url = core.webView?.url                   // 仅作为"尽力而为"的 origin，存在竞态
-            core.receive(raw, Caller(Origin.ofUrl(url), isMainFrame = true, FrameTarget.MainFrameEval, trust = Trust.DEGRADED))
-        }
-    }
-}
-```
+1. 按 protocol §3 解码单条 `{jsb, meta?, rpc}` JSON-RPC 2.0 信封，拒绝批量数组。请求携带 `rpc.method` 和字符串 `rpc.id`，响应携带 `rpc.id` 以及 `rpc.result`、`rpc.error` 中恰好一项，通知携带 `rpc.method` 且省略 `rpc.id`。
+2. 依据平台提供的调用者信息验证 scheme、origin 和主 frame，`bridge.hello` 也必须通过此授权。规则异常时终止处理，未分类异常使用通用 `-32603`。格式错误仅在请求类型和 `rpc.id` 明确且该 id 在对应范围内首次登记时发送关联错误。其余无法关联的格式错误可通过满足会话校验且绑定到原 document 的通道发送 `rpc.id: null` 的诊断错误，或记录后丢弃。已能识别为通知或响应的无效消息直接丢弃。
+3. `bridge.hello` 为当前 document 建立会话或复用其活动 sid。仅握手及其关联响应可省略 `meta.sid`。握手若携带 sid，须匹配当前活动会话。其余消息校验 `meta.sid` 与调用者所属 (WebView, frame, document) 一致。允许的调用者尚未握手且请求缺少 sid 时使用 `-32005`。已提供无效、过期或不属于当前调用者的 sid，以及活动会话中缺少 sid 的请求，使用 `-32009`。请求错误仅在能安全确定响应所需的 sid 且确认投递到原 document 时返回。通知和响应校验失败时丢弃并记日志。
+4. 握手请求按 document 去重，其他请求按 sid 和发起方向去重。重复 id 在分发前静默丢弃，格式错误的副本也适用。每次握手重试使用新的 id。请求通过 method ACL 才能分发。
+5. 内置控制通知须经显式允许才分发，包括 `bridge.cancel`（`requestId`、可选 `reason`）、`bridge.event`（`name`、`payload`）和 `bridge.progress`（`requestId`、`seq`、可选 `chunk`）。这些控制方法仅接受通知格式。通知须通过方向、参数和权限校验，无 JSON-RPC 响应。取消、进度和反向响应只匹配当前会话内对应的请求，诊断错误不结算反向请求。入站事件须通过事件注册和 ACL 检查。
 
 ## 5. 线程模型
 
@@ -106,24 +100,19 @@ sequenceDiagram
   participant UI as Main thread (BridgeCore)
   participant IO as Dispatchers.Default/IO
   JS->>WV: postMessage(json)
-  alt WebMessageListener
-    WV->>UI: onPostMessage(...)
-  else JavascriptInterface
-    WV->>WV: JavaBridge 线程 postMessage()
-    WV->>UI: Handler.post { receive }
-  end
-  UI->>UI: decode · SecurityChain · 会话
+  WV->>UI: onPostMessage(...)
+  UI->>UI: 解码 JSON-RPC · 调用者授权 · 会话校验 · 请求去重 · method ACL
   UI->>IO: scope.launch(handler.dispatcher) { handle() }
   IO-->>UI: withContext(Main) 结果
-  UI->>WV: replyProxy.postMessage / evaluateJavascript
-  WV-->>JS: __OJSB_RECEIVE__(json)
+  UI->>WV: replyProxy.postMessage
+  WV-->>JS: message 事件
 ```
 
 - **BridgeCore 只在主线程运行**（会话表、pending、订阅无需加锁）。
 - 每个 WebView 一个 `CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)`；`detach()` 时 `scope.cancel()`。
 - Handler 声明自己的 `dispatcher`（默认 `Dispatchers.Default`，UI 类 handler 用 `Dispatchers.Main`）。
-- 每个 request 一个 `Job`，`cancel` 消息或会话失效时 `job.cancel()`，handler 中的挂起点自动响应取消。
-- `evaluateJavascript` / `replyProxy.postMessage` 只在主线程调用。
+- 每个 request 一个 `Job`，收到匹配的 `bridge.cancel` 或会话失效时调用 `job.cancel()`，handler 中的挂起点自动响应取消。
+- `replyProxy.postMessage` 只在主线程调用。
 
 ## 6. Handler 注册
 
@@ -147,6 +136,7 @@ class BridgeContext internal constructor(
     private val emitCallback: suspend (JsonElement) -> Unit,
 ) {
     val webView: WebView? get() = webViewRef.get()
+    // 通过 bridge.progress 通知发送中间结果
     suspend fun <T> callback(serializer: KSerializer<T>, value: T) = emitCallback(Json.encodeToJsonElement(serializer, value))
 }
 
@@ -175,7 +165,7 @@ class HandlerRegistry {
     private val table = ConcurrentHashMap<String, Entry>()
 
     fun <P : Any, R : Any> register(h: BridgeHandler<P, R>) {
-        require(!h.method.startsWith("bridge.") && !h.method.startsWith("ojsb.")) { "reserved namespace" }
+        require(listOf("bridge.", "ojsb.", "rpc.").none { h.method.startsWith(it) }) { "reserved namespace" }
         require(METHOD_RE.matches(h.method)) { "invalid method name ${h.method}" }
         table[h.method] = Entry(h.versions, h.dispatcher) { raw, v, ctx ->
             val p = try { json.decodeFromJsonElement(h.paramsSerializer, raw) }
@@ -215,16 +205,19 @@ val bridge = OJSBridge.attach(
         }
     },
     acl = Acl.fromAsset(context, "ojsb-acl.json"),
-    options = OJSBridge.Options(enableIframes = false, debug = BuildConfig.DEBUG),
+    options = OJSBridge.Options(debug = BuildConfig.DEBUG),
 )
 webView.loadUrl("https://m.acme.com/home")       // 必须在 attach 之后
+```
 
+以下 Native → Web API 由宿主按已验证、已广告的能力开放。
+
+```kotlin
 bridge.emit("network.changed", buildJsonObject { put("type", "wifi") })
 val share = bridge.callWeb("page.getShareInfo", ShareInfo.serializer(), timeoutMs = 3_000)
-
-// 在 Activity/Fragment onDestroy
-bridge.detach()
 ```
+
+在 Activity 或 Fragment 的 `onDestroy` 调用 `bridge.detach()`。
 
 ### 6.1 WebViewClient 集成
 
@@ -232,28 +225,30 @@ bridge.detach()
 
 | 回调 | Bridge 行为 |
 |------|------------|
-| `onPageStarted`（主 frame） | 使该 WebView 所有 sid 失效；回退注入模式下注入 shim |
+| 主 frame 新 document 提交 | 使旧 sid 失效，取消进行中的 handler 和反向请求，清理订阅和 blob，丢弃旧会话待发送的消息 |
+| 同一 document 内路由变化 | 保留原 sid 和会话状态 |
 | `onRenderProcessGone`（API 26+） | 所有 sid 失效、取消所有 Job；返回值由业务决定（返回 true 表示 App 自己处理，需销毁该 WebView） |
 | `shouldInterceptRequest` | 处理 blob 虚拟路径（§8） |
 
+`onPageStarted` 只能提示导航开始。要以宿主可验证的新 document 提交信号切换会话，并协调它与 document-start 握手的到达顺序。提交前收到的新 document 握手须等宿主确认后再建会话。导航失败且原 document 仍在时，应保留原会话。
+
+后续只有在宿主能验证每个子 frame 及其 document、感知子 frame 的新 document 提交、立即使旧 sid 失效，并保证旧消息无法进入新 document 时，才对该宿主声明 iframe 能力。`JavaScriptReplyProxy` 可用于定向发送，`onPageStarted` 只报告主 frame 导航。[Android `JavaScriptReplyProxy` 文档](https://developer.android.com/reference/androidx/webkit/JavaScriptReplyProxy) · [Android `WebViewClient` 文档](https://developer.android.com/reference/android/webkit/WebViewClient#onPageStarted(android.webkit.WebView,java.lang.String,android.graphics.Bitmap))
+
 ## 7. Native → Web 推送
+
+以下示例用于已有会话的消息。握手及握手前的 JSON-RPC 响应使用入站消息自带的 proxy，并且只向发起请求的 document 投递。
 
 ```kotlin
 @MainThread
-internal fun push(env: Envelope, target: FrameTarget) {
-    val json = env.encode()
-    when (target) {
-        is FrameTarget.Proxy -> target.proxy.postMessage(json)           // WML：frame 定向，无需拼 JS
-        FrameTarget.MainFrameEval -> {
-            val literal = JSONObject.quote(json)                          // 二次编码为 JS 字符串字面量
-                .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-            webView?.evaluateJavascript("window.__OJSB_RECEIVE__&&window.__OJSB_RECEIVE__($literal)", null)
-        }
-    }
+internal fun push(env: Envelope, target: FrameTarget.Proxy) {
+    if (!sessions.isCurrent(env.meta?.sid, target)) return
+    target.proxy.postMessage(env.encode())
 }
 ```
 
 WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，这也是首选它的理由之一。
+
+开放事件通知、进度通知或反向请求前，真机测试须确认在导航竞态下，旧 proxy 的消息无法进入新 document。
 
 ## 8. 大数据
 
@@ -266,10 +261,10 @@ WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，�
 
 | 层 | 工具 | 内容 |
 |----|------|------|
-| JVM 单测 | JUnit5 + kotlinx-coroutines-test | Envelope、ACL 匹配反例、SecurityChain、HandlerRegistry（`-32602`）、取消传播、限流；BridgeCore 通过 `FakeTransport` 测试状态机 |
+| JVM 单测 | JUnit5 + kotlinx-coroutines-test | JSON-RPC 信封、ACL 匹配反例、SecurityChain、HandlerRegistry（`-32602`）、取消传播、限流；BridgeCore 通过 `FakeTransport` 测试重复请求、通知和会话状态 |
 | Robolectric（可选） | Robolectric | 仅测与 Android 类耦合但不依赖真实 WebView 渲染的部分；**不要**用它测通道行为（Robolectric 不运行真实 WebView） |
-| 仪器测试 | androidx.test + 真实 WebView | `loadDataWithBaseURL("https://trusted.test/", html, ...)` 构造 origin；WML 与 JSI 两种通道参数化各跑一遍；iframe、reload 迟到响应、render process gone（`chrome://crash` 类手段视设备支持） |
+| 仪器测试 | androidx.test + 真实 WebView | WML 主 frame 握手、陌生 origin 与子 frame 拒绝、reload 后无旧消息交给新 document、render process gone（设备支持时） |
 | 一致性 | conformance runner | 同 iOS，在 instrumentation 中加载 runner 页面，产出 JUnit XML |
-| 兼容矩阵 | Firebase Test Lab / 自建设备池 | 覆盖不同 System WebView 版本，确认 feature 检测与回退路径都被执行 |
+| 兼容矩阵 | Firebase Test Lab / 自建设备池 | 覆盖不同 System WebView 版本，验证所需 feature 缺失时通道不可用 |
 
 CI：`./gradlew :openjsbridge:test :openjsbridge-test:connectedAndroidTest`。

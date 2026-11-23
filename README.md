@@ -8,7 +8,7 @@
 Open JSBridge（下文简称 **OJSB**）解决的是 **Web 页面与宿主 Native（iOS / Android）之间的双向 RPC + 事件通信**。它不是一个"某家 App 的 bridge"，而是：
 
 1. **一份协议规范**（[docs/protocol.md](docs/protocol.md)）：消息信封、错误码、握手、超时取消、事件、大数据、安全、生命周期、可观测性、版本演进。任何人都可以按规范独立实现一端。
-2. **三端参考实现**：
+2. **参考实现路线**：
    - Web：TypeScript SDK（[docs/web-sdk.md](docs/web-sdk.md)）
    - iOS：基于 `WKWebView` 的注入实现（[docs/native-ios.md](docs/native-ios.md)）
    - Android：基于 `androidx.webkit` 的注入实现（[docs/native-android.md](docs/native-android.md)）
@@ -29,11 +29,11 @@ Open JSBridge（下文简称 **OJSB**）解决的是 **Web 页面与宿主 Nativ
 | # | 原则 | 落地方式 |
 |---|------|---------|
 | P1 | **Spec-first** | 先改 `spec/`，再生成代码；实现与规范冲突时以规范为准，并补 conformance 用例 |
-| P2 | **Transport-agnostic** | 信封是纯 JSON；`WKScriptMessageHandlerWithReply`、`addWebMessageListener`、`addJavascriptInterface`、Flutter `callHandler`/`JavaScriptChannel`、RN `ReactNativeWebView.postMessage` 都只是各宿主 shim 背后的通道 |
-| P3 | **Secure by default** | 默认拒绝；origin 白名单 + method 级 ACL；origin 由 Native 从 WebView 拿，**永不信任 payload 自报** |
-| P4 | **Async-only, 可取消, 有超时** | 每个 request 必有 deadline；支持 `cancel` |
+| P2 | **Transport-agnostic** | 每条 UTF-8 JSON 消息用 OJSB 信封承载一个 JSON-RPC 2.0 对象。iOS、Android、Flutter 和 React Native 的平台通道由宿主 shim 适配 |
+| P3 | **Secure by default** | 默认拒绝；使用可信 origin、frame 与 method 级 ACL；缺少可信来源的通道默认停用 |
+| P4 | **Async-only, 可取消, 有超时** | SDK 管理调用的 deadline，并用 `bridge.cancel` 通知取消已发送的请求 |
 | P5 | **能力协商而非版本猜测** | 握手返回 capabilities，Web 用 `bridge.has(method)` 做特性检测 |
-| P6 | **可观测** | 每条消息带 `traceId`，三端统一日志字段与耗时埋点 |
+| P6 | **可观测** | 使用 `meta.traceId` 关联调用，三端统一日志字段与耗时埋点 |
 | P7 | **小而稳** | Web SDK core 目标 ≤ 4 KB（min+gzip），零运行时依赖 |
 | P8 | **三端行为一致** | 一致性测试是合入门槛，不是"有空再补" |
 
@@ -46,7 +46,7 @@ Open JSBridge（下文简称 **OJSB**）解决的是 **Web 页面与宿主 Nativ
 | **WebViewJavascriptBridge** | 经典的 iOS/OS X 方案，早期依赖 URL scheme 拦截做通知，handler 注册模型简洁 | 沿用"handler 注册"的简洁心智；放弃 URL scheme 拦截，改用 `WKScriptMessageHandler(WithReply)`，拿到可信的 frame/origin 信息 |
 | **DSBridge** | 跨 iOS/Android，支持同步调用和命名空间 | 沿用命名空间（`ns.method`）；**明确不做同步调用**；补上正式的错误码、能力协商和安全模型 |
 | **Cordova / Capacitor 插件体系** | 插件化成熟、生态大，但运行时和工程结构较重，偏"整个 App 是 Web" | 借鉴插件注册与权限声明；OJSB 只做"bridge 层"，可嵌入任意现有 App 的任意 WebView |
-| **JSON-RPC 2.0** | 成熟的 RPC 信封与错误码约定 | 复用 `id/method/params/result/error` 结构和 `-32xxx` 错误码；增加 `type`、`meta`、事件、取消、流式回调、会话等 bridge 专属语义 |
+| **JSON-RPC 2.0** | 请求、通知、响应与标准错误码 | 在 `{ "jsb": "1.0", "meta": { … }, "rpc": { "jsonrpc": "2.0", … } }` 中承载单条 RPC 消息。握手和会话信息由 OJSB 管理，事件、取消和进度使用显式通知 |
 
 ## 4. 仓库结构（monorepo）
 
@@ -58,6 +58,7 @@ open-jsbridge/
 │   │   └── errors.json            # 错误码注册表
 │   ├── methods/                   # 每个 method 一个 schema
 │   │   ├── bridge/                # 保留命名空间（握手、能力、事件订阅）
+│   │   │   └── hello.json         # 握手参数和成功结果
 │   │   ├── device/getInfo.json
 │   │   └── conformance/           # 一致性测试专用 method（echo/delay/emit...）
 │   └── profiles/                  # 可选标准库 profile（device/ui/storage...）
@@ -84,6 +85,7 @@ open-jsbridge/
 │   └── native/                    # 可选方案 B：TurboModule / Fabric 组件（M3+）
 ├── conformance-tests/
 │   ├── cases/                     # 与平台无关的用例（JSON/YAML）
+│   ├── fixtures/wire.json         # 消息形状正反例
 │   ├── hosts/                     # 各宿主能力声明（ios-wk / android-wml / flutter / rn ...）
 │   ├── runner-web/                # 跑在 WebView 内的测试页 + 执行器
 │   └── reports/                   # 输出格式定义（JUnit XML / JSON）
@@ -95,6 +97,28 @@ open-jsbridge/
 │   └── web-demo/
 ├── docs/                          # 本设计文档
 └── .github/workflows/             # CI：lint、codegen diff 检查、三端 conformance
+```
+
+### 本地构建与验证
+
+```sh
+npm ci
+npm test
+```
+
+`npm test` 先编译 TypeScript，再运行 wire 正反例与 Web SDK / Mock 一致性用例。单独运行 `npm run build` 可将 TypeScript 编译产物输出到 `dist/`。
+
+在仓库根目录，可以用已编译的 SDK 和 Mock 执行一次握手和调用。
+
+```sh
+node --input-type=module <<'JS'
+import { createBridge } from './dist/packages/web-sdk/src/index.js';
+import { createMockAdapter } from './dist/packages/web-mock/src/index.js';
+
+const bridge = createBridge({ adapter: createMockAdapter() });
+await bridge.ready();
+console.log(await bridge.call('conformance.echo', { text: '你好' }));
+JS
 ```
 
 ## 5. 版本策略
@@ -111,9 +135,9 @@ open-jsbridge/
 
 | 里程碑 | 目标 | 交付物 | 退出标准 |
 |--------|------|-------|---------|
-| **M0 规范冻结（Draft）** | 协议可评审 | `docs/protocol.md`、`envelope.schema.json`、`errors.json`、`conformance` method 定义 | 规范 review 通过；schema 可校验示例消息 |
-| **M1 最小闭环** | request/response + 握手 + 超时 + 错误码 | Web SDK core、mock 宿主、iOS（WithReply 通道）、Android（WebMessageListener 通道）、echo demo | conformance 核心用例（握手/调用/错误/超时）三端全绿 |
-| **M2 完整协议** | 事件、取消、流式回调、安全 ACL、生命周期、降级通道 | Android `addJavascriptInterface` 回退、iOS 旧系统 evaluateJavaScript 回传、多 frame、blob 大数据通道、devtools | 全量 conformance 三端全绿；安全用例（跨 origin、iframe、导航后迟到响应）通过 |
+| **M0 规范冻结（Draft）** | 冻结可校验的 JSON-RPC wire 格式 | `docs/protocol.md`、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json`、`spec/methods/bridge/hello.json`、`conformance-tests/fixtures/wire.json` | 规范评审通过，wire 正反例通过 Schema 校验 |
+| **M1 最小闭环** | 先跑通 TypeScript Web SDK 与 Mock 宿主的 echo，再分别接入 iOS 和 Android 主 frame | Web SDK core、Mock 宿主、echo demo。单独交付 iOS WithReply 与 Android WebMessageListener 接入 | TypeScript 闭环通过握手、调用、错误、超时核心用例。各原生接入独立通过其核心用例 |
+| **M2 完整协议** | 事件、取消、流式回调、安全 ACL、生命周期 | blob 大数据通道、devtools。多 frame 和旧通道按平台隔离能力评估 | 参考三端通过所有适用的 conformance 用例。声明 iframe 或旧通道能力前，须验证跨 origin、frame 导航和迟到消息隔离 |
 | **M2.5 跨端框架宿主** | Flutter / RN 方案 A | `@open-jsbridge/host-core`、`@open-jsbridge/react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
 | **M3 生态与 1.0** | 可被外部采用 | codegen（TS/Swift/Kotlin/Dart）、`device/ui/storage` profile、Flutter Pigeon 原生 handler 转发、RN 方案 B（TurboModule/Fabric）预研、文档站、性能基准、1.0 发布 | 至少一个真实 App 接入；协议 `1.0` 正式冻结；兼容性承诺生效 |
 
@@ -126,3 +150,4 @@ open-jsbridge/
 - [React Native 宿主 docs/react-native.md](docs/react-native.md)
 - [Web SDK docs/web-sdk.md](docs/web-sdk.md)
 - [一致性测试与 Schema 单一事实来源 docs/conformance.md](docs/conformance.md)
+- [开发待办 TODO.md](TODO.md)

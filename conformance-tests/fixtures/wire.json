@@ -1,0 +1,91 @@
+{
+  "valid": [
+    {
+      "name": "bootstrap hello",
+      "frame": {"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-1","method":"bridge.hello","params":{"protocols":[1]}}}
+    },
+    {
+      "name": "bootstrap hello response",
+      "frame": {
+        "jsb": "1.0",
+        "rpc": {
+          "jsonrpc": "2.0",
+          "id": "w-1",
+          "result": {
+            "jsb": "1.0",
+            "sid": "s-1",
+            "host": { "platform": "mock", "name": "mock", "version": "0.1.0" },
+            "capabilities": {
+              "methods": { "conformance.echo": { "versions": [1] } },
+              "events": [],
+              "features": ["cancel"]
+            },
+            "limits": { "maxMessageBytes": 1048576, "maxInflight": 64, "defaultTimeoutMs": 15000 }
+          }
+        }
+      }
+    },
+    {
+      "name": "forward request with deadline and trace",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1","timeout":4800,"ts":1763880000000,"traceId":"4bf92f3577b34da6a3ce929d0e0e4736"},"rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo","params":{"text":"你好"}}}
+    },
+    {
+      "name": "reverse request without params",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","id":"n-1","method":"page.getShareInfo"}}
+    },
+    {
+      "name": "void is a null result",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","id":"n-1","result":null}}
+    },
+    {
+      "name": "standard method error with JSON data",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","id":"w-3","error":{"code":-32601,"message":"Method not found","data":["device.getInfo"]}}}
+    },
+    {
+      "name": "uncorrelated diagnostic",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request"}}}
+    },
+    {
+      "name": "cancel notification",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","method":"bridge.cancel","params":{"requestId":"w-2","reason":"abort"}}}
+    },
+    {
+      "name": "event notification with extensible bridge metadata",
+      "frame": {"jsb":"1.0","futureExtension":true,"meta":{"sid":"s-1","futureField":true},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"network.changed","payload":{"type":"wifi"}}}}
+    },
+    {
+      "name": "progress notification",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1"},"rpc":{"jsonrpc":"2.0","method":"bridge.progress","params":{"requestId":"w-2","seq":0,"chunk":{"progress":0.5}}}}
+    },
+    {
+      "name": "method version and unbounded deadline",
+      "frame": {"jsb":"1.0","meta":{"sid":"s-1","timeout":0},"rpc":{"jsonrpc":"2.0","id":"w-4","method":"device.getInfo@2"}}
+    }
+  ],
+  "invalid": [
+    {"name":"malformed JSON","raw":"{\"jsb\":","error":-32700},
+    {"name":"outer batch","frame":[],"error":-32600},
+    {"name":"inner batch","frame":{"jsb":"1.0","rpc":[{"jsonrpc":"2.0","id":"w-1","method":"bridge.hello"}]},"error":-32600},
+    {"name":"unsupported wire version","frame":{"jsb":"2.0","rpc":{"jsonrpc":"2.0","id":"w-1","method":"bridge.hello"}},"error":-32600},
+    {"name":"legacy type discriminator without rpc","frame":{"jsb":"1.0","type":"request","id":"w-1","method":"bridge.hello"},"error":-32600},
+    {"name":"unsupported JSON-RPC version","frame":{"jsb":"1.0","rpc":{"jsonrpc":"1.0","id":"w-2","method":"conformance.echo"}},"error":-32600},
+    {"name":"numeric request id","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":2,"method":"conformance.echo"}},"error":-32600},
+    {"name":"null is not a notification id","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":null,"method":"bridge.cancel"}},"error":-32600},
+    {"name":"empty request id","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"","method":"conformance.echo"}},"error":-32600},
+    {"name":"positional params","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo","params":[]}},"error":-32600},
+    {"name":"reserved RPC method namespace","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"rpc.list"}},"error":-32600},
+    {"name":"malformed method version","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"device.getInfo@next"}},"error":-32600},
+    {"name":"zero method version","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"device.getInfo@0"}},"error":-32600},
+    {"name":"noncanonical method version","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"device.getInfo@01"}},"error":-32600},
+    {"name":"request cannot be a response","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo","result":{}}},"error":-32600},
+    {"name":"unknown inner field","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo","type":"request"}},"error":-32600},
+    {"name":"response must contain a result or error","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2"}},"error":-32600},
+    {"name":"response cannot have both a result and error","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","result":null,"error":{"code":-32603,"message":"Internal error"}}},"error":-32600},
+    {"name":"successful null id is uncorrelatable","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":null,"result":"ok"}},"error":-32600},
+    {"name":"noninteger error code","frame":{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-2","error":{"code":-32603.5,"message":"Internal error"}}},"error":-32600},
+    {"name":"negative timeout","frame":{"jsb":"1.0","meta":{"sid":"s-1","timeout":-1},"rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo"}},"error":-32600},
+    {"name":"empty session id","frame":{"jsb":"1.0","meta":{"sid":""},"rpc":{"jsonrpc":"2.0","id":"w-2","method":"conformance.echo"}},"error":-32600},
+    {"name":"out-of-range JSON number","raw":"{\"jsb\":\"1.0\",\"rpc\":{\"jsonrpc\":\"2.0\",\"id\":\"w-2\",\"result\":1e999}}","error":-32600},
+    {"name":"integer that would lose precision","raw":"{\"jsb\":\"1.0\",\"rpc\":{\"jsonrpc\":\"2.0\",\"id\":\"w-2\",\"result\":9007199254740993}}","error":-32600}
+  ]
+}

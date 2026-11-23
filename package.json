@@ -1,0 +1,13 @@
+{
+  "name": "open-jsbridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test conformance-tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "typescript": "5.9.3"
+  }
+}
