@@ -68,7 +68,7 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
 |------|---------------|---------------|
 | Web→Native 消息 | `WKScriptMessageHandlerWithReply` | `WKScriptMessageHandler` |
 | Native→Web JSON-RPC 响应 | `replyHandler(responseString, nil)` → JS 侧 Promise resolve | `evaluateJavaScript` 调 `__OJSB_RECEIVE__` |
-| Native→Web 通知 / 反向请求（待验证） | §9 验证后，可用 `evaluateJavaScript(_:in:in:completionHandler:)` | §9 验证后，可用 `evaluateJavaScript(_:completionHandler:)`（仅主 frame） |
+| Native→Web 通知 | `callAsyncJavaScript` 向当前受信文档投递，见 §9 | 主 frame 回退待验证 |
 
 - `replyHandler` 的第二个参数用于通道故障，SDK 将 Promise rejection 映射为 `-32603`。协议响应通过第一个参数返回序列化后的信封。
 - WithReply 的每次入站调用都要完成一次回执。对通知、反向调用的响应以及直接丢弃的消息，调用 `replyHandler(NSNull(), nil)`。这个 `null` 是传输回执。`bridge.cancel` 引发的最终 `-32002` 响应使用原请求的 `replyHandler`，并携带原请求的 `rpc.id`。
@@ -167,15 +167,15 @@ public struct BridgeError: Error, Encodable {
 
 ```swift
 struct DeviceGetInfo: BridgeHandler {
-    struct Params: Decodable, Sendable { var fields: [String]? }
-    struct Result: Encodable, Sendable { let os: String; let osVersion: String; let model: String }
+    struct Params: Decodable, Sendable {}
+    struct Result: Encodable, Sendable { let os: String; let osVersion: String }
     static let method = "device.getInfo"
     static let versions = [1]
 
     @MainActor
     func handle(_ p: Params, version: Int, ctx: BridgeContext) async throws -> Result {
         let d = UIDevice.current
-        return .init(os: "ios", osVersion: d.systemVersion, model: d.model)
+        return .init(os: "ios", osVersion: d.systemVersion)
     }
 }
 
@@ -349,29 +349,11 @@ let security = SecurityChain(
 
 ## 9. Native → Web 推送
 
-```swift
-@MainActor
-func push(_ env: Envelope, to target: DocumentTarget) {
-    guard session.isCurrent(target) else { return }
-    let json = env.jsonString()                                   // 第一次编码：信封
-    let literal = JSString.literal(json)                          // 第二次编码：安全的 JS 字符串字面量（protocol 11.5）
-    guard let js = target.deliveryScript(jsonLiteral: literal) else { return }
-    webView?.evaluateJavaScript(js) { _, error in
-        if let error { self.logDeliveryFailure(error) }
-    }
-}
+参考宿主为受信主文档提供可选的 `network.changed`。Native 检查当前会话和订阅，随后把 origin、文档标记和序列化的信封作为 `callAsyncJavaScript` 的参数传入。脚本在同一次执行中校验 origin 和文档标记，通过后交给页面接收器。Shim 在接收器就绪前按协议缓冲通知。
 
-enum JSString {
-    static func literal(_ s: String) -> String {
-        // JSONSerialization 对字符串做 JSON 编码，再补上 U+2028/U+2029（旧引擎中它们在字符串字面量里非法）
-        let data = try! JSONSerialization.data(withJSONObject: [s], options: [.fragmentsAllowed])
-        let lit = String(data: data, encoding: .utf8)!.dropFirst().dropLast()   // 去掉 [ ]
-        return String(lit).replacingOccurrences(of: "\u{2028}", with: "\\u2028").replacingOccurrences(of: "\u{2029}", with: "\\u2029")
-    }
-}
-```
+整页导航提交使旧会话失效。退订停止后续通知，页面隐藏时更换 shim 的文档标记并清空通知缓存。iOS 13 回退、子 frame 与反向请求仍需独立验证。
 
-`deliveryScript` 代表待验证的 document 定向机制。Native 排队前检查会话，脚本执行时还须确认目标仍是本次会话绑定的 document，确认后才把信封交给页面接收器。`evaluateJavaScript` 以 frame 为目标，调用成功无法证明其 document 与会话匹配。验证通过前，不启用基于该方式的异步推送和 iOS 13 回退。[Apple frame 执行 API](https://developer.apple.com/documentation/webkit/wkwebview/evaluatejavascript(_:in:in:completionhandler:))
+[参考宿主](../examples/native-ios/Sources/NativeIOSHost/NativeIOSHost.swift) · [原生基础能力](native-profiles.md) · [Apple callAsyncJavaScript](https://developer.apple.com/documentation/webkit/wkwebview/callasyncjavascript(_:arguments:in:contentworld:))
 
 ## 10. 大数据：`WKURLSchemeHandler`
 

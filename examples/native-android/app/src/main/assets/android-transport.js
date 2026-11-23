@@ -28,6 +28,7 @@
     const raw = event.data;
     if (typeof raw !== 'string') return;
     if (pendingChallenge !== undefined && raw === 'ready:' + pendingChallenge + ':' + token) {
+      channel.postMessage('push:' + pendingChallenge + ':' + token);
       pendingChallenge = undefined;
       active = true;
       const pending = outbound;

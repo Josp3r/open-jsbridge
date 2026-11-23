@@ -2,9 +2,20 @@ import { BridgeError, bridge } from '../../dist/packages/web-sdk/src/index.js';
 import { installMockTransport } from '../../dist/packages/web-mock/src/index.js';
 
 const echoMethod = 'conformance.echo';
+const deviceMethod = 'device.getInfo';
+const networkMethod = 'network.getStatus';
+const networkEvent = 'network.changed';
 const connectButton = document.querySelector('#connect');
 const sendButton = document.querySelector('#send');
 const errorButton = document.querySelector('#try-error');
+const deviceButton = document.querySelector('#device-info');
+const networkButton = document.querySelector('#network-status');
+const eventDemo = document.querySelector('#event-demo');
+const toggleEventButton = document.querySelector('#toggle-event');
+const emitEventButton = document.querySelector('#emit-event');
+const eventStatus = document.querySelector('#event-status');
+const eventResult = document.querySelector('#event-result');
+const eventFrame = document.querySelector('#event-frame');
 const connectionStatus = document.querySelector('#connection-status');
 const message = document.querySelector('#message');
 const result = document.querySelector('#result');
@@ -20,8 +31,15 @@ const observeMock = !nativeMode && !('__OJSB_TRANSPORT__' in window);
 const format = (value) => JSON.stringify(value, null, 2);
 let busy = false;
 let sent = false;
+let mock;
+let eventSubscription;
+let networkType = 'wifi';
 
 function showFrame(direction, raw) {
+  if (direction === 'event') {
+    eventFrame.textContent = format(JSON.parse(raw));
+    return;
+  }
   if (direction === 'response') {
     response.textContent = raw === null ? '收到空回执。' : format(JSON.parse(raw));
     return;
@@ -40,6 +58,16 @@ function syncControls() {
   connectButton.disabled = busy || ready || unavailable;
   sendButton.disabled = busy || unavailable;
   errorButton.disabled = busy || !ready;
+  deviceButton.disabled = busy || unavailable || (ready && !bridge.has(deviceMethod, 1));
+  networkButton.disabled = busy || unavailable || (ready && !bridge.has(networkMethod, 1));
+  const eventAvailable = ready ? bridge.hasEvent(networkEvent) : Boolean(mock);
+  eventDemo.hidden = !eventAvailable && !eventSubscription;
+  emitEventButton.hidden = !mock;
+  toggleEventButton.disabled = busy || unavailable || (!eventAvailable && !eventSubscription);
+  emitEventButton.disabled = !mock || busy || unavailable;
+  toggleEventButton.textContent = eventSubscription ? '取消订阅' : '订阅事件';
+  eventStatus.dataset.state = eventSubscription ? 'ready' : 'idle';
+  eventStatus.textContent = eventSubscription ? '已订阅' : '未订阅';
   connectionStatus.dataset.state = bridge.state;
   const host = bridge.host;
   if (host) connectionStatus.dataset.platform = host.platform;
@@ -100,13 +128,62 @@ errorButton.addEventListener('click', () => {
   void run('demo.missing', () => bridge.call('demo.missing'));
 });
 
+deviceButton.addEventListener('click', () => {
+  void run(deviceMethod, () => bridge.call(deviceMethod));
+});
+
+networkButton.addEventListener('click', () => {
+  void run(networkMethod, () => bridge.call(networkMethod));
+});
+
+toggleEventButton.addEventListener('click', () => {
+  if (eventSubscription) {
+    void run('bridge.unsubscribe', () => {
+      eventSubscription();
+      eventSubscription = undefined;
+      return { event: networkEvent, subscribed: false };
+    });
+    return;
+  }
+  void run('bridge.subscribe', async () => {
+    eventStatus.textContent = '正在订阅…';
+    eventResult.textContent = mock ? '点击「切换 Mock 网络」，查看事件数据。' : '等待设备网络变化。';
+    const off = bridge.on(networkEvent, (payload) => {
+      eventResult.textContent = format(payload);
+    });
+    try {
+      await off.ready;
+    } catch (error) {
+      off();
+      throw error;
+    }
+    eventSubscription = off;
+    return { event: networkEvent, subscribed: true };
+  });
+});
+
+emitEventButton.addEventListener('click', () => {
+  if (!mock) return;
+  networkType = networkType === 'wifi' ? 'cellular' : 'wifi';
+  if (!mock.emit(networkEvent, { type: networkType })) {
+    eventStatus.textContent = eventSubscription ? '已订阅 · Mock 未推送' : '未订阅 · Mock 网络已切换';
+    return;
+  }
+  syncControls();
+});
+
 try {
   if (observeMock) {
-    installMockTransport({ onFrame: showFrame });
+    mock = installMockTransport({
+      deviceInfo: { os: 'ios', osVersion: '27.2' },
+      getNetworkStatus: () => ({ type: networkType }),
+      events: [networkEvent],
+      onFrame: showFrame,
+    });
   } else {
     inspector.hidden = true;
     workbench.dataset.host = 'injected';
-    description.textContent = '使用 WebView 注入的通道。发送 echo 后会自动握手并展示调用结果。';
+    description.textContent = '使用 WebView 注入的通道。首次调用会自动握手，页面随后显示宿主支持的能力。';
   }
   syncControls();
 } catch (error) {

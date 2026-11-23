@@ -19,42 +19,7 @@ flowchart LR
 
 ### 1.1 Method schema 格式
 
-`spec/methods/device/getInfo.json`：
-
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ojsb:method/device.getInfo",
-  "title": "device.getInfo",
-  "description": "获取设备基础信息",
-  "x-ojsb-kind": "method",
-  "x-ojsb-version": 1,
-  "x-ojsb-since": "1.0",
-  "x-ojsb-platforms": ["ios", "android", "flutter", "rn"],
-  "x-ojsb-allow-degraded": true,
-  "x-ojsb-concurrency": "parallel",
-  "x-ojsb-errors": [1001],
-  "params": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "fields": { "type": "array", "items": { "enum": ["os", "osVersion", "model", "locale"] } }
-    }
-  },
-  "result": {
-    "type": "object",
-    "required": ["os", "osVersion"],
-    "properties": {
-      "os": { "enum": ["ios", "android"] },
-      "osVersion": { "type": "string" },
-      "model": { "type": "string" },
-      "locale": { "type": "string" }
-    }
-  }
-}
-```
-
-事件 schema 用 `"x-ojsb-kind": "event"` + `payload`；流式 method 额外声明 `"x-ojsb-callbacks": { ...chunk schema... }`。
+[`device.getInfo` Schema](../spec/methods/device/getInfo.json) 用 `params` 和 `result` 定义 v1 的参数与结果。事件用 `"x-ojsb-kind": "event"` 和 `payload`。查询和事件可以复用同一份 Schema，例如 [网络状态](../spec/schemas/network-status.json)。流式 method 可用 `x-ojsb-callbacks` 声明进度载荷。
 
 `x-ojsb-*` 扩展关键字一览：
 
@@ -152,13 +117,34 @@ flowchart TB
 | `CALL-PRE-READY-002` | 延迟 hello，对排队请求触发 AbortSignal，然后完成握手 | 调用返回 `-32002`；transport 仅收到 hello，未收到该 request 或 cancel |
 | `CALL-PRE-READY-003` | 延迟 hello 但在调用 deadline 之前完成握手，确认 request 发出后触发 AbortSignal | 发出的 request 使用剩余时长；`bridge.cancel` 通知的 `params.requestId` 指向原请求，外层 `meta.sid` 与原请求相同 |
 
+验收 `LIFE-DOCUMENT-001` 时，先在旧文档发出请求并在原生侧暂停应答。整页导航后让新文档完成握手，再释放旧应答。在新文档的传输边界检查应答投递，再验证新文档仍能完成调用。iOS 还验证失效请求的 WithReply 回调仅收到一次 `null` 传输回执。
+
+Android 文档重新确认期间，从原文档路由到达的请求会等待确认。相同的文档标记与 reply proxy 保留会话并继续处理缓存请求。新文档或路由失效会清除缓存。
+
 ## 3. 用例格式
 
 M1 原生宿主可从 [最小接入验收](native-host.md#验收) 开始。浏览器 Mock 和两端原生示例加载同一份 Web demo，并使用同一个 Web SDK 单例调用 `conformance.echo`。
 
-当前的[共享 JSON 样例](../conformance-tests/fixtures/wire.json)声明信封是否合法，非法样例还声明预期错误码。Node 测试用同一组样例验证 JSON Schema 与 TypeScript codec。Swift、Kotlin 及后续宿主接入时读取同一份样例。
+### 3.1 M1 原始入站报文
 
-宿主行为场景计划放在 `conformance-tests/cases/*.yaml`：
+- [wire.json](../conformance-tests/fixtures/wire.json) 是**信封形状**正反例，由 Node 测试验证 JSON Schema 与 TypeScript codec。形状合法不代表宿主可分派，例如信封允许 `meta.timeout: 0`，但短任务不允许用它。
+- [host-inbound-raw.json](../conformance-tests/fixtures/host-inbound-raw.json) 是**宿主行为**用例，由 Node、Swift XCTest、Android JVM 直接送到 Mock、`WireHost`、`RpcSession` 的入站接口。不经过 Web SDK 或 WebView。每个 case 新建核心；`fresh` 不预握手，`active` 以 `bootstrap` 握手，`replaced` 用两个独立核心取得旧和当前 sid，只向后者发送测试报文，不模拟导航。
+
+步骤的 `raw` 是原始字符串；只将完整的带引号 `$SID`、`$OLD_SID` 占位符替换为 JSON 编码后的 sid，不重新序列化输入。`accept` 列出允许的应答。`none`（无 RPC 应答）不等于 `rpc.id: null`（未关联的诊断）；期望中的 `sid: null` 表示 `meta.sid` 缺省。握手结果绑定非空 `result.sid`，重复握手须复用，`meta.sid` 如存在须与之相等。echo 结果按 JSON 值比较，不比较序列化顺序。
+
+`bridge.hello` 与 `bridge.hello@1` 共用握手分支和 ID 集合；没有会话时丢弃 `@2`，有匹配 sid 时用原 ID 和当前 sid 返回 `-32601`。支持的握手方法收到不相交的主版本返回 `-32004` 和 `data.supported`。短任务 hello 和 echo 在登记 ID 后、分派前以 `-32602` 拒绝 `timeout: 0`；重复和旧 sid 仍静默。对于畸形 JSON、不可移植的数字或非法结构，只允许 [协议 §5](protocol.md#5-request--response-时序) 规定的安全诊断或静默，不允许成功应答。数值溢出不是 JSON 语法错误；无法安全关联时可静默，不要求返回 `-32700`。
+
+在仓库根目录运行，无需 Web Demo、WebView 或模拟器：
+
+```sh
+npm test
+swift test --package-path examples/native-ios --filter 'WireHostTests|RawHostConformanceTests'
+./examples/native-android/gradlew -p examples/native-android :app:testDebugUnitTest
+```
+
+### 3.2 完整场景（计划）
+
+更完整的宿主行为场景计划放在 `conformance-tests/cases/*.yaml`：
 
 ```yaml
 id: CALL-TIMEOUT-001

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/bridge.unsubscribe",
+  "title": "bridge.unsubscribe",
+  "description": "确保指定事件在当前会话中处于退订状态。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "required": [
+      "events"
+    ],
+    "properties": {
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$"
+        },
+        "uniqueItems": true,
+        "minItems": 1
+      }
+    }
+  },
+  "result": {
+    "type": "object",
+    "required": [
+      "unsubscribed"
+    ],
+    "properties": {
+      "unsubscribed": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$"
+        },
+        "uniqueItems": true
+      }
+    }
+  }
+}

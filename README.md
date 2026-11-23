@@ -148,6 +148,7 @@ JS
 
 - [协议规范 docs/protocol.md](docs/protocol.md)（核心）
 - [Native Host 最小接入 docs/native-host.md](docs/native-host.md)
+- [原生基础能力 docs/native-profiles.md](docs/native-profiles.md)
 - [iOS 实现层 docs/native-ios.md](docs/native-ios.md)
 - [Android 实现层 docs/native-android.md](docs/native-android.md)
 - [Flutter 宿主 docs/flutter.md](docs/flutter.md)

@@ -94,7 +94,7 @@ declare global {
     "jsonrpc": "2.0",
     "method": "device.getInfo",
     "id": "w-a1b2-42",
-    "params": { "fields": ["os"] }
+    "params": {}
   }
 }
 ```
@@ -115,7 +115,7 @@ declare global {
 | 成功 response | `id`、`result` | `id` MUST 与 request 的字符串 `id` 相同。`result` 可为任意 JSON 值，无返回值时 MUST 发送 `result: null` |
 | 错误 response | `id`、`error` | 已知 request 的字符串 `id` 时 MUST 原样回传。无法识别请求 id 时，按 §5 使用 `id: null`。`error` 遵循 §4.1 |
 
-通知只分派给以下保留控制处理器或显式注册的通知处理器。普通 RPC handler 的注册不会启用同名通知。缺少 `id` 的消息 MUST NOT 分派给普通 RPC handler。控制方法 MUST 以 notification 发送。
+通知只分派给以下保留控制处理器或显式注册的通知处理器。普通 RPC handler 的注册不会启用同名通知。缺少 `id` 的消息 MUST NOT 分派给普通 RPC handler。下列控制通知 MUST 以 notification 发送。
 
 | 控制方法 | `params` 对象 |
 |----------|---------------|
@@ -144,7 +144,7 @@ declare global {
 | `ojsb.*` | 未来扩展保留 |
 | `rpc.*` | JSON-RPC 保留，OJSB v1 禁止在 wire 消息中使用 |
 
-- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。
+- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。设备和网络接口见 [原生基础能力](native-profiles.md)。
 - 厂商/业务扩展 SHOULD 使用反域名或公司前缀：`acme.pay.create`，避免与未来标准冲突。
 - Method 版本在 schema 中用 `x-ojsb-version` 声明。调用 MAY 写 `device.getInfo@2`。后缀使用无前导零的十进制正整数。省略时选择 Host 声明支持的最低版本。
 
@@ -220,7 +220,7 @@ sequenceDiagram
   participant T as Host Shim
   participant C as Host Core
   participant H as Handler
-  B->>S: bridge.call('device.getInfo', {...}, {timeout: 5000})
+  B->>S: bridge.call('device.getInfo', {}, {timeout: 5000})
   S->>S: 生成 id / traceId，登记 pending + 定时器
   S->>T: postMessage(JSON)
   T->>C: Channel 投递（附带可信 origin / frame）
@@ -389,6 +389,14 @@ sequenceDiagram
     S->>H: request bridge.unsubscribe { events:["network.changed"] }
   end
 ```
+
+宿主在握手的 `capabilities.events` 声明当前页面可请求订阅的事件。SDK 使用带请求 ID 的 `bridge.subscribe` 和 `bridge.unsubscribe`，宿主按当前会话执行这两个控制方法。 对同一会话中的同一事件，宿主 MUST 按控制请求的到达顺序更新订阅，并在更新后应答。
+
+- 两个请求的 `params.events` 都是非空、无重复的事件名列表。事件名至少两段，例如 `network.changed` 或 `acme.pay.orderChanged`。 保留 `rpc.*`。
+- `bridge.subscribe` 返回 `{ subscribed, denied }`。请求中的每个事件名恰好出现在其中一个列表。
+- `bridge.unsubscribe` 返回 `{ unsubscribed }`。它确认请求的各个事件已处于退订状态，包括原先就未订阅的事件。
+
+订阅和退订的报文结构见 [subscribe Schema](../spec/methods/bridge/subscribe.json) 和 [unsubscribe Schema](../spec/methods/bridge/unsubscribe.json)。
 
 规则：
 

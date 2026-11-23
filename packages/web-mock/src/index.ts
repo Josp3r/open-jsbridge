@@ -3,7 +3,12 @@ import {
   type Envelope, type JsonObject, type JsonValue, type RpcRequest,
 } from '../../protocol/src/index.js';
 
+const helloMethod = 'bridge.hello';
 const echoMethod = 'conformance.echo';
+const subscribeMethod = 'bridge.subscribe';
+const unsubscribeMethod = 'bridge.unsubscribe';
+const eventNamePattern = /^(?!rpc\.)[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+const networkTypes = ['wifi', 'cellular', 'ethernet', 'other', 'none', 'unknown'] as const;
 const limits = { maxMessageBytes: 1_048_576, maxInflight: 64, defaultTimeoutMs: 15_000 };
 const utf8 = new TextEncoder();
 let nextSession = 0;
@@ -37,10 +42,75 @@ function readProtocols(params?: JsonObject): number[] | undefined {
   return protocols;
 }
 
-/** A standalone Mock session exposed through the promise reply channel. */
-export function createMockAdapter() {
+function isEventName(name: unknown): name is string {
+  return typeof name === 'string' && eventNamePattern.test(name);
+}
+
+function readEventNames(params?: JsonObject): string[] | undefined {
+  const events = params?.events;
+  if (Array.isArray(events) && events.length && events.every(isEventName) &&
+      new Set(events).size === events.length) return events;
+}
+
+function isJsonValue(value: unknown, ancestors: Set<object>): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
+    return true;
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) return false;
+  if (!Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+  }
+
+  ancestors.add(value);
+  for (const entry of Array.isArray(value) ? value : Object.values(value)) {
+    if (!isJsonValue(entry, ancestors)) return false;
+  }
+  ancestors.delete(value);
+  return true;
+}
+
+export interface MockAdapterOptions {
+  events?: readonly string[];
+  /** Advertised events whose subscription requests are denied by the Mock host. */
+  deniedEvents?: readonly string[];
+  deviceInfo?: { os: 'ios' | 'android'; osVersion: string };
+  getNetworkStatus?: () => { type: typeof networkTypes[number] };
+}
+
+/** A standalone Mock session with Promise responses and out-of-band event delivery. */
+export function createMockAdapter(options?: MockAdapterOptions) {
   let sid: string | undefined;
-  const seen = new Set<string>();
+  let receiver: ((raw: string) => void) | undefined;
+  const helloIds = new Set<string>();
+  const requestIds = new Set<string>();
+  const methods = new Map<string, (params?: JsonObject) => JsonValue>([
+    [echoMethod, (params) => params ?? {}],
+  ]);
+  const { deviceInfo, getNetworkStatus } = options ?? {};
+  if (deviceInfo) {
+    const { os, osVersion } = deviceInfo;
+    if ((os === 'ios' || os === 'android') && typeof osVersion === 'string' && osVersion.length > 0) {
+      methods.set('device.getInfo', () => ({ os, osVersion }));
+    }
+  }
+  if (getNetworkStatus) {
+    methods.set('network.getStatus', () => {
+      const { type } = getNetworkStatus();
+      return { type: networkTypes.includes(type) ? type : 'unknown' };
+    });
+  }
+  const allowedEvents = new Set(options?.events?.filter(isEventName));
+  const deniedEvents = new Set(options?.deniedEvents?.filter(isEventName));
+  const eventNames = [...new Set([...allowedEvents, ...deniedEvents])];
+  const subscriptions = new Set<string>();
+
+  function resetSession(): void {
+    sid = undefined;
+    helloIds.clear();
+    requestIds.clear();
+    subscriptions.clear();
+  }
 
   function negotiate(request: RpcRequest): string {
     const protocols = readProtocols(request.params);
@@ -51,9 +121,40 @@ export function createMockAdapter() {
     sid ??= globalThis.crypto?.randomUUID?.() ?? `mock-${++nextSession}`;
     return success(request.id, {
       jsb: '1.0', sid, host: { platform: 'mock', name: 'mock', version: '0.1.0' },
-      capabilities: { methods: { [echoMethod]: { versions: [1] } }, events: [], features: [] },
+      capabilities: {
+        methods: Object.fromEntries([...methods.keys()].map((method) => [method, { versions: [1] }])),
+        events: eventNames,
+        features: [],
+      },
       limits,
     }, sid);
+  }
+
+  function controlSubscription(method: string, request: RpcRequest, session: string): string {
+    const events = readEventNames(request.params);
+    if (!events) return failure(request.id, ErrorCode.InvalidParams, 'Invalid event subscription params', undefined, session);
+
+    if (method === unsubscribeMethod) {
+      const response = success(request.id, { unsubscribed: events }, session);
+      if (exceedsMessageLimit(response)) {
+        return failure(request.id, ErrorCode.PayloadTooLarge, 'Payload too large', undefined, session);
+      }
+      for (const event of events) subscriptions.delete(event);
+      return response;
+    }
+
+    const subscribed: string[] = [];
+    const denied: string[] = [];
+    for (const event of events) {
+      if (allowedEvents.has(event) && !deniedEvents.has(event)) subscribed.push(event);
+      else denied.push(event);
+    }
+    const response = success(request.id, { subscribed, denied }, session);
+    if (exceedsMessageLimit(response)) {
+      return failure(request.id, ErrorCode.PayloadTooLarge, 'Payload too large', undefined, session);
+    }
+    for (const event of subscribed) subscriptions.add(event);
+    return response;
   }
 
   async function send(raw: string): Promise<string | null> {
@@ -71,42 +172,86 @@ export function createMockAdapter() {
     }
 
     const { rpc, meta } = envelope;
-    if (!('method' in rpc) || !('id' in rpc) || seen.has(rpc.id)) return null;
-    if (rpc.method === 'bridge.hello') {
-      if (meta?.sid !== undefined && meta.sid !== sid) return null;
-      seen.add(rpc.id);
+    if (!('method' in rpc) || !('id' in rpc)) return null;
+    const method = rpc.method.endsWith('@1') ? rpc.method.slice(0, -2) : rpc.method;
+    if (method === helloMethod) {
+      if ((meta?.sid !== undefined && meta.sid !== sid) || helloIds.has(rpc.id)) return null;
+      helloIds.add(rpc.id);
+      if (meta?.timeout === 0) {
+        return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, sid);
+      }
       return negotiate(rpc);
     }
-    if (!sid || meta?.sid !== sid) return null;
-    seen.add(rpc.id);
+    if (!sid || meta?.sid !== sid || requestIds.has(rpc.id)) return null;
+    requestIds.add(rpc.id);
 
-    if (rpc.method === echoMethod || rpc.method === `${echoMethod}@1`) {
-      const response = success(rpc.id, rpc.params ?? {}, sid);
+    const control = method === subscribeMethod || method === unsubscribeMethod;
+    const handle = methods.get(method);
+    if (!control && !handle) return failure(rpc.id, ErrorCode.MethodNotFound, 'Method not found', undefined, sid);
+    if (meta.timeout === 0) return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, sid);
+    if (control) return controlSubscription(method, rpc, sid);
+    if (method !== echoMethod && Object.keys(rpc.params ?? {}).length > 0) {
+      return failure(rpc.id, ErrorCode.InvalidParams, 'Expected empty params', undefined, sid);
+    }
+    try {
+      const response = success(rpc.id, handle!(rpc.params), sid);
       if (exceedsMessageLimit(response)) {
         return failure(rpc.id, ErrorCode.PayloadTooLarge, 'Payload too large', undefined, sid);
       }
       return response;
+    } catch {
+      return failure(rpc.id, ErrorCode.InternalError, 'Internal error', undefined, sid);
     }
-    return failure(rpc.id, ErrorCode.MethodNotFound, 'Method not found', undefined, sid);
+  }
+
+  function emit(name: string, payload: JsonValue): boolean {
+    const receive = receiver;
+    if (!sid || !receive || !subscriptions.has(name)) return false;
+
+    let raw: string;
+    try {
+      if (!isJsonValue(payload, new Set())) return false;
+      raw = encodeEnvelope({
+        jsb: '1.0', meta: { sid },
+        rpc: { jsonrpc: '2.0', method: 'bridge.event', params: { name, payload } },
+      });
+    } catch {
+      return false;
+    }
+    if (exceedsMessageLimit(raw) || receiver !== receive || !subscriptions.has(name)) return false;
+    receive(raw);
+    return true;
   }
 
   return {
     name: 'mock',
     send,
-    listen(_onMessage: (raw: string) => void): () => void { return () => {}; },
+    emit,
+    listen(onMessage: (raw: string) => void): () => void {
+      if (receiver) resetSession();
+      const receive = (raw: string) => onMessage(raw);
+      receiver = receive;
+      return () => {
+        if (receiver !== receive) return;
+        receiver = undefined;
+        resetSession();
+      };
+    },
   };
 }
 
-type FrameDirection = 'request' | 'response';
+type FrameDirection = 'request' | 'response' | 'event';
+
+export interface MockTransportOptions extends MockAdapterOptions {
+  onFrame?: (direction: FrameDirection, raw: string | null) => void;
+}
 
 /** Installs a Mock Host Shim on the current browser window when its transport slot is free. */
-export function installMockTransport(options?: {
-  onFrame?: (direction: FrameDirection, raw: string | null) => void;
-}): void {
+export function installMockTransport(options?: MockTransportOptions): { emit(name: string, payload: JsonValue): boolean } | undefined {
   if (typeof window === 'undefined' || '__OJSB_TRANSPORT__' in window) return;
 
   const target = window;
-  const adapter = createMockAdapter();
+  const adapter = createMockAdapter(options);
   const onFrame = options?.onFrame;
   const observe = (direction: FrameDirection, raw: string | null): void => {
     try {
@@ -125,11 +270,28 @@ export function installMockTransport(options?: {
       return reply;
     },
   });
+  const forwardEvent = (raw: string): void => {
+    const receive = target.__OJSB_RECEIVE__;
+    if (typeof receive !== 'function') return;
+    observe('event', raw);
+    receive.call(target, raw);
+  };
 
   Object.defineProperty(target, '__OJSB_TRANSPORT__', {
     value: transport,
     writable: false,
     configurable: false,
   });
+  let unlisten = adapter.listen(forwardEvent);
+  target.addEventListener('pagehide', () => {
+    unlisten();
+    unlisten = adapter.listen(forwardEvent);
+  });
   target.dispatchEvent(new CustomEvent('ojsb:transportready'));
+  return {
+    emit(name, payload) {
+      if (typeof target.__OJSB_RECEIVE__ !== 'function') return false;
+      return adapter.emit(name, payload);
+    },
+  };
 }

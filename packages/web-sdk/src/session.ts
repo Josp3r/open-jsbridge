@@ -12,6 +12,7 @@ export interface Session {
   sid: string;
   host: HostInfo;
   methods: Map<string, ReadonlySet<number>>;
+  events: ReadonlySet<string>;
   features: readonly string[];
   defaultTimeout: number;
   maxMessageBytes: number;
@@ -63,6 +64,7 @@ export function readSession(result: JsonValue, sid?: string): Session | undefine
       ...(host.appVersion === undefined ? {} : { appVersion: host.appVersion }),
     },
     methods,
+    events: new Set(capabilities.events),
     features: capabilities.features,
     defaultTimeout: limits.defaultTimeoutMs,
     maxMessageBytes: limits.maxMessageBytes,

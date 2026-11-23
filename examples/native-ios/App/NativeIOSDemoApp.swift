@@ -20,7 +20,10 @@ private struct WebDemo: UIViewRepresentable {
     private let url = URL(string: "http://127.0.0.1:4173/?host=native")!
 
     func makeUIView(context: Context) -> WKWebView {
-        let webView = NativeIOSHost.makeWebView(allowing: url)
+        let webView = NativeIOSHost.makeWebView(
+            allowing: url,
+            options: .init(deviceInfo: true, networkStatus: true, networkChanges: true)
+        )
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         webView.load(URLRequest(url: url))
         return webView

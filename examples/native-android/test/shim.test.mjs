@@ -44,7 +44,10 @@ test('holds an early SDK call until Native confirms the active document', () => 
   reply('ready:wrong-document');
   assert.equal(sent.length, 1);
   reply(sent[0].replace('commit:', 'ready:'));
-  assert.deepEqual(sent.slice(1), ['rpc:' + token + ':' + raw]);
+  assert.deepEqual(sent.slice(1), [
+    'push:01000000-0000-0000-0000-000000000000:' + token,
+    'rpc:' + token + ':' + raw,
+  ]);
 });
 
 test('holds sends during a second confirmation for the same document', () => {
@@ -56,9 +59,10 @@ test('holds sends during a second confirmation for the same document', () => {
   window.__OJSB_ANDROID_COMMIT__('02000000-0000-0000-0000-000000000000');
   window.__OJSB_TRANSPORT__.postMessage('after');
   reply(firstChallenge);
-  assert.equal(sent.length, 2);
-  reply(sent[1].replace('commit:', 'ready:'));
-  assert.equal(sent[2], 'rpc:' + token + ':after');
+  assert.equal(sent.length, 3);
+  reply(sent[2].replace('commit:', 'ready:'));
+  assert.equal(sent[3], 'push:02000000-0000-0000-0000-000000000000:' + token);
+  assert.equal(sent[4], 'rpc:' + token + ':after');
 });
 
 test('flushes replies in order to the SDK receiver and rejects prior document replies after pagehide', () => {
@@ -73,13 +77,13 @@ test('flushes replies in order to the SDK receiver and rejects prior document re
   window.__OJSB_RECEIVE__ = (raw) => received.push(raw);
   assert.deepEqual(received, ['first', 'second']);
   window.dispatchEvent(new Event('pagehide'));
-  assert.equal(sent[1], 'leave:' + token);
+  assert.equal(sent[2], 'leave:' + token);
   reply(previousReady);
   reply('rpc:' + token + ':stale');
   window.__OJSB_ANDROID_COMMIT__('02000000-0000-0000-0000-000000000000');
-  const next = sent[2].split(':')[2];
+  const next = sent[3].split(':')[2];
   assert.notEqual(next, token);
-  reply(sent[2].replace('commit:', 'ready:'));
+  reply(sent[3].replace('commit:', 'ready:'));
   reply('rpc:' + next + ':fresh');
   assert.deepEqual(received, ['first', 'second', 'fresh']);
 });
