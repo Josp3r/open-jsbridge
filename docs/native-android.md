@@ -4,6 +4,8 @@
 > minSdk 建议 21；首选通道依赖设备上 **Android System WebView 的版本**（而非 Android 系统版本），必须运行时用 `WebViewFeature.isFeatureSupported(...)` 检测。
 > 文中 androidx.webkit API 请在接入时以所用版本的官方文档复核。
 
+要运行握手与 echo，参见 [Kotlin 示例](../examples/native-android/README.md)。最小宿主的接入和验收条件见 [Native Host 最小接入](native-host.md)。
+
 ## 1. 通道选择
 
 | 优先级 | 通道 | 条件 | 可信 origin | frame 定向推送 | trust |

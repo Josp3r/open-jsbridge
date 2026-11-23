@@ -154,6 +154,8 @@ flowchart TB
 
 ## 3. 用例格式
 
+M1 原生宿主可从 [最小接入验收](native-host.md#验收) 开始。浏览器 Mock 和两端原生示例加载同一份 Web demo，并使用同一个 Web SDK 单例调用 `conformance.echo`。
+
 当前的[共享 JSON 样例](../conformance-tests/fixtures/wire.json)声明信封是否合法，非法样例还声明预期错误码。Node 测试用同一组样例验证 JSON Schema 与 TypeScript codec。Swift、Kotlin 及后续宿主接入时读取同一份样例。
 
 宿主行为场景计划放在 `conformance-tests/cases/*.yaml`：

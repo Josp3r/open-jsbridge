@@ -51,7 +51,7 @@ export function createMockAdapter() {
     sid ??= globalThis.crypto?.randomUUID?.() ?? `mock-${++nextSession}`;
     return success(request.id, {
       jsb: '1.0', sid, host: { platform: 'mock', name: 'mock', version: '0.1.0' },
-      capabilities: { methods: { [echoMethod]: { versions: [1] } }, events: [], features: ['cancel'] },
+      capabilities: { methods: { [echoMethod]: { versions: [1] } }, events: [], features: [] },
       limits,
     }, sid);
   }
@@ -95,4 +95,41 @@ export function createMockAdapter() {
     send,
     listen(_onMessage: (raw: string) => void): () => void { return () => {}; },
   };
+}
+
+type FrameDirection = 'request' | 'response';
+
+/** Installs a Mock Host Shim on the current browser window when its transport slot is free. */
+export function installMockTransport(options?: {
+  onFrame?: (direction: FrameDirection, raw: string | null) => void;
+}): void {
+  if (typeof window === 'undefined' || '__OJSB_TRANSPORT__' in window) return;
+
+  const target = window;
+  const adapter = createMockAdapter();
+  const onFrame = options?.onFrame;
+  const observe = (direction: FrameDirection, raw: string | null): void => {
+    try {
+      onFrame?.(direction, raw);
+    } catch {
+      // Observation must not interrupt transport traffic.
+    }
+  };
+  const transport = Object.freeze({
+    name: adapter.name,
+    protocols: Object.freeze([1]),
+    async postMessage(raw: string): Promise<string | null> {
+      observe('request', raw);
+      const reply = await adapter.send(raw);
+      observe('response', reply);
+      return reply;
+    },
+  });
+
+  Object.defineProperty(target, '__OJSB_TRANSPORT__', {
+    value: transport,
+    writable: false,
+    configurable: false,
+  });
+  target.dispatchEvent(new CustomEvent('ojsb:transportready'));
 }

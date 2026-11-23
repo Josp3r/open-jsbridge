@@ -41,7 +41,7 @@ flowchart LR
 
 ## 2. Host Shim 契约（Transport 层）
 
-为了让 **一份 Web SDK 适配所有宿主**（包括 Flutter、React Native），Host MUST 在页面脚本执行前（或尽可能早）注入一个满足以下契约的 shim。SDK 只依赖这个契约，不直接依赖 `window.webkit` / `window.ReactNativeWebView` 等平台对象。
+本节定义默认 Web SDK 的 WebView 传输绑定。采用此绑定的 Host MUST 在页面脚本执行前（或尽可能早）注入满足以下契约的 shim。SDK 只依赖这个契约。`window.webkit`、`window.ReactNativeWebView` 及各平台的通道名称由宿主适配器决定。其他传输可复用 §3 起的 wire 格式与协议语义。参见 [Native Host 最小接入要求](native-host.md)。
 
 ```ts
 // Host 注入（参考实现见各平台文档）
@@ -324,7 +324,7 @@ sequenceDiagram
 ## 7. 超时与取消
 
 - **D1** 每个 request MUST 有 deadline。SDK 默认值取 `limits.defaultTimeoutMs`（握手前用 15000），业务可在调用时覆盖；`timeout: 0` 表示不超时，仅允许 schema 中声明 `x-ojsb-long-running: true` 的 method（如等待用户操作的选择器）。
-- **D2** 调用方超时时 MUST 本地 reject `-32001`。请求已经发出且原会话仍有效时，调用方 SHOULD 在该会话发送 `bridge.cancel` 通知，让被调方释放资源。等待握手时也计入调用超时。
+- **D2** 调用方超时时 MUST 本地 reject `-32001`。请求已经发出、原会话仍有效且被调方在该会话声明 `cancel` 能力时，调用方 SHOULD 在该会话发送 `bridge.cancel` 通知，让被调方释放资源。等待握手时也计入调用超时。
 - **D3** 被调方 SHOULD 读取 `meta.timeout` + `meta.ts`，在明显超时后放弃执行（注意两端时钟不一致，只作提示）。
 - **D4** 取消通知用 `params.requestId` 关联被取消的请求。
 

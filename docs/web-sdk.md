@@ -6,6 +6,8 @@
 
 当前 M1 实现提供 `createBridge`、默认 `bridge`、`ready`、`has` 和 `call`。本节也列出后续里程碑的事件、流式回调、反向调用和 codegen API。
 
+App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后发送排队的请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
+
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
@@ -271,7 +273,9 @@ declare module '@open-jsbridge/web' {
 
 ### 6.1 `@open-jsbridge/mock`
 
-在浏览器里模拟一个完整 Host（**实现了同一个 shim 契约**），SDK 无需特殊分支：
+M1 提供 `installMockTransport()`，开发环境可以在页面启动时调用一次，把 Mock 注册为 `window.__OJSB_TRANSPORT__`。业务代码使用同一个默认 `bridge`，首次调用走 SDK 的通道检测和自动握手。Node.js 或需要彼此隔离的测试也可以使用 `createMockAdapter()`。
+
+后续完整 Mock 宿主的配置和操作设计如下。
 
 ```ts
 import { installMockHost } from '@open-jsbridge/mock';

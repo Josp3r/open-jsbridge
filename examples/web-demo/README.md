@@ -1,0 +1,66 @@
+# Web SDK 快速上手
+
+## 在浏览器体验
+
+在仓库根目录运行以下命令。
+
+```sh
+npm ci
+npm run demo:web
+```
+
+打开 [Web Demo](http://127.0.0.1:4173/)。页面在启动时安装 Mock 宿主的 `window.__OJSB_TRANSPORT__`，模拟 App 向 WebView 注入 Host Shim。
+
+1. 输入一段文字并点击「发送 echo」。首次调用自动握手，面板顶部会显示 `bridge.hello → conformance.echo`，下方保留最后一对请求和响应。Mock 将参数原样返回，例如输入 `你好`，SDK 得到 `{"text":"你好"}`。
+2. 如果想单独观察握手，可以在首次发送 echo 前点击「开始握手」。Mock 返回宿主信息和支持的能力，SDK 进入 `ready`，`bridge.has('conformance.echo')` 返回 `true`。
+3. 连接后点击「试试报错」。SDK 根据握手时收到的能力列表，在本地以 `BridgeError` 拒绝调用，错误码为 `-32601`。这次调用没有发送请求，因此没有对应的响应。
+
+页面展示最近的实际请求、响应和 SDK 操作结果。握手和 echo 的面板里，外层 `jsb` 与 `meta` 属于 Open JSBridge 信封，`rpc` 对象承载 JSON-RPC 2.0 消息。请求和响应可以用 `rpc.id` 对照。
+
+## 在代码里调用
+
+Demo 已完成 Mock 注入。在页面打开浏览器开发者工具，把以下代码粘贴到控制台运行。模块来自仓库的本地构建产物。
+
+```js
+const { BridgeError, bridge } = await import('/dist/packages/web-sdk/src/index.js');
+
+try {
+  const result = await bridge.call('conformance.echo', { text: '你好' }, { timeout: 3000 });
+  console.log(result); // { text: '你好' }
+} catch (error) {
+  if (!(error instanceof BridgeError)) throw error;
+  console.error(error.code, error.message, error.data);
+}
+```
+
+`call()` 返回宿主响应里的 `rpc.result`，`timeout` 以毫秒计。如果页面需要根据宿主能力决定是否展示功能，可以先用 `await bridge.ready()` 等待握手，再用 `bridge.has(method)` 查询。`ready()` 也会返回宿主信息。
+
+## 在本地开发页模拟 App 注入
+
+如果在自己的浏览器开发页使用这套构建产物，在页面启动时运行以下代码，并在安装完成后再发起业务调用。
+
+```js
+import { installMockTransport } from '/dist/packages/web-mock/src/index.js';
+
+installMockTransport();
+```
+
+安装完成后，业务代码和上面的控制台示例一样，直接使用 SDK 导出的 `bridge` 单例。Mock 注入仅用于本地开发和测试。正式 App 中由原生宿主注入真实的 Host Shim。页面已有 Host Shim 时，安装函数会保留它。
+
+## 接入真实 App
+
+在 [iOS 示例](../native-ios/README.md) 和 [Android 示例](../native-android/README.md) 中打开同一页面。两个示例都使用 `/?host=native`，只等 WebView 注入的真实通道。发送 echo 后，页面显示宿主名称和返回值。JSON-RPC 消息面板在浏览器 Mock 模式下显示。
+
+App 向 WebView 注入 `window.__OJSB_TRANSPORT__` 并声明支持的业务方法。Web 页面导入默认 `bridge` 单例后可以直接调用。SDK 在第一次 `call()` 时自动连接和握手，并在发送请求前检查能力。原生示例提供同一个 echo 方法。
+
+```js
+import { bridge } from '/dist/packages/web-sdk/src/index.js';
+
+const result = await bridge.call('conformance.echo', { text: '你好' });
+```
+
+[Native Host 最小接入要求](../../docs/native-host.md)
+
+## 订阅宿主事件
+
+当前 M1 SDK 尚未提供事件订阅 API。M2 设计中，`bridge.on(name, listener)` 注册监听并返回取消订阅函数，也可以调用 `bridge.off(name, listener)` 移除监听。[Web SDK 事件设计](../../docs/web-sdk.md#24-事件多路复用)

@@ -3,6 +3,8 @@
 > Swift Package：`OpenJSBridge`。首版参考实现使用 **iOS 14+ 的 WKWebView**，仅开放主 frame。iOS 13 回退通道按 §3 的条件后续启用。
 > 本文 API 以 Apple 公开 WebKit API 为准；标注 "iOS 14+" 的 API 请在接入时以当前 Xcode SDK 文档复核。
 
+要运行握手与 echo，参见 [Swift 示例](../examples/native-ios/README.md)。最小宿主的接入和验收条件见 [Native Host 最小接入](native-host.md)。
+
 ## 1. 总体结构
 
 ```mermaid
