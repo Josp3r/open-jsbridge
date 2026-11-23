@@ -1,7 +1,7 @@
 #if canImport(WebKit)
 import WebKit
 import XCTest
-import NativeIOSHost
+@testable import NativeIOSHost
 
 final class WebKitHostTests: XCTestCase {
     private let url = URL(string: "http://127.0.0.1:4173/?host=native")!
@@ -55,6 +55,214 @@ final class WebKitHostTests: XCTestCase {
             }));
             """, in: webView, arguments: ["oldSID": before])
         XCTAssertTrue(replay is NSNull)
+    }
+
+    @MainActor
+    func testNetworkPushWaitsForAcknowledgementAndStaysInSubscribedDocument() async throws {
+        let heldSubscribe = expectation(description: "Network subscribe before acknowledgement")
+        var acknowledge: (@MainActor () -> Bool)?
+        var updates: [NetworkModule.Update] = []
+        var cancellations = 0
+        let webView = NativeIOSHost.makeWebView(
+            allowing: url,
+            options: .init(networkStatus: true, networkChanges: true),
+            watchNetwork: { update in
+                updates.append(update)
+                return { cancellations += 1 }
+            }
+        ) { response, complete in
+            if response.contains("\"hold-subscribe\"") {
+                acknowledge = complete
+                heldSubscribe.fulfill()
+            } else {
+                _ = complete()
+            }
+        }
+        webView.load(URLRequest(url: url))
+        try await waitForPage(webView, url: url)
+        let sid = try await hello(in: webView, id: "network-hello")
+        let update = try XCTUnwrap(updates.first)
+        _ = try await javascript("""
+            window.networkReplies = {};
+            window.networkFrames = [];
+            window.__OJSB_RECEIVE__ = raw => window.networkFrames.push(JSON.parse(raw));
+            void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({jsb: '1.0', meta: {sid}, rpc: {
+                jsonrpc: '2.0', id: 'hold-subscribe', method: 'bridge.subscribe', params: {events: ['network.changed']}
+            }})).then(raw => window.networkReplies.subscribe = JSON.parse(raw));
+            return true;
+            """, in: webView, arguments: ["sid": sid])
+        await fulfillment(of: [heldSubscribe], timeout: 5)
+        update(.wifi)
+        let beforeAcknowledgement = try await javascript("return window.networkFrames.length;", in: webView) as? Int
+        XCTAssertEqual(beforeAcknowledgement, 0)
+        XCTAssertTrue(try XCTUnwrap(acknowledge)())
+        try await poll(webView, predicate: "window.networkReplies.subscribe?.rpc.result.subscribed[0] === 'network.changed'")
+
+        _ = try await javascript("window.__OJSB_RECEIVE__ = undefined; return true;", in: webView)
+        update(.cellular)
+        update(.cellular)
+        update(.ethernet)
+        let frames = try await javascript("""
+            window.__OJSB_RECEIVE__ = raw => window.networkFrames.push(JSON.parse(raw));
+            return window.networkFrames.map(frame => [frame.meta.sid, frame.rpc.method, frame.rpc.params.name, frame.rpc.params.payload.type]);
+            """, in: webView) as? [[String]]
+        XCTAssertEqual(frames, [
+            [sid, "bridge.event", "network.changed", "cellular"],
+            [sid, "bridge.event", "network.changed", "ethernet"]
+        ])
+        let status = try await request(in: webView, sid: sid, id: "status", method: "network.getStatus@1")
+        XCTAssertEqual(status["result"] as? [String: String], ["type": "ethernet"])
+        let unsubscribe = try await request(in: webView, sid: sid, id: "unsubscribe", method: "bridge.unsubscribe@1",
+                                            params: ["events": ["network.changed"]])
+        XCTAssertEqual(unsubscribe["result"] as? [String: [String]], ["unsubscribed": ["network.changed"]])
+        update(.other)
+        let afterUnsubscribe = try await javascript("return window.networkFrames.length;", in: webView) as? Int
+        XCTAssertEqual(afterUnsubscribe, 2)
+
+        _ = try await request(in: webView, sid: sid, id: "subscribe-again", method: "bridge.subscribe@1",
+                              params: ["events": ["network.changed"]])
+        let nextURL = URL(string: "http://127.0.0.1:4173/?host=native&navigation=network")!
+        webView.load(URLRequest(url: nextURL))
+        try await waitForPage(webView, url: nextURL)
+        let nextSID = try await hello(in: webView, id: "network-hello")
+        XCTAssertNotEqual(nextSID, sid)
+        XCTAssertEqual(cancellations, 1)
+        let nextUpdate = try XCTUnwrap(updates.last)
+        _ = try await javascript("""
+            window.networkFrames = [];
+            window.__OJSB_RECEIVE__ = raw => window.networkFrames.push(JSON.parse(raw));
+            return true;
+            """, in: webView)
+        nextUpdate(.wifi)
+        update(.cellular)
+        let beforeNewSubscription = try await javascript("return window.networkFrames.length;", in: webView) as? Int
+        XCTAssertEqual(beforeNewSubscription, 0)
+        _ = try await request(in: webView, sid: nextSID, id: "subscribe", method: "bridge.subscribe",
+                              params: ["events": ["network.changed"]])
+        update(.other)
+        nextUpdate(.none)
+        try await poll(webView, predicate: "window.networkFrames.length === 1")
+        let newFrame = try await javascript("return window.networkFrames[0];", in: webView) as? [String: Any]
+        XCTAssertEqual((newFrame?["meta"] as? [String: String])?["sid"], nextSID)
+        let rpc = newFrame?["rpc"] as? [String: Any]
+        let params = rpc?["params"] as? [String: Any]
+        XCTAssertEqual(params?["payload"] as? [String: String], ["type": "none"])
+    }
+
+    @MainActor
+    func testPageHideClearsBufferedEventsAndCancelsObservationBeforeNextHandshake() async throws {
+        var update: NetworkModule.Update?
+        let cancelled = expectation(description: "Observer released on pagehide")
+        let webView = NativeIOSHost.makeWebView(allowing: url, options: .init(networkChanges: true),
+                                               watchNetwork: { callback in
+            update = callback
+            return { cancelled.fulfill() }
+        }) { _, complete in _ = complete() }
+        webView.load(URLRequest(url: url))
+        try await waitForPage(webView, url: url)
+        let sid = try await hello(in: webView, id: "pagehide-hello")
+        _ = try await request(in: webView, sid: sid, id: "subscribe", method: "bridge.subscribe",
+                              params: ["events": ["network.changed"]])
+        let send = try XCTUnwrap(update)
+        _ = try await javascript("window.__OJSB_RECEIVE__ = undefined; return true;", in: webView)
+        send(.wifi)
+        let bufferedCount = try await javascript("""
+            window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true}));
+            window.receiptsAfterPageHide = [];
+            window.__OJSB_RECEIVE__ = raw => window.receiptsAfterPageHide.push(raw);
+            return window.receiptsAfterPageHide.length;
+            """, in: webView) as? Int
+        XCTAssertEqual(bufferedCount, 0)
+        await fulfillment(of: [cancelled], timeout: 5)
+
+        let resumedSID = try await hello(in: webView, id: "pagehide-hello")
+        XCTAssertNotEqual(resumedSID, sid)
+        send(.cellular)
+        let delivery = try await javascript("""
+            const reachedReceiver = window.__OJSB_DELIVER__('0'.repeat(32), '{"unexpected":true}');
+            return {reachedReceiver, count: window.receiptsAfterPageHide.length};
+            """, in: webView) as? [String: Any]
+        XCTAssertEqual(delivery?["reachedReceiver"] as? Bool, false)
+        XCTAssertEqual(delivery?["count"] as? Int, 0)
+    }
+
+    @MainActor
+    func testSystemProvidersExposeDeviceAndNetworkSnapshots() async throws {
+        let webView = NativeIOSHost.makeWebView(allowing: url, options: .init(deviceInfo: true, networkStatus: true))
+        webView.load(URLRequest(url: url))
+        try await waitForPage(webView, url: url)
+        let sid = try await hello(in: webView, id: "system-providers")
+        let response = try await request(in: webView, sid: sid, id: "system-info", method: "device.getInfo@1")
+        let info = try XCTUnwrap(response["result"] as? [String: String])
+        XCTAssertEqual(info["os"], "ios")
+        XCTAssertFalse(try XCTUnwrap(info["osVersion"]).isEmpty)
+
+        for attempt in 0..<50 {
+            let response = try await request(in: webView, sid: sid, id: "system-status-\(attempt)", method: "network.getStatus")
+            let status = try XCTUnwrap(response["result"] as? [String: String])
+            let type = try XCTUnwrap(status["type"])
+            if type != "unknown" {
+                XCTAssertTrue(["wifi", "cellular", "ethernet", "other", "none"].contains(type))
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTFail("NWPathMonitor did not report an initial network type")
+    }
+
+    @MainActor
+    func testLateEchoCannotReachNewDocumentOrSettleWithReplyTwice() async throws {
+        let oldPending = expectation(description: "Old document's native echo completion")
+        let newPending = expectation(description: "New document's native echo completion")
+        var releaseOld: (@MainActor () -> Bool)?
+        var releaseNew: (@MainActor () -> Bool)?
+        let webView = NativeIOSHost.makeWebView(allowing: url) { response, complete in
+            if response.contains("old-document-value") {
+                releaseOld = complete
+                oldPending.fulfill()
+            } else if response.contains("new-document-value") {
+                releaseNew = complete
+                newPending.fulfill()
+            } else {
+                _ = complete()
+            }
+        }
+
+        webView.load(URLRequest(url: url))
+        try await waitForPage(webView, url: url)
+        let oldSID = try await hello(in: webView, id: "response-lifecycle-hello")
+        try await startRawEcho(in: webView, sid: oldSID, text: "old-document-value")
+        await fulfillment(of: [oldPending], timeout: 6)
+        let oldCompletion = try XCTUnwrap(releaseOld)
+
+        let newURL = URL(string: "http://127.0.0.1:4173/?host=native&navigation=late-reply")!
+        webView.load(URLRequest(url: newURL))
+        try await waitForPage(webView, url: newURL)
+        let newSID = try await hello(in: webView, id: "response-lifecycle-hello")
+        XCTAssertNotEqual(oldSID, newSID)
+        // Both calls use the same RPC ID to catch delivery to a new document's pending call.
+        try await startRawEcho(in: webView, sid: newSID, text: "new-document-value")
+        await fulfillment(of: [newPending], timeout: 6)
+        let newCompletion = try XCTUnwrap(releaseNew)
+
+        let oldResponseSent = oldCompletion()
+        XCTAssertFalse(oldResponseSent, "Navigation must retire the original native reply before it completes")
+        guard !oldResponseSent else { return }
+        XCTAssertFalse(oldCompletion(), "Repeating a canceled completion must be harmless")
+        let beforeNewCompletion = try await javascript("return [...window.echoReplies, ...window.pushFrames];", in: webView) as? [String]
+        XCTAssertEqual(beforeNewCompletion, [])
+
+        XCTAssertTrue(newCompletion(), "The current document's withheld reply must still be deliverable")
+        XCTAssertFalse(newCompletion(), "WithReply must be invoked at most once")
+        try await poll(webView, predicate: "window.echoReplies.length === 1")
+        let result = try await javascript("""
+            const {meta, rpc} = JSON.parse(window.echoReplies[0]);
+            return {sid: meta.sid, id: rpc.id, text: rpc.result.text, pushCount: window.pushFrames.length};
+            """, in: webView) as? [String: Any]
+        XCTAssertEqual(result?["sid"] as? String, newSID)
+        XCTAssertEqual(result?["id"] as? String, "echo-during-navigation")
+        XCTAssertEqual(result?["text"] as? String, "new-document-value")
+        XCTAssertEqual(result?["pushCount"] as? Int, 0)
     }
 
     @MainActor
@@ -164,12 +372,52 @@ final class WebKitHostTests: XCTestCase {
         return try XCTUnwrap(sid)
     }
 
+    @MainActor private func request(in webView: WKWebView, sid: String, id: String,
+                                    method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
+        let reply = try await javascript("""
+            const raw = await window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid}, rpc: {jsonrpc: '2.0', id, method, params}
+            }));
+            return JSON.parse(raw)?.rpc ?? null;
+            """, in: webView, arguments: ["sid": sid, "id": id, "method": method, "params": params])
+        return try XCTUnwrap(reply as? [String: Any])
+    }
+
+    @MainActor private func startRawEcho(in webView: WKWebView, sid: String, text: String) async throws {
+        _ = try await javascript("""
+            window.echoReplies = [];
+            window.pushFrames = [];
+            window.__OJSB_RECEIVE__ = raw => window.pushFrames.push(raw);
+            void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid},
+                rpc: {jsonrpc: '2.0', id: 'echo-during-navigation', method: 'conformance.echo', params: {text}}
+            })).then(raw => window.echoReplies.push(raw));
+            return true;
+            """, in: webView, arguments: ["sid": sid, "text": text])
+    }
+
     @MainActor private func javascript(_ source: String, in webView: WKWebView, arguments: [String: Any] = [:]) async throws -> Any {
         try await withCheckedThrowingContinuation { continuation in
             webView.callAsyncJavaScript(source, arguments: arguments, in: nil, in: .page) { result in
                 continuation.resume(with: result)
             }
         }
+    }
+}
+final class DeferredRepliesTests: XCTestCase {
+    @MainActor
+    func testDiscardSettlesNativeReplyWithNullExactlyOnce() async {
+        let replies = DeferredReplies()
+        var receipts: [String?] = []
+        let id = replies.insert("old response", document: "old", navigation: 1) {
+            receipts.append($0)
+        }
+
+        replies.discard()
+        XCTAssertEqual(receipts, [nil])
+        XCTAssertFalse(replies.complete(id, document: "new", navigation: 2))
+        replies.discard()
+        XCTAssertEqual(receipts, [nil])
     }
 }
 #endif

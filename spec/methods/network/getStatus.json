@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/network.getStatus",
+  "title": "network.getStatus",
+  "description": "获取宿主 App 当前默认网络路径的类型。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": { "type": "object", "maxProperties": 0 },
+  "result": { "$ref": "ojsb:schema/network.status" }
+}

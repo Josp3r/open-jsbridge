@@ -21,7 +21,7 @@ internal class AndroidBridge private constructor(
     fun onPageCommitVisible(url: String) {
         requireUiThread()
         if (closed) return
-        val challenge = transport.onPageCommitVisible(url) ?: return
+        val challenge = transport.onPageCommitVisible(url, webView.url) ?: return
         // The shim is already installed at document start. This control call
         // proves which injected object is current, without evaluating RPC data.
         webView.evaluateJavascript(
@@ -52,13 +52,25 @@ internal class AndroidBridge private constructor(
         const val DEMO_ORIGIN = "http://10.0.2.2:4173"
         private const val NATIVE_OBJECT = "__ojsb_wml"
 
-        fun attach(webView: WebView, allowedOrigin: String): AndroidBridge? {
+        // The scheduler can defer an RPC reply on the UI thread. The transport
+        // rechecks document identity when the scheduled action runs.
+        fun attach(
+            webView: WebView,
+            allowedOrigin: String,
+            modules: BridgeModules = BridgeModules(),
+            scheduleReply: (() -> Unit) -> Unit = { reply -> reply() },
+        ): AndroidBridge? {
             requireUiThread()
             if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
                 !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
             ) return null
 
-            val transport = DocumentTransport(allowedOrigin, enableEcho = BuildConfig.DEBUG)
+            val transport = DocumentTransport(allowedOrigin, enableEcho = BuildConfig.DEBUG, modules = modules) { reply ->
+                scheduleReply {
+                    requireUiThread()
+                    reply()
+                }
+            }
             require(transport.originRule.startsWith("https://") ||
                 (BuildConfig.DEBUG && transport.originRule == DEMO_ORIGIN)
             ) { "Use HTTPS outside the local Android demo" }
@@ -68,7 +80,7 @@ internal class AndroidBridge private constructor(
             WebViewCompat.addWebMessageListener(webView, NATIVE_OBJECT, origins) { _, message, origin, main, proxy ->
                 if (message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
                 val raw = message.data ?: return@addWebMessageListener
-                transport.receive(raw, origin.toString(), main, proxy)?.let { proxy.postMessage(it) }
+                transport.receive(raw, origin.toString(), main, proxy) { proxy.postMessage(it) }
             }
             val script = try {
                 WebViewCompat.addDocumentStartJavaScript(webView, source, origins)

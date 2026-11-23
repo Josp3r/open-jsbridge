@@ -20,6 +20,8 @@ const assets = new Map([
   ...[
     "dist/packages/protocol/src/index.js",
     "dist/packages/web-sdk/src/index.js",
+    "dist/packages/web-sdk/src/events.js",
+    "dist/packages/web-sdk/src/errors.js",
     "dist/packages/web-sdk/src/session.js",
     "dist/packages/web-sdk/src/transport.js",
     "dist/packages/web-mock/src/index.js",

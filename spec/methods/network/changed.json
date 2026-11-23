@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:event/network.changed",
+  "title": "network.changed",
+  "description": "宿主 App 默认网络路径类型发生变化。",
+  "x-ojsb-kind": "event",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "payload": { "$ref": "ojsb:schema/network.status" }
+}

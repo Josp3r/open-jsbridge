@@ -171,6 +171,9 @@ input {
 
 .result pre[data-error='true'] { color: var(--error); }
 
+.event-demo { margin-top: 20px; }
+.event-demo .section-heading { margin-bottom: 8px; }
+
 pre, code { font-family: var(--font-code); }
 
 pre {
@@ -205,6 +208,7 @@ pre {
 }
 
 .frame + .frame { border-left: 1px solid var(--graphite-rule); }
+.notification-frame { border-top: 1px solid var(--graphite-rule); }
 
 .frame h3 { margin: 16px 16px 0; color: var(--graphite-muted); }
 

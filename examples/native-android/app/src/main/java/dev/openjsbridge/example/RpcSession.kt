@@ -14,13 +14,38 @@ import java.io.StringReader
 import java.util.UUID
 import kotlin.math.abs
 
-/** The demo's only RPCs are a handshake and a synchronous, side-effect-free echo. */
-internal class RpcSession(private val enableEcho: Boolean) {
+/** Wire state for one confirmed document. Used on the WebView thread. */
+internal class RpcSession(
+    enableEcho: Boolean,
+    modules: BridgeModules = BridgeModules(),
+) {
+    private class NetworkSubscription {
+        var acknowledged = false
+        var stop: (() -> Unit)? = null
+    }
+
     private var sid: String? = null
     private val helloIds = HashSet<String>()
     private val requestIds = HashSet<String>()
+    private val methods = buildMap<String, (JsonObject?) -> JsonObject> {
+        if (enableEcho) put(ECHO) { params -> params ?: JsonObject() }
+        modules.device?.let { device -> put(DEVICE_INFO) { device.info() } }
+        modules.network?.let { network -> put(NETWORK_STATUS) { network.status().snapshot() } }
+    }
+    private val networkEvents = modules.networkEvents
+    private var eventReceiver: ((String) -> Unit)? = null
+    private var networkSubscription: NetworkSubscription? = null
 
-    fun receive(raw: String): String? {
+    fun confirmEventReceiver(post: (String) -> Unit) {
+        if (networkEvents != null) eventReceiver = post
+    }
+
+    fun close() {
+        eventReceiver = null
+        unsubscribeNetwork()
+    }
+
+    fun receive(raw: String, afterResponse: (() -> Unit) -> Unit = {}): String? {
         if (exceedsMessageLimit(raw)) return null
         val envelope = parseObject(raw) ?: return null
         val rpc = envelope.get("rpc") as? JsonObject ?: return null
@@ -32,7 +57,7 @@ internal class RpcSession(private val enableEcho: Boolean) {
         ) return null
 
         val method = rpc.get("method").asStringOrNull()
-        val hello = method == HELLO
+        val hello = method == HELLO || method == "$HELLO@1"
         val meta = envelope.get("meta") as? JsonObject
         val incomingSid = meta?.get("sid").asStringOrNull()
         val activeSid = sid
@@ -61,18 +86,84 @@ internal class RpcSession(private val enableEcho: Boolean) {
         ) return failure(id, replySid, -32600, "Invalid request")
 
         if (!hello && incomingSid == null) return failure(id, activeSid, -32009, "Session expired")
-        if (meta?.get("timeout").asSafeIntegerOrNull() == 0L) {
+        val versionOne = method.removeSuffix("@1")
+        val handler = methods[versionOne]
+        val control = versionOne == SUBSCRIBE || versionOne == UNSUBSCRIBE
+        if ((hello || handler != null || control) && meta?.get("timeout").asSafeIntegerOrNull() == 0L) {
             return failure(id, replySid, -32602, "Invalid request timeout")
         }
 
         if (hello) return negotiate(id, params)
         val requestSid = activeSid ?: return null
-        if (enableEcho && (method == ECHO || method == "$ECHO@1")) {
-            val result = success(id, requestSid, params ?: JsonObject())
+        if (control) {
+            val events = eventNames(params) ?: return failure(id, requestSid, -32602, "Invalid event names")
+            return updateSubscriptions(id, versionOne, requestSid, events, afterResponse)
+        }
+        if (handler != null) {
+            if (versionOne != ECHO && params != null && params.size() != 0) {
+                return failure(id, requestSid, -32602, "Expected an empty params object")
+            }
+            val result = success(id, requestSid, handler(params))
             if (exceedsMessageLimit(result)) return failure(id, requestSid, -32006, "Payload too large")
             return result
         }
         return failure(id, requestSid, -32601, "Method not found")
+    }
+
+    private fun updateSubscriptions(
+        id: String,
+        method: String,
+        sid: String,
+        events: List<String>,
+        afterResponse: (() -> Unit) -> Unit,
+    ): String {
+        if (method == UNSUBSCRIBE) {
+            val reply = success(id, sid, JsonObject().apply { add("unsubscribed", strings(events)) })
+            if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
+            if (NETWORK_CHANGED in events) unsubscribeNetwork()
+            return reply
+        }
+
+        if (NETWORK_CHANGED in events && eventReceiver != null) {
+            val reply = success(id, sid, JsonObject().apply {
+                add("subscribed", strings(listOf(NETWORK_CHANGED)))
+                add("denied", strings(events.filterNot { it == NETWORK_CHANGED }))
+            })
+            // Confirm we can send the acceptance before starting an observer.
+            if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
+            if (subscribeNetwork(sid, afterResponse)) return reply
+        }
+        val reply = success(id, sid, JsonObject().apply {
+            add("subscribed", JsonArray())
+            add("denied", strings(events))
+        })
+        return if (exceedsMessageLimit(reply)) failure(id, sid, -32006, "Payload too large") else reply
+    }
+
+    private fun subscribeNetwork(sid: String, afterResponse: (() -> Unit) -> Unit): Boolean {
+        val events = networkEvents ?: return false
+        val subscription = networkSubscription ?: NetworkSubscription().also { current ->
+            networkSubscription = current
+            current.stop = events.observe { type ->
+                if (networkSubscription === current && current.acknowledged) {
+                    eventReceiver?.invoke(networkNotification(sid, type))
+                }
+            }
+        }
+        if (subscription.stop == null) {
+            networkSubscription = null
+            return false
+        }
+        afterResponse {
+            if (networkSubscription === subscription) subscription.acknowledged = true
+        }
+        return true
+    }
+
+    private fun unsubscribeNetwork() {
+        val previous = networkSubscription
+        networkSubscription = null
+        previous?.stop?.invoke()
     }
 
     private fun negotiate(id: String, params: JsonObject?): String {
@@ -104,9 +195,11 @@ internal class RpcSession(private val enableEcho: Boolean) {
             })
             add("capabilities", JsonObject().apply {
                 add("methods", JsonObject().apply {
-                    if (enableEcho) add(ECHO, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
+                    for (method in methods.keys) {
+                        add(method, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
+                    }
                 })
-                add("events", JsonArray())
+                add("events", JsonArray().apply { if (eventReceiver != null) add(NETWORK_CHANGED) })
                 add("features", JsonArray())
             })
             add("limits", JsonObject().apply {
@@ -124,6 +217,11 @@ internal class RpcSession(private val enableEcho: Boolean) {
         private const val MAX_SAFE_INTEGER = 9_007_199_254_740_991
         private const val HELLO = "bridge.hello"
         private const val ECHO = "conformance.echo"
+        private const val DEVICE_INFO = "device.getInfo"
+        private const val NETWORK_STATUS = "network.getStatus"
+        private const val SUBSCRIBE = "bridge.subscribe"
+        private const val UNSUBSCRIBE = "bridge.unsubscribe"
+        private const val NETWORK_CHANGED = "network.changed"
         private val METHOD_SEGMENT = Regex("[a-z][a-zA-Z0-9]*")
         private val METHOD_VERSION = Regex("[1-9][0-9]*")
         private val REQUEST_KEYS = setOf("jsonrpc", "id", "method", "params")
@@ -160,10 +258,21 @@ internal class RpcSession(private val enableEcho: Boolean) {
 
         private fun validMethod(method: String): Boolean {
             val path = method.substringBefore('@')
-            if (path.startsWith("rpc.") || '.' !in path || path.split('.').any { !METHOD_SEGMENT.matches(it) }) {
-                return false
+            return validQualifiedName(path) && ('@' !in method || METHOD_VERSION.matches(method.substringAfter('@')))
+        }
+
+        private fun validQualifiedName(name: String): Boolean =
+            !name.startsWith("rpc.") && '.' in name && name.split('.').all(METHOD_SEGMENT::matches)
+
+        private fun eventNames(params: JsonObject?): List<String>? {
+            val events = params?.get("events") as? JsonArray ?: return null
+            if (events.isEmpty) return null
+            val names = LinkedHashSet<String>()
+            for (event in events) {
+                val name = event.asStringOrNull() ?: return null
+                if (!validQualifiedName(name) || !names.add(name)) return null
             }
-            return '@' !in method || METHOD_VERSION.matches(method.substringAfter('@'))
+            return names.toList()
         }
 
         private fun validJsonNumbers(root: JsonObject): Boolean {
@@ -194,6 +303,21 @@ internal class RpcSession(private val enableEcho: Boolean) {
             }.toString()
 
         private fun success(id: String, sid: String, result: JsonObject) = response(id, sid, "result", result)
+
+        private fun strings(values: List<String>) = JsonArray().apply { values.forEach { add(it) } }
+
+        private fun networkNotification(sid: String, type: NetworkType) = JsonObject().apply {
+            addProperty("jsb", "1.0")
+            add("meta", JsonObject().apply { addProperty("sid", sid) })
+            add("rpc", JsonObject().apply {
+                addProperty("jsonrpc", "2.0")
+                addProperty("method", "bridge.event")
+                add("params", JsonObject().apply {
+                    addProperty("name", NETWORK_CHANGED)
+                    add("payload", type.snapshot())
+                })
+            })
+        }.toString()
 
         private fun failure(id: String, sid: String?, code: Int, message: String, data: JsonObject? = null) =
             response(id, sid, "error", JsonObject().apply {

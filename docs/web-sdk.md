@@ -4,7 +4,7 @@
 
 ## 1. 公共 API
 
-当前 M1 实现提供 `createBridge`、默认 `bridge`、`ready`、`has` 和 `call`。本节也列出后续里程碑的事件、流式回调、反向调用和 codegen API。
+当前实现提供 `createBridge`、默认 `bridge`、`ready`、`has`、`call` 和事件相关的 `on`、`off`、`hasEvent`。浏览器 Mock 可用于事件联调。原生宿主的事件能力以握手声明为准。此处还展示了后续的流式回调、反向调用和 codegen 设计。
 
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后发送排队的请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
@@ -13,13 +13,16 @@ import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
 await bridge.ready();                                   // 握手完成（或降级判定完成）
 
-if (bridge.has('device.getInfo')) {
-  const info = await bridge.call('device.getInfo', { fields: ['os', 'model'] }, { timeout: 3000 });
+if (bridge.has('device.getInfo', 1)) {
+  const info = await bridge.call('device.getInfo', {}, { timeout: 3000 });
   // info 的类型由 codegen 推导：DeviceGetInfoResult
 }
 
-const off = bridge.on('network.changed', (e) => console.log(e.type));
-off();                                                   // 或 bridge.off('network.changed', handler)
+if (bridge.hasEvent('network.changed')) {
+  const off = bridge.on<{ type: string }>('network.changed', (e) => console.log(e.type));
+  await off.ready;
+  off();                                                 // 或 bridge.off('network.changed', handler)
+}
 
 // 取消
 const ac = new AbortController();
@@ -60,6 +63,11 @@ export interface CallOptions<C = unknown> {
   onCallback?: (chunk: C, seq: number) => void;
 }
 
+export interface EventSubscription {
+  (): void;
+  readonly ready: Promise<void>;
+}
+
 export interface Bridge {
   readonly state: 'idle' | 'connecting' | 'ready' | 'unavailable';
   readonly host?: HostInfo;
@@ -69,8 +77,9 @@ export interface Bridge {
   call<M extends keyof MethodMap>(method: M, params?: MethodMap[M]['params'], opts?: CallOptions): Promise<MethodMap[M]['result']>;
   call<T = unknown>(method: string, params?: Record<string, unknown>, opts?: CallOptions): Promise<T>; // 未声明的扩展 method
 
-  on<E extends keyof EventMap>(event: E, fn: (p: EventMap[E]) => void): () => void;
-  on(event: string, fn: (p: unknown) => void): () => void;
+  hasEvent(event: string): boolean;
+  on<E extends keyof EventMap>(event: E, fn: (p: EventMap[E]) => void): EventSubscription;
+  on<T = unknown>(event: string, fn: (p: T) => void): EventSubscription;
   off(event: string, fn?: (p: any) => void): void;
   emit(event: string, params?: Record<string, unknown>): void;      // Web → Host event
 
@@ -175,27 +184,25 @@ sequenceDiagram
 ### 2.4 事件多路复用
 
 ```ts
-class Events {
-  private listeners = new Map<string, Set<Function>>();
-  on(name: string, fn: Function) {
-    let set = this.listeners.get(name);
-    if (!set) { set = new Set(); this.listeners.set(name, set); this.core.request('bridge.subscribe', { events: [name] }).catch(this.warn); }
-    set.add(fn);
-    return () => this.off(name, fn);
-  }
-  off(name: string, fn?: Function) {
-    const set = this.listeners.get(name); if (!set) return;
-    fn ? set.delete(fn) : set.clear();
-    if (set.size === 0) { this.listeners.delete(name); this.core.request('bridge.unsubscribe', { events: [name] }).catch(() => {}); }
-  }
-  dispatch(name: string, payload: unknown) {
-    this.listeners.get(name)?.forEach((fn) => { try { fn(payload); } catch (e) { queueMicrotask(() => { throw e; }); } });
-  }
+const off = bridge.on<{ type: string }>('network.changed', ({ type }) => {
+  console.log(type);
+});
+
+try {
+  await off.ready;
+} catch (error) {
+  off();
+  throw error;
 }
+
+// 页面组件卸载时调用 off()
 ```
 
-- 监听者异常不影响其他监听者，并重新抛到全局（`window.onerror` 可见）。
-- 重新握手（bfcache 恢复、Host 重建会话）后，SDK 自动把当前 `listeners` 的 key 重新 `bridge.subscribe`。
+`on()` 注册本地监听并启动握手和订阅。返回的 `off` 可以直接用来清理监听。它的 `ready` Promise 在宿主首次确认订阅后完成。宿主未声明该事件时，`ready` 以 `-32601` 拒绝。宿主明确拒绝订阅时使用 `-32003`。首次确认前调用 `off()` 会以 `-32002` 结束这次注册。
+
+- `await bridge.ready()` 后可以用 `bridge.hasEvent(name)` 查询当前宿主声明。订阅许可仍以 `off.ready` 的结果为准。
+- 同一事件的监听者共用一次远端订阅。`bridge.off(name, listener)` 移除指定监听，`bridge.off(name)` 移除该事件的全部监听。最后一个监听移除时，SDK 发送退订。
+- SDK 只分发当前会话中已获确认的事件。`pagehide` 后旧会话的通知失效。页面从 bfcache 恢复并重新握手时，SDK 为仍注册的监听重新订阅。
 
 ### 2.5 生命周期处理
 
@@ -216,7 +223,6 @@ const bridge = createBridge({
   fallback: new BrowserFallbackAdapter({
     polyfills: {
       'ui.toast.show': ({ text }) => { alert(text); },
-      'device.getInfo': () => ({ os: 'web', model: navigator.userAgent }),
     },
   }),
 });
@@ -285,7 +291,7 @@ const host = installMockHost({
   latency: [20, 80],                                  // 随机延迟，暴露竞态
   acl: { origins: [location.origin], allow: ['*'] },
 });
-host.register('device.getInfo', () => ({ os: 'ios', model: 'iPhone' }));
+host.register('device.getInfo', () => ({ os: 'ios', osVersion: '27.2' }));
 host.register('media.chooseImage', async (_p, ctx) => { ctx.callback({ selected: 1 }); return { images: [] }; });
 host.emit('network.changed', { type: 'wifi' });
 host.failNext('acme.pay.create', { code: -32007, message: 'User denied' });

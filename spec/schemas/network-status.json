@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:schema/network.status",
+  "title": "NetworkStatus",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": false,
+  "properties": {
+    "type": { "enum": ["wifi", "cellular", "ethernet", "other", "none", "unknown"] }
+  }
+}

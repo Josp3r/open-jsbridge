@@ -119,8 +119,8 @@ sequenceDiagram
 ## 6. Handler 注册
 
 ```kotlin
-@Serializable data class DeviceGetInfoParams(val fields: List<String>? = null)
-@Serializable data class DeviceGetInfoResult(val os: String, val osVersion: String, val model: String)
+@Serializable class DeviceGetInfoParams
+@Serializable data class DeviceGetInfoResult(val os: String, val osVersion: String)
 
 interface BridgeHandler<P : Any, R : Any> {
     val method: String
@@ -154,7 +154,7 @@ object DeviceGetInfo : BridgeHandler<DeviceGetInfoParams, DeviceGetInfoResult> {
     override val paramsSerializer = DeviceGetInfoParams.serializer()
     override val resultSerializer = DeviceGetInfoResult.serializer()
     override suspend fun handle(params: DeviceGetInfoParams, version: Int, ctx: BridgeContext) =
-        DeviceGetInfoResult(os = "android", osVersion = Build.VERSION.RELEASE, model = Build.MODEL)
+        DeviceGetInfoResult(os = "android", osVersion = Build.VERSION.RELEASE)
 }
 ```
 
@@ -250,7 +250,9 @@ internal fun push(env: Envelope, target: FrameTarget.Proxy) {
 
 WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，这也是首选它的理由之一。
 
-开放事件通知、进度通知或反向请求前，真机测试须确认在导航竞态下，旧 proxy 的消息无法进入新 document。
+参考宿主通过文档确认时取得的 reply proxy 投递 `network.changed`。在投递前检查当前会话与订阅，shim 校验同一个文档标记。Android Emulator 中的 WebView 测试覆盖退订、会话失效和同源文档替换。开放其他通知或反向请求时，沿用文档定向并验证对应的生命周期。
+
+[参考宿主](../examples/native-android/app/src/main/java/dev/openjsbridge/example/DocumentTransport.kt) · [原生基础能力](native-profiles.md)
 
 ## 8. 大数据
 

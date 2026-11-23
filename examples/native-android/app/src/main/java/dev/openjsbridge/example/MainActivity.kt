@@ -29,7 +29,12 @@ class MainActivity : Activity() {
             allowFileAccess = false
             allowContentAccess = false
         }
-        val attachment = AndroidBridge.attach(demo, AndroidBridge.DEMO_ORIGIN)
+        val network = AndroidNetwork(this)
+        val attachment = AndroidBridge.attach(demo, AndroidBridge.DEMO_ORIGIN, BridgeModules(
+            device = androidDeviceModule(),
+            network = network,
+            networkEvents = network.events,
+        ))
         if (attachment == null) {
             demo.destroy()
             webView = null

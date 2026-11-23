@@ -51,7 +51,7 @@ installMockTransport();
 
 在 [iOS 示例](../native-ios/README.md) 和 [Android 示例](../native-android/README.md) 中打开同一页面。两个示例都使用 `/?host=native`，只等 WebView 注入的真实通道。发送 echo 后，页面显示宿主名称和返回值。JSON-RPC 消息面板在浏览器 Mock 模式下显示。
 
-App 向 WebView 注入 `window.__OJSB_TRANSPORT__` 并声明支持的业务方法。Web 页面导入默认 `bridge` 单例后可以直接调用。SDK 在第一次 `call()` 时自动连接和握手，并在发送请求前检查能力。原生示例提供同一个 echo 方法。
+App 向 WebView 注入 `window.__OJSB_TRANSPORT__` 并声明支持的业务方法。Web 页面导入默认 `bridge` 单例后可以直接调用。SDK 在第一次 `call()` 时自动连接和握手，并在发送请求前检查能力。点击「查询设备信息」或「查询网络状态」可查看可选模块的返回值。[原生基础能力](../../docs/native-profiles.md)
 
 ```js
 import { bridge } from '/dist/packages/web-sdk/src/index.js';
@@ -63,4 +63,22 @@ const result = await bridge.call('conformance.echo', { text: '你好' });
 
 ## 订阅宿主事件
 
-当前 M1 SDK 尚未提供事件订阅 API。M2 设计中，`bridge.on(name, listener)` 注册监听并返回取消订阅函数，也可以调用 `bridge.off(name, listener)` 移除监听。[Web SDK 事件设计](../../docs/web-sdk.md#24-事件多路复用)
+在浏览器 Demo 的事件区订阅 `network.changed`，然后点击「切换 Mock 网络」，可以看到业务收到的 payload 和原始 `bridge.event` 通知。退订后可以再切换一次，确认监听结果保持不变。查询网络状态仍会返回当前值。
+
+```js
+const off = bridge.on('network.changed', ({ type }) => {
+  console.log('当前网络', type);
+});
+
+try {
+  await off.ready;
+} catch (error) {
+  off();
+  throw error;
+}
+
+// 组件卸载时
+off();
+```
+
+`off.ready` 可以观察握手失败、宿主未声明事件和订阅被拒绝。在原生示例里，握手后会显示宿主已声明的事件。订阅后切换设备网络即可观察事件。[Web SDK 事件用法](../../docs/web-sdk.md#24-事件多路复用)

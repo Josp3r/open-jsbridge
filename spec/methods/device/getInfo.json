@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/device.getInfo",
+  "title": "device.getInfo",
+  "description": "获取宿主设备的操作系统和版本。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": { "type": "object", "maxProperties": 0 },
+  "result": {
+    "type": "object",
+    "required": ["os", "osVersion"],
+    "additionalProperties": false,
+    "properties": {
+      "os": { "enum": ["ios", "android"] },
+      "osVersion": { "type": "string", "minLength": 1 }
+    }
+  }
+}

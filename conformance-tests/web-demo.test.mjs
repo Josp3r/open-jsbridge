@@ -27,10 +27,16 @@ test('native-mode demo does not hide a missing host by installing Mock', async (
   assert.equal(window.__OJSB_TRANSPORT__, undefined);
 });
 
-test('shared demo sends its first call through the injected Native transport', async (t) => {
+test('shared demo uses the injected Native transport for calls and events', async (t) => {
   const { window, element } = demoPage(t, '?host=native');
   const { createMockAdapter } = await import('../dist/packages/web-mock/src/index.js');
-  const adapter = createMockAdapter();
+  const adapter = createMockAdapter({
+    deviceInfo: { os: 'ios', osVersion: '27.2' },
+    getNetworkStatus: () => ({ type: 'wifi' }),
+    events: ['network.changed'],
+  });
+  const unlisten = adapter.listen((raw) => window.__OJSB_RECEIVE__(raw));
+  t.after(unlisten);
   const methods = [];
   const transport = Object.freeze({
     name: 'ios-wk',
@@ -57,4 +63,26 @@ test('shared demo sends its first call through the injected Native transport', a
   assert.deepEqual(methods, ['bridge.hello', 'conformance.echo']);
   assert.deepEqual(JSON.parse(element('#result').textContent), expected);
   assert.equal(element('#connection-status').dataset.platform, 'ios');
+
+  element('#device-info').dispatchEvent(new Event('click'));
+  await setImmediate();
+  assert.deepEqual(JSON.parse(element('#result').textContent), { os: 'ios', osVersion: '27.2' });
+  element('#network-status').dispatchEvent(new Event('click'));
+  await setImmediate();
+  assert.deepEqual(JSON.parse(element('#result').textContent), { type: 'wifi' });
+  assert.equal(element('#event-demo').hidden, false);
+  assert.equal(element('#emit-event').hidden, true);
+
+  element('#toggle-event').dispatchEvent(new Event('click'));
+  await setImmediate();
+  assert.equal(element('#event-status').textContent, '已订阅');
+  assert.equal(adapter.emit('network.changed', { type: 'cellular' }), true);
+  assert.deepEqual(JSON.parse(element('#event-result').textContent), { type: 'cellular' });
+  element('#toggle-event').dispatchEvent(new Event('click'));
+  await setImmediate();
+  assert.equal(adapter.emit('network.changed', { type: 'none' }), false);
+  assert.deepEqual(methods, [
+    'bridge.hello', 'conformance.echo', 'device.getInfo', 'network.getStatus',
+    'bridge.subscribe', 'bridge.unsubscribe',
+  ]);
 });

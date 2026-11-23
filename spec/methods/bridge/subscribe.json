@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/bridge.subscribe",
+  "title": "bridge.subscribe",
+  "description": "在当前会话订阅事件，返回已订阅和被拒绝的事件。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "required": [
+      "events"
+    ],
+    "properties": {
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$"
+        },
+        "uniqueItems": true,
+        "minItems": 1
+      }
+    }
+  },
+  "result": {
+    "type": "object",
+    "required": [
+      "subscribed",
+      "denied"
+    ],
+    "properties": {
+      "subscribed": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$"
+        },
+        "uniqueItems": true
+      },
+      "denied": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$"
+        },
+        "uniqueItems": true
+      }
+    }
+  }
+}

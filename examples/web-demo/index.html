@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="在浏览器和原生 WebView 中体验 Open JSBridge Web SDK 的自动握手和 echo 调用。">
+    <meta name="description" content="体验 Open JSBridge 的自动握手、设备和网络查询，以及宿主事件订阅。">
     <title>Web 快速起步 · Open JSBridge</title>
     <link rel="stylesheet" href="./tokens.css">
     <link rel="stylesheet" href="./styles.css">
@@ -19,7 +19,7 @@
     <main class="container">
       <div class="intro">
         <h1>Web 快速起步</h1>
-        <p id="demo-description">页面启动时注入 Mock 通道。直接发送 echo，查看 SDK 自动握手和调用的 JSON-RPC 消息。</p>
+        <p id="demo-description">页面启动时注入 Mock 通道。查询设备、查看网络状态或订阅网络变化，观察对应的 JSON-RPC 消息。</p>
       </div>
       <noscript>开启 JavaScript 后可试用下方示例。接入代码仍可查看。</noscript>
 
@@ -39,10 +39,27 @@
             </div>
           </form>
 
+          <div class="actions">
+            <button class="key" id="device-info" type="button" disabled>查询设备信息</button>
+            <button class="key" id="network-status" type="button" disabled>查询网络状态</button>
+          </div>
+
           <div class="result">
             <h3>SDK 返回</h3>
-            <pre id="result" role="status" tabindex="0">发送 echo 或手动握手后显示结果。</pre>
+            <pre id="result" role="status" tabindex="0">等待首次调用。</pre>
           </div>
+
+          <section class="result event-demo" id="event-demo" aria-labelledby="event-title" hidden>
+            <div class="section-heading">
+              <h3 id="event-title"><code>network.changed</code></h3>
+              <p id="event-status" class="connection-status" role="status">未订阅</p>
+            </div>
+            <div class="actions">
+              <button class="key" id="toggle-event" type="button" disabled>订阅事件</button>
+              <button class="key" id="emit-event" type="button" disabled hidden>切换 Mock 网络</button>
+            </div>
+            <pre id="event-result" role="status" tabindex="0">订阅后显示网络变化。</pre>
+          </section>
         </section>
 
         <section class="inspector" aria-labelledby="wire-title" id="inspector">
@@ -59,6 +76,10 @@
               <h3 id="response-title">Mock 响应</h3>
               <pre id="response" aria-labelledby="response-title" tabindex="0">等待宿主响应。</pre>
             </div>
+          </div>
+          <div class="frame notification-frame">
+            <h3 id="event-frame-title">最近的 Mock 事件通知</h3>
+            <pre id="event-frame" aria-labelledby="event-frame-title" tabindex="0">等待事件通知。</pre>
           </div>
         </section>
       </div>
