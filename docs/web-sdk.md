@@ -4,6 +4,8 @@
 
 ## 1. 公共 API
 
+当前 M1 实现提供 `createBridge`、默认 `bridge`、`ready`、`has` 和 `call`。本节也列出后续里程碑的事件、流式回调、反向调用和 codegen API。
+
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
@@ -49,7 +51,7 @@ export interface EventMap {
 }
 
 export interface CallOptions<C = unknown> {
-  timeout?: number;                 // ms；0 = 不超时（仅 long-running method）
+  timeout?: number;                 // ms；M1 接受正整数
   signal?: AbortSignal;
   traceId?: string;
   version?: number;                 // 显式 method 版本，等价于 'x.y@2'
@@ -105,99 +107,38 @@ flowchart TB
 
 ```ts
 export interface Adapter {
-  readonly name: string;
-  /** 是否可用（同步检测）；用于自动选择 */
-  detect(): boolean;
+  readonly name?: string;
+  readonly protocols?: readonly number[];
+  detect?(): boolean;
   /** 发送；若返回 Promise<string>，Core 将其视为该 request 的 response */
   send(raw: string): void | Promise<string | null>;
   /** 注册接收回调，返回注销函数 */
   listen(onMessage: (raw: string) => void): () => void;
-  dispose?(): void;
-}
-
-export class InjectedShimAdapter implements Adapter {
-  readonly name = 'shim';
-  detect() { return typeof window !== 'undefined' && !!window.__OJSB_TRANSPORT__; }
-  send(raw: string) { return window.__OJSB_TRANSPORT__!.postMessage(raw); }
-  listen(onMessage: (raw: string) => void) {
-    // 用 defineProperty 安装接收函数；shim 端的 setter 会冲刷缓冲（protocol T3）
-    window.__OJSB_RECEIVE__ = onMessage;
-    return () => { if (window.__OJSB_RECEIVE__ === onMessage) window.__OJSB_RECEIVE__ = undefined; };
-  }
 }
 ```
 
 - **平台差异全部下沉到 Host shim**：iOS 的 `webkit.messageHandlers.x.postMessage` 返回 Promise、Android `addWebMessageListener` 对象的 `postMessage + onmessage`、Flutter/RN 的通道，都由各自 shim 适配成同一个 `OJSBTransport`。因此新增宿主（如 Flutter、RN、鸿蒙 ArkWeb）**不需要改 SDK**。
-- 自动选择顺序：`options.adapter` > `InjectedShimAdapter`（检测到 shim） > 等待 `ojsb:transportready` 至 `handshakeTimeout` > `BrowserFallbackAdapter`。
+- 自动选择顺序为显式 `options.adapter`、已注入的 shim、等待 `ojsb:transportready`。等待超时后 bridge 进入 unavailable，浏览器 polyfill 留待后续。
+- SDK 独立跟踪当前 window 的接收器所有权。卸载时只移除该实例持有的接收器，以兼容返回缓冲转发函数的 shim getter。页面内多个 SDK 实例应各自使用显式 Adapter。
 
-### 2.2 Core：pending、id、超时
+### 2.2 Core：pending、id、超时与会话
 
-```ts
-type Pending = {
-  resolve: (v: unknown) => void;
-  reject: (e: BridgeError) => void;
-  timer?: ReturnType<typeof setTimeout>;
-  onCallback?: (c: unknown, seq: number) => void;
-  lastSeq: number;
-  method: string;
-  t0: number;
-  traceId: string;
-};
+Web SDK 和 Mock 共用 [TypeScript codec](../packages/protocol/src/index.ts)。应用仍通过 `bridge.call(method, params, options)` 发起调用。发送时把 JSON-RPC 2.0 request 放进 `rpc`，由外层 `meta` 携带会话与剩余超时。
 
-class Core {
-  private pending = new Map<string, Pending>();
-  private seq = 0;
-  private sid?: string;
-  private readonly prefix = 'w-' + rand(4);           // 每个 Core 实例随机前缀，避免多 SDK 实例冲突
-
-  private nextId() { return `${this.prefix}-${++this.seq}`; }
-
-  request(method: string, params: object = {}, opts: CallOptions = {}): Promise<unknown> {
-    if (opts.signal?.aborted) return Promise.reject(err(ErrorCode.Cancelled, method));
-    const id = this.nextId();
-    const timeout = opts.timeout ?? this.limits.defaultTimeoutMs;
-    const traceId = opts.traceId ?? randHex(32);
-
-    return new Promise((resolve, reject) => {
-      const p: Pending = { resolve, reject, method, lastSeq: -1, t0: now(), traceId, onCallback: opts.onCallback };
-      if (timeout > 0) p.timer = setTimeout(() => this.fail(id, ErrorCode.Timeout, true), timeout);
-      opts.signal?.addEventListener('abort', () => this.fail(id, ErrorCode.Cancelled, true), { once: true });
-      this.pending.set(id, p);
-
-      const env = { jsb: this.version, id, type: 'request', method, params,
-                    meta: { sid: this.sid, traceId, ts: Date.now(), timeout } };
-      this.enqueueOrSend(env);                          // ready 前进入队列
-    });
-  }
-
-  private fail(id: string, code: ErrorCode, sendCancel: boolean) {
-    const p = this.pending.get(id); if (!p) return;
-    this.settle(id);
-    p.reject(err(code, p.method, p.traceId));
-    if (sendCancel) this.post({ jsb: this.version, id, type: 'cancel', meta: { sid: this.sid } });
-  }
-
-  onRaw(raw: string) {
-    let env: Envelope;
-    try { env = JSON.parse(raw); } catch { return this.log('drop', 'parse_error'); }
-    if (env.meta?.sid && this.sid && env.meta.sid !== this.sid) return this.log('drop', 'stale_session');
-    switch (env.type) {
-      case 'response': return this.onResponse(env);
-      case 'callback': return this.onCallback(env);
-      case 'event':    return this.events.dispatch(env.method!, env.params);
-      case 'request':  return this.reverse.dispatch(env);   // Host→Web 反向调用
-      case 'cancel':   return this.reverse.cancel(env.id!);
-    }
-  }
+```json
+{
+  "jsb": "1.0",
+  "meta": { "sid": "s-01", "timeout": 4800 },
+  "rpc": { "jsonrpc": "2.0", "id": "w-42", "method": "conformance.echo", "params": { "text": "你好" } }
 }
 ```
 
-要点：
-
-- **id**：`w-<随机4位>-<自增>`；不使用 `Date.now()` 或 `Math.random()` 单独生成，避免碰撞与不可读。
-- **定时器**只在 Web 端维护（调用方负责 deadline，协议 D1/D2）。
-- **reply 通道**：`send()` 返回 Promise 时（iOS WithReply），把 resolve 的字符串交给 `onRaw` 走同一解析路径，保证行为一致。
-- 结算后 `pending.delete`，迟到的 response 被丢弃并在 debug 日志记录 `phase: drop`。
+- 把请求登记到 pending 时启动基于单调时钟的超时计时，并安装 `AbortSignal` 监听。响应、发送失败、超时或取消都会移除 pending、定时器和监听。同一请求只结算一次。
+- Adapter 的 Promise 回复与 push 共用接收路径。先校验信封和 RPC 结构，随后验证会话。只有当前会话中已发送、仍有效并匹配 `rpc.id` 的响应才能结算调用。`rpc.id: null` 仅用于协议诊断。
+- `bridge.hello` 直接发送。握手的响应按本次尝试的 id 与 deadline 匹配。成功时校验 `rpc.result.sid`、协商版本、能力和限制，响应外层若提供 `meta.sid` 则须与结果一致。旧握手响应无法建立会话。
+- 对已发出的请求，取消使用无 RPC id 的 `bridge.cancel` notification，`rpc.params.requestId` 是原请求 id。SDK 仅向原活动会话发送取消。
+- M2 通知分发器将显式处理 `bridge.event` 与 `bridge.progress`。进度通过 `rpc.params.requestId` 和 `seq` 关联，最终结果仍由一次普通 response 结束。
+- M1 按协商的 `maxMessageBytes` 检查完整信封的 UTF-8 字节数。发送端在超限时以 `-32006` 本地结算，接收端在解析前丢弃超限帧。按 `maxInflight` 排队和 schema 授权的无超时长任务留待后续。
 
 ### 2.3 Pre-ready 队列
 
@@ -211,19 +152,22 @@ sequenceDiagram
   B->>S: call B
   S->>S: queue.push(B)
   S->>H: bridge.hello
-  H-->>S: { sid, capabilities }
+  S->>S: A 的 deadline 到达 → 移出队列
+  S-->>B: A reject -32001
+  H-->>S: 有效 hello 响应 { sid, capabilities }
   loop 冲刷
-    S->>S: 补上 meta.sid，检查 capabilities
+    S->>S: 核对 pending 与剩余时间，检查 capabilities
     alt method 不可用
       S-->>B: reject -32601（不发送）
     else
-      S->>H: A, B
+      S->>H: B（当前 sid 与剩余 timeout）
     end
   end
 ```
 
 - 队列上限默认 100，溢出 reject `-32005`。
-- 超时计时从业务调用时开始（用户感知的就是这段时间），握手慢会吃掉部分 timeout。
+- deadline 从业务调用时开始。冲刷时按入队顺序从队列移除各项，再调用 `sendRequest` 跳过已结算的项，检查剩余时间和能力。若 deadline 已到，即使定时器回调尚未运行，也立即 reject `-32001`。发出时 `meta.ts` 写入发送时刻，`meta.timeout` 写入剩余时间。定时器仍按原 deadline 运行。
+- 入队后发生 abort 或超时，SDK 分别以 `-32002` / `-32001` 在本地结算并移除该项，尚未发出的调用不发送 wire `cancel`。已发出的调用只向原会话发送 `cancel`，会话失效后直接完成本地清理。
 - 降级判定为 `unavailable` 时，队列中所有调用 reject `-32000`。
 
 ### 2.4 事件多路复用
@@ -254,9 +198,12 @@ class Events {
 ### 2.5 生命周期处理
 
 ```ts
-addEventListener('pagehide', () => core.rejectAll(ErrorCode.Cancelled));
+addEventListener('pagehide', () => core.invalidateSession());
 addEventListener('pageshow', (e) => { if (e.persisted) core.rehandshake(); });
 ```
+
+- `invalidateSession()` 先清除活动会话、能力和握手尝试，再用 `-32002` 结算出站 pending 和队列，并取消旧会话中的 Web handler。旧 handler 完成后不向新会话发送响应。
+- `rehandshake()` 先使任何旧会话与握手失效，再发起新的 `bridge.hello`。仅在验证新尝试的响应后恢复业务消息分派，并重新订阅当前监听的事件。
 
 ## 3. 降级与 polyfill
 
@@ -359,16 +306,16 @@ export interface BridgePlugin {
 
 ## 7. 单元测试
 
-- 框架：Vitest + jsdom（或 happy-dom）。
+- 当前使用 Node test runner。仓库根目录执行 `npm ci`、`npm test`，编译 TypeScript 后运行 JSON 信封样例和 SDK ↔ Mock 用例。浏览器与真实 WebView 用例在对应宿主接入时加入。
 - 覆盖点（与 conformance 用例 id 对应）：
   - id 唯一性、并发 1000 次调用无串号
   - 超时触发 → reject -32001 → 发送 cancel；迟到 response 被丢弃
   - AbortSignal 取消（调用前已 abort / 调用中 abort）
-  - pre-ready 队列：顺序、溢出、握手失败全部 reject
+  - pre-ready 队列：顺序、溢出、握手失败全部 reject，等待握手时超时或 abort 不发送 request/cancel，剩余 timeout 随发出时写入
   - 能力过滤：未广告 method 不发送
   - reply 通道（send 返回 Promise）与异步通道行为一致（同一组用例参数化跑两遍）
   - 事件引用计数订阅/退订、重新握手后重新订阅
-  - stale sid 消息丢弃
+  - 握手前的会话消息、活动会话中缺少 SID 或 SID 不匹配的消息、迟到的 hello 都被丢弃
   - pagehide / bfcache 恢复
 - 使用 fake timers 测试超时；用 mock host 的 `latency` 做随机化"模糊测试"。
 - 覆盖率门槛：core 行覆盖 ≥ 95%。

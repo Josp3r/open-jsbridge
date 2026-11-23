@@ -25,7 +25,7 @@ flowchart LR
 协议分三层：
 
 1. **Transport 层**：把一个 UTF-8 JSON **字符串**从一端送到另一端。由各平台 Channel 实现（§2）。
-2. **Envelope 层**：消息信封、类型、关联 id、错误（§3–§5）。
+2. **Envelope 层**：Open JSBridge 信封、JSON-RPC 2.0 请求与通知、关联 id 和错误（§3–§5）。
 3. **Semantics 层**：握手、能力协商、事件、取消、大数据、安全、生命周期（§6–§13）。
 
 ---
@@ -34,8 +34,8 @@ flowchart LR
 
 1. 所有跨端调用 MUST 是异步的。实现 MUST NOT 提供依赖阻塞 JS 线程的同步 API。
 2. Wire 格式 MUST 是 UTF-8 JSON 文本（一个完整 JSON object 对应一条消息）。Transport 即便支持结构化对象（如 `WKScriptMessage.body` 可传 JS 对象），参考实现也 SHOULD 统一传字符串，以保证三端解析行为一致（数字精度、`undefined`、`Date` 等边界一致）。
-3. 消息体 MUST 是 JSON object，MUST NOT 依赖 key 顺序。
-4. 整数超过 2^53−1 的值 MUST 以字符串传输。
+3. 一条消息 MUST 是一个 JSON object，包含一个 JSON-RPC 2.0 对象。v1 在信封层和 `rpc` 层均不支持批量消息。接收方 MUST NOT 依赖字段顺序。
+4. 整数超出 JavaScript 安全整数范围（−(2^53−1) 至 2^53−1）时 MUST 以字符串传输。JSON 数字须能以有限值解码。
 
 ---
 
@@ -52,8 +52,8 @@ interface OJSBTransport {
   readonly protocols: readonly number[];
   /**
    * 发送一条消息（JSON 字符串）。
-   * - 若通道原生支持 reply（如 WKScriptMessageHandlerWithReply），MAY 返回 Promise<string>，
-   *   resolve 值为与本 request 对应的 response 信封字符串。
+   * - 若通道原生支持 reply（如 WKScriptMessageHandlerWithReply），MAY 返回 Promise<string | null>。
+   *   有 RPC 应答时返回 response 信封字符串。无应答时返回 null（例如 notification）。
    * - 否则返回 void，response 通过 __OJSB_RECEIVE__ 异步投递。
    */
   postMessage(message: string): void | Promise<string | null>;
@@ -83,45 +83,53 @@ declare global {
 
 ```jsonc
 {
-  "jsb": "1.0",                    // MUST，协议版本 MAJOR.MINOR
-  "id": "s7f3k2-42",               // request/response/callback/cancel MUST；event MAY 省略
-  "type": "request",               // MUST：request | response | event | callback | cancel
-  "method": "device.getInfo",      // request MUST；event MUST（事件名）；其它 MUST NOT
-  "params": { "fields": ["os"] },  // request/event MAY；MUST 为 object（不允许 array，便于演进）
-  "result": { },                   // response 成功 MUST；callback MAY
-  "error": { "code": -32601, "message": "Method not found", "data": { } }, // response 失败 MUST
-  "meta": {                        // MAY，但参考实现 SHOULD 总是填写
-    "sid": "a1b2c3",               // 会话 id（每个 document 一次握手生成，§6）
-    "traceId": "4bf92f3577b34da6a3ce929d0e0e4736", // §14
-    "ts": 1763880000123,           // 发送方 epoch ms
-    "timeout": 10000,              // request：调用方 deadline（ms），被调方 MAY 用于提前放弃
-    "seq": 3,                      // callback：同一 id 下的序号，从 0 递增
-    "final": false                 // callback：是否最后一条（true 后紧跟或替代 response，§8）
+  "jsb": "1.0",
+  "meta": {
+    "sid": "a1b2c3",
+    "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "ts": 1763880000123,
+    "timeout": 10000
+  },
+  "rpc": {
+    "jsonrpc": "2.0",
+    "method": "device.getInfo",
+    "id": "w-a1b2-42",
+    "params": { "fields": ["os"] }
   }
 }
 ```
 
-- `result` 与 `error` 在同一 response 中 MUST 恰好出现一个。
-- 未知的顶层字段 MUST 被忽略（向前兼容），未知的 `meta` 字段 MUST 被忽略。
-- 信封的权威 JSON Schema 位于 `spec/protocol/envelope.schema.json`。
+- v1 消息 MUST 带 `jsb: "1.0"` 和 `rpc` 对象。`rpc.jsonrpc` MUST 为 `"2.0"`。`jsb` 标识外层 OJSB 协议版本，`jsonrpc` 标识内部 RPC 格式。
+- `meta` MAY 省略。若存在，MUST 为对象。`meta.sid` 若存在 MUST 为非空字符串，会话内消息始终携带它（§6.2）。`meta.timeout` 与 `meta.ts` 若存在 MUST 为非负整数，分别表示剩余超时毫秒数与发送方 epoch 毫秒时间戳（§7）。`meta.traceId` 若存在 MUST 为字符串（§14）。
+- 接收方 MUST 忽略未知的信封字段与 `meta` 字段。`rpc` 及 `rpc.error` 只接受 §3.2 和 §4.1 列出的字段。实现可在校验后为内部消息设置类型标记。
+- 信封 JSON Schema 位于 `spec/protocol/envelope.schema.json`。会话、权限和分派规则由运行时执行。
 
 ### 3.2 消息类型
 
-| type | 方向 | 含义 | 是否需要应答 |
-|------|------|------|------------|
-| `request` | 双向（Web→Host 为主；Host→Web 用于 Web 注册的 handler） | 调用一个 method | MUST 有且仅有一个 `response` |
-| `response` | 与 request 相反 | 调用结果，`id` 与 request 相同 | 否 |
-| `callback` | 与 request 相反 | 同一 request 的**中间结果/进度/流**（如下载进度、扫码连续结果） | 否 |
-| `event` | 双向（Host→Web 为主） | 无需应答的通知（如 `app.didEnterBackground`） | 否 |
-| `cancel` | 与 request 同向 | 请求取消某个进行中的 `id` | 否（被取消方 SHOULD 以 `-32002 Cancelled` 结束该 request） |
+接收方 MUST 校验 `rpc` 的字段组合来识别消息。以下各类均包含 `jsonrpc`。
 
-> 说明：JSON-RPC 用 "notification" 表示无 id 的请求；OJSB 用显式 `type: "event"` 代替，语义更清楚，也避免"忘写 id 变成通知"的误用。
+| 消息 | 其余允许字段 | 规则 |
+|------|------------|------|
+| Request | `method`、`id`、可选 `params` | `method` 遵循 §3.4。`id` MUST 为含 1 至 128 个 Unicode 码点的字符串，`params` 若存在 MUST 为对象 |
+| Notification | `method`、可选 `params` | `method` 遵循 §3.4。`params` 若存在 MUST 为对象。接收方始终不发送 RPC 应答 |
+| 成功 response | `id`、`result` | `id` MUST 与 request 的字符串 `id` 相同。`result` 可为任意 JSON 值，无返回值时 MUST 发送 `result: null` |
+| 错误 response | `id`、`error` | 已知 request 的字符串 `id` 时 MUST 原样回传。无法识别请求 id 时，按 §5 使用 `id: null`。`error` 遵循 §4.1 |
+
+通知只分派给以下保留控制处理器或显式注册的通知处理器。普通 RPC handler 的注册不会启用同名通知。缺少 `id` 的消息 MUST NOT 分派给普通 RPC handler。控制方法 MUST 以 notification 发送。
+
+| 控制方法 | `params` 对象 |
+|----------|---------------|
+| `bridge.event` | 必填 `name`（事件名）和 `payload`（任意 JSON 值），见 §9 |
+| `bridge.cancel` | 必填 `requestId`（非空字符串），可选 `reason`（字符串），见 §7 |
+| `bridge.progress` | 必填 `requestId`（非空字符串）和 `seq`（从 0 开始递增的非负整数），可选 `chunk`（任意 JSON 值），见 §8 |
+
+通知处理前仍须校验会话、方向、参数和权限。接收方 MUST 丢弃未知或不允许的通知。
 
 ### 3.3 id 规则
 
-- `id` MUST 是字符串，在一个会话（`sid`）内、同一发起方向上 MUST 唯一。
+- `rpc.id` 在一个会话（`sid`）内、同一发起方向上 MUST 唯一。握手请求的 id 在同一 document 内的握手尝试间 MUST 唯一。
 - 推荐格式：`<发起方前缀><sid 片段>-<自增计数>`，如 Web 发起 `w-a1b2-42`，Host 发起 `n-a1b2-7`，避免双向 request 的 id 冲突。
-- 接收方 MUST 拒绝在同一会话中重复的 request id（返回 `-32600`，`data.reason = "duplicate_id"`），这是防重放的一部分（§11.6）。
+- 接收方 MUST 在分派前登记请求 id，并在同一会话和方向上静默丢弃重复请求。握手请求按发起 document 去重。重复请求不得触发 handler 或产生任何 RPC 应答，以保护原调用的结算（§11.6）。
 
 ### 3.4 Method 命名
 
@@ -131,19 +139,22 @@ declare global {
 
 | 命名空间 | 用途 |
 |---------|------|
-| `bridge.*` | 握手、能力、订阅、心跳、调试 |
+| `bridge.*` | 握手、能力、订阅、控制通知、心跳、调试 |
 | `conformance.*` | 一致性测试，生产构建 MUST 关闭 |
 | `ojsb.*` | 未来扩展保留 |
+| `rpc.*` | JSON-RPC 保留，OJSB v1 禁止在 wire 消息中使用 |
 
 - 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。
 - 厂商/业务扩展 SHOULD 使用反域名或公司前缀：`acme.pay.create`，避免与未来标准冲突。
-- Method 版本：schema 中声明 `x-ojsb-version: 2`；调用时 MAY 写 `device.getInfo@2`，不写则为该 Host 广告的**最低**受支持版本（保证老调用方行为不变）。
+- Method 版本在 schema 中用 `x-ojsb-version` 声明。调用 MAY 写 `device.getInfo@2`。后缀使用无前导零的十进制正整数。省略时选择 Host 声明支持的最低版本。
 
 ---
 
 ## 4. 错误
 
 ### 4.1 错误对象
+
+`rpc.error` MUST 为对象，包含安全整数 `code`（§1）、字符串 `message` 和可选的 `data`。`data` 可为任意 JSON 值。OJSB 定义的结构化错误可用以下形式。
 
 ```jsonc
 {
@@ -165,7 +176,7 @@ declare global {
 | code | 名称 | 触发条件 |
 |------|------|---------|
 | -32700 | Parse error | 消息不是合法 JSON |
-| -32600 | Invalid request | 信封不符合 schema、重复 id、type 非法 |
+| -32600 | Invalid request | 信封或 RPC 字段组合不符合规范，如收到批量消息或使用 `rpc.*` 方法 |
 | -32601 | Method not found | method 未注册，或该版本不支持 |
 | -32602 | Invalid params | params 不符合 method schema |
 | -32603 | Internal error | handler 抛出未分类异常 |
@@ -176,9 +187,9 @@ declare global {
 |------|------|------|-----------|
 | -32000 | Bridge unavailable | 不在宿主中 / 通道不存在（SDK 本地产生） | 否 |
 | -32001 | Timeout | 超过 deadline（通常由调用方本地产生） | 视 method |
-| -32002 | Cancelled | 被 `cancel` 或页面卸载终止 | 否 |
+| -32002 | Cancelled | 被 `bridge.cancel` 或页面卸载终止 | 否 |
 | -32003 | Permission denied | origin / frame / ACL 校验失败 | 否 |
-| -32004 | Unsupported protocol | 协议主版本无交集 | 否 |
+| -32004 | Unsupported protocol | shim 或握手通告的协议主版本无交集 | 否 |
 | -32005 | Not ready | 握手未完成且未入队（如队列溢出） | 是 |
 | -32006 | Payload too large | 超过单消息上限（§10） | 否 |
 | -32007 | User denied | 用户拒绝系统授权 / 弹窗 | 否 |
@@ -195,7 +206,7 @@ declare global {
 | 10000 ~ 99999 | 厂商/业务自定义，SHOULD 在各自 method schema 的 `x-ojsb-errors` 中声明 |
 | 其它（含负数非保留区间） | MUST NOT 使用 |
 
-规则：调用方 MUST 依据 `code`（及 `data.reason`）做逻辑判断；`message` 只用于日志。
+调用方 MUST 依据 `code` 做逻辑判断。结构化 `data` 可用 `reason` 细分错误。`message` 只用于日志。
 
 ---
 
@@ -222,9 +233,9 @@ sequenceDiagram
   S-->>B: Promise resolve / reject(BridgeError)
 ```
 
-- Host 对每个 request MUST 恰好产生一个 response，包括：handler 抛异常（-32603）、method 不存在（-32601）、校验失败（-32602/-32003）。
-- Host 收到无法解析出 `id` 的消息时 MUST 丢弃并记录日志（无法应答）。
-- 调用方收到未知 `id` 的 response/callback MUST 丢弃并记录（可能是超时后迟到的响应）。
+- 对可安全回复的非重复 request，接收方 MUST 恰好产生一个关联 response。handler 抛出未分类异常使用 `-32603`，method 不存在使用 `-32601`，method 参数校验失败使用 `-32602`，权限拒绝使用 `-32003`。
+- 接收方可针对无法解析的 JSON 发送 `-32700`，针对结构非法且无法分派的请求发送 `-32600`。能识别有效请求 id 时原样回传，否则使用 `rpc.id: null`。若该 id 已登记，按 §3.3 丢弃。只有能确认返回路由符合会话和 document 投递规则（H6、F3、L2）时才可应答。无法安全投递时丢弃并记录。批量消息被整体拒绝，MUST NOT 分派其中任何元素。
+- 接收方 MUST NOT 回复合法 notification 或 response。无法通过校验的 response MUST 丢弃。调用方只以当前关联中的字符串 `rpc.id` 结算 pending。未知 id、`rpc.id: null` 和不匹配当前会话的 response MUST 丢弃，可记录诊断日志。
 
 ---
 
@@ -242,32 +253,34 @@ sequenceDiagram
   H->>P: __OJSB_TRANSPORT__ 安装完成
   P->>S: 加载 SDK（可能早于或晚于 DOMContentLoaded）
   S->>S: 业务调用进入 pre-ready 队列
-  S->>H: request bridge.hello { protocols:[1], sdk:{name,version}, wants:["events"] }
+  S->>H: rpc request bridge.hello（带 id，省略 meta.sid）
   H->>H: 选择最高公共 MAJOR，生成 sid，绑定当前 frame
-  H-->>S: response { jsb:"1.0", sid, host:{platform,name,version,appVersion}, capabilities:{...}, limits:{...} }
+  H-->>S: rpc response（同一 id，result 含 jsb、sid、host、capabilities、limits）
   S->>S: 标记 ready，冲刷队列（带 sid）
-  H-->>S: event bridge.ready（可选，用于 Host 侧也确认就绪）
   S-->>P: bridge.ready() resolve
+  opt 已订阅且获准接收 bridge.ready 事件
+    H-->>S: bridge.event 通知（name 为 bridge.ready，带 meta.sid）
+  end
 ```
 
 ### 6.2 `bridge.hello`
 
-Request params:
+`spec/methods/bridge/hello.json` 定义握手请求参数与成功结果。`rpc.params.protocols` MUST 为包含至少一个元素的数组，元素为互不重复的正安全整数。示例中的 `sdk` 和 `wants` 均可省略。
 
 ```jsonc
 {
-  "protocols": [1],                              // MUST，SDK 支持的主版本
+  "protocols": [1],                              // SDK 支持的主版本
   "sdk": { "name": "@open-jsbridge/web", "version": "1.2.0" },
   "wants": ["events", "callbacks", "blob"]        // MAY，SDK 希望使用的可选特性
 }
 ```
 
-Response result:
+成功响应的 `rpc.result` 如下。
 
 ```jsonc
 {
   "jsb": "1.0",                    // 协商后的协议版本
-  "sid": "a1b2c3d4",               // 会话 id，此后所有消息 meta.sid MUST 携带
+  "sid": "a1b2c3d4",               // 非空会话 id，此后的会话消息在 meta.sid 中携带
   "host": { "platform": "ios", "name": "ios-wk", "version": "1.0.3", "appId": "com.acme.app", "appVersion": "8.2.0" },
   "capabilities": {
     "methods": {                   // 当前 origin + frame 在 ACL 过滤后 *可调用* 的 method
@@ -283,11 +296,12 @@ Response result:
 
 规则：
 
-- **H1** 协议主版本无交集时 Host MUST 返回 `-32004`，`data.supported = [..]`；SDK MUST 进入降级模式（§6.4）。
+- **H1** `bridge.hello` 通告的协议主版本与 Host 无交集时，Host MUST 返回 `-32004`，并以 `data.supported` 给出自身支持的主版本。shim 通告无交集时 SDK 可在本地判定 `-32004`。SDK 遇到协议不兼容 MUST 进入降级模式（§6.4）。外层 `jsb` 字段的形状校验见 §3.1，违反该约束属于 `-32600`。
 - **H2** `capabilities.methods` MUST 是**经过 ACL 过滤后的结果**，不向不受信 origin 泄露完整能力清单。
-- **H3** 同一 document 重复 `bridge.hello` 时，Host MUST 返回同一 `sid`（幂等），除非页面已导航。
-- **H4** 握手前收到的非 `bridge.*` request，Host MUST 返回 `-32005`；SDK 侧 SHOULD 通过 pre-ready 队列避免这种情况。
-- **H5** `bridge.getCapabilities` MAY 在任意时刻调用以刷新能力（例如登录后 ACL 变化）；Host 能力变化时 SHOULD 发送 `bridge.capabilitiesChanged` 事件。
+- **H3** 同一 document 的有效会话内重复 `bridge.hello` 时，Host MUST 返回同一 `sid`（幂等）。会话已失效时，握手 MUST 重新校验调用者并分配新的 `sid`。
+- **H4** Host MUST 先校验调用者的 origin、frame 和通道策略。`bridge.hello` 是唯一允许在没有有效会话时执行的 request。调用者校验通过后，无 `sid` 且尚未握手的 request 使用 `-32005`。其余缺少有效匹配 `sid` 的 request 使用 `-32009`。调用者被策略拒绝时使用 `-32003`，校验意外异常按 §11.3 处理。Host 仅在满足 H6、F3 和 L2 时发送错误响应，其余情况记录错误并丢弃消息。
+- **H5** `bridge.getCapabilities` MAY 在有效会话内调用以刷新能力（例如登录后 ACL 变化）；Host 能力变化时 SHOULD 发送 `bridge.capabilitiesChanged` 事件。
+- **H6** 仅 `bridge.hello` request 及其关联的握手 response 可省略 `meta.sid`。Host MUST 对携带 `meta.sid` 的入站消息校验 WebView、frame 和 document 绑定。Web MUST 在分派会话内消息前校验 `meta.sid` 与当前有效会话一致。SDK 建立或重建会话时，只允许当前尚未结算的 `bridge.hello` 的关联 response 进入握手流程。成功响应 MUST 包含有效的协商版本和非空 `rpc.result.sid`。成功响应若携带 `meta.sid`，其值 MUST 等于 `rpc.result.sid`。握手失败的 response 也可省略 `meta.sid`。握手过期、被取消或被替换后，SDK MUST 丢弃其迟到响应。
 
 ### 6.3 SDK 侧握手超时
 
@@ -310,16 +324,20 @@ Response result:
 ## 7. 超时与取消
 
 - **D1** 每个 request MUST 有 deadline。SDK 默认值取 `limits.defaultTimeoutMs`（握手前用 15000），业务可在调用时覆盖；`timeout: 0` 表示不超时，仅允许 schema 中声明 `x-ojsb-long-running: true` 的 method（如等待用户操作的选择器）。
-- **D2** 调用方超时时 MUST 本地 reject `-32001`，并 SHOULD 发送 `cancel`，让被调方释放资源。
+- **D2** 调用方超时时 MUST 本地 reject `-32001`。请求已经发出且原会话仍有效时，调用方 SHOULD 在该会话发送 `bridge.cancel` 通知，让被调方释放资源。等待握手时也计入调用超时。
 - **D3** 被调方 SHOULD 读取 `meta.timeout` + `meta.ts`，在明显超时后放弃执行（注意两端时钟不一致，只作提示）。
-- **D4** 取消：
+- **D4** 取消通知用 `params.requestId` 关联被取消的请求。
 
 ```jsonc
-{ "jsb": "1.0", "type": "cancel", "id": "w-a1b2-42", "meta": { "sid": "a1b2c3d4", "reason": "abort" } }
+{
+  "jsb": "1.0",
+  "meta": { "sid": "a1b2c3d4" },
+  "rpc": { "jsonrpc": "2.0", "method": "bridge.cancel", "params": { "requestId": "w-a1b2-42", "reason": "abort" } }
+}
 ```
 
-  被调方收到后 SHOULD 中止 handler（handler 通过 ctx 的取消信号感知），并 MUST 以 `-32002` 结束该 request（如果尚未结束）。调用方在发出 cancel 时已本地 reject，因此该 response 会被当作未知 id 丢弃——这是预期行为。
-- **D5** Web 端通过 `AbortSignal` 暴露取消（见 web-sdk.md）。
+  被调方收到后 SHOULD 中止同一会话、同一发起方向的 handler（通过 ctx 的取消信号），并 MUST 以 `-32002` 结束尚未完成的原 request。调用方已在本地 reject，因此随后收到的原 request response 会按未知 id 丢弃。`bridge.cancel` 本身无需应答。
+- **D5** Web 端通过 `AbortSignal` 暴露取消（见 web-sdk.md）。超时或取消发生在发送前时，SDK MUST 使排队项失效，MUST NOT 发送该 request 或对应的 `bridge.cancel`。冲刷队列时须再次确认请求未超时、未取消。有 deadline 的请求使用剩余时长作为 `meta.timeout`，无 deadline 的长任务仍使用 `0`。
 
 ```mermaid
 sequenceDiagram
@@ -328,7 +346,7 @@ sequenceDiagram
   S->>H: request id=42 (timeout 5s)
   Note over S: 5s 到期
   S->>S: reject(-32001 Timeout)
-  S->>H: cancel id=42
+  S->>H: notification bridge.cancel（requestId=42）
   H->>H: ctx.cancel() 中止 handler
   H-->>S: response id=42 error -32002
   S->>S: 未知 id → 丢弃 + debug 日志
@@ -340,10 +358,10 @@ sequenceDiagram
 
 适用于进度、连续结果（扫码、定位持续更新、下载进度）。
 
-- 被调方在最终 `response` 之前 MAY 发送任意条 `callback`，`id` 与 request 相同，`meta.seq` 从 0 严格递增。
-- 调用方 MUST 按 `seq` 处理；遇到乱序（理论上同一通道不会发生）SHOULD 丢弃旧 seq。
-- 最终结果 MUST 仍以一条 `response` 结束；callback 仅在 schema 声明 `x-ojsb-callbacks` 时允许。
-- 每条 callback 到达 SHOULD 重置调用方的 idle 定时器（可选特性 `idleTimeout`）。
+- 被调方在最终 response 之前 MAY 发送任意条 `bridge.progress` 通知。`params.requestId` 对应原请求的 `rpc.id`，`params.seq` 从 0 严格递增，`params.chunk` 可携带进度或中间结果。
+- 调用方 MUST 只在匹配会话和未结算请求时分派进度，按 `params.seq` 处理。收到乱序或重复进度时 SHOULD 丢弃旧序号。
+- 方法 schema 声明 `x-ojsb-callbacks` 时才允许发送进度通知。最终结果 MUST 以原请求的一条 response 结束。
+- 每条已分派的进度通知 SHOULD 重置调用方的 idle 定时器（可选特性 `idleTimeout`）。
 
 ---
 
@@ -364,7 +382,7 @@ sequenceDiagram
     H->>H: ACL 校验，登记 (sid, frame) → event
     H-->>S: response { subscribed:["network.changed"], denied:[] }
   end
-  H-->>S: event network.changed { type:"wifi" }
+  H-->>S: notification bridge.event { name:"network.changed", payload:{ type:"wifi" } }
   S-->>B: fn({type:"wifi"})
   B->>S: bridge.off('network.changed', fn)
   alt 本地最后一个监听者移除
@@ -378,7 +396,7 @@ sequenceDiagram
 - **E2** 事件 MUST NOT 依赖投递保证：document 卸载、WebView 不可见时可能丢失。需要可靠性的场景 MUST 用 request 拉取当前状态（"事件提示 + 拉取真相"模式），例如订阅 `auth.changed` 后调用 `auth.getState`。
 - **E3** 页面内 SDK MUST 做本地多路复用：同一事件只向 Host 订阅一次，引用计数归零再退订。
 - **E4** Host MAY 对高频事件做合并/节流，schema 中以 `x-ojsb-throttle-ms` 声明。
-- **E5** Web → Host 的 `event` 合法（如埋点上报 `analytics.track`），但 Host 对未注册的事件 MUST 静默丢弃。
+- **E5** 双向事件统一用 `bridge.event` 通知传输。事件名由 `rpc.params.name` 指定，事件数据由 `rpc.params.payload` 携带。Host 对未注册的 Web → Host 事件 MUST 静默丢弃。
 
 ### 9.2 Host → Web 的 request（反向调用）
 
@@ -419,7 +437,8 @@ bridge.blob.release{ blobRef }                                → { }
 
 ### 10.3 上限
 
-- 超过 `limits.maxMessageBytes` 的消息，接收方 MUST 拒绝（-32006），SDK SHOULD 在发送前本地检测并直接 reject。
+- `limits.maxMessageBytes` 按 UTF-8 编码后的完整消息计算。接收方 MUST 在解析前丢弃超限帧，以免读取无法安全关联的请求或通知 id。需要传输层回执时返回 `null`。
+- SDK SHOULD 在发送前检查大小并以 `-32006` 本地结算超限请求。若已校验的请求产生超限结果，Host MUST 用同一请求 id 返回 `-32006` 错误响应。
 
 ---
 
@@ -442,7 +461,7 @@ bridge.blob.release{ blobRef }                                → { }
 ### 11.2 Origin 获取与校验
 
 - **S1** Host MUST 从平台提供的可信来源获取调用者 origin：iOS `WKScriptMessage.frameInfo.securityOrigin`；Android `WebMessageListener` 回调的 `sourceOrigin`；Flutter / React Native 见 flutter.md、react-native.md（多数情况下拿不到可信 frame origin，按 S2 处理）。payload 中的任何 origin/url 字段 MUST 被忽略。
-- **S2** 当平台无法提供可信 origin（如 `addJavascriptInterface` 回退通道、部分跨端 WebView 插件），Host MUST 将会话标记为 `trust: "degraded"`，并 MUST 只开放 ACL 中标注 `allowDegraded: true` 的 method。
+- **S2** 当通道缺少可信 origin 或 frame 信息时，Host MUST 默认禁用该通道。只有宿主能够独立约束可达内容、确认其满足调用来源与 frame 策略并显式启用时，才 MAY 建立 `trust: "degraded"` 会话。此类会话只允许 ACL 中标注 `allowDegraded: true` 的 method。顶层 URL 和页面自报字段不能充当消息来源或主 frame 的证明。
 - **S3** origin 匹配 MUST 是 `scheme://host[:port]` 的精确匹配或受限通配（仅允许最左子域 `https://*.example.com`），MUST NOT 用前缀/子串匹配（防 `https://example.com.evil.io`）。
 - **S4** `http:` origin 默认 MUST 被拒绝，除非 debug 构建显式开启。`file:`、`data:`、`about:blank`、opaque origin（`null`）默认 MUST 被拒绝。
 
@@ -472,15 +491,17 @@ bridge.blob.release{ blobRef }                                → { }
 ```
 
 - 求值顺序：`deny` 优先于 `allow`；未命中任何规则 → `default`（MUST 为 `deny`）。
-- `bridge.hello / bridge.getCapabilities / bridge.subscribe` 等握手类 method 对白名单内的 origin 始终可用；对白名单外的 origin，Host SHOULD 直接不注入 shim（iOS/Android 现代通道可以按 origin 规则控制注入范围）。
+- 任何权限规则拒绝或抛出异常时，Host MUST 停止处理且不得调用 handler。可安全回复的 request 遇到意外校验异常时使用 `-32603`，错误中不得包含内部异常细节。
+- `bridge.hello` 通过调用者校验后可在无会话时执行。其他保留 method 须匹配当前会话并实施各自的权限检查，例如 `bridge.subscribe` 须校验事件 ACL。平台支持按 origin 限制注入时，Host SHOULD 不向白名单外的 origin 注入 shim。
 - Handler MAY 声明 `requiresUserGesture` / `requiresPermission`（系统权限），在安全链中统一检查。
 
 ### 11.4 iframe
 
 - **F1** 默认仅 main frame 可用（`frames: "main"`）。
 - **F2** 允许 iframe 时，每个 frame 独立握手、独立 sid、独立 ACL 评估（按该 frame 自己的 origin）。
-- **F3** Host → Web 的 response/event MUST 投递到发起的那个 frame，MUST NOT 广播到 main frame 再由页面转发。
+- **F3** Host → Web 的消息 MUST 定向投递到对应的 frame 与 document。响应对应请求来源，事件对应每个获准订阅的目标。Host MUST NOT 广播到主 frame 再由页面转发。
 - **F4** 页面内用 `window.postMessage` 在 frame 间转发 bridge 调用的"代理模式"MUST NOT 被参考实现采用（会使 origin 校验失效）。
+- **F5** Host 只有在能够可信识别发起 frame、将会话绑定到该 frame 的 document、按 L1/L2 失效和隔离投递时，才 MAY 开启并声明 `iframe` 能力。其余宿主只接受可信主 frame，或遵循 S2 的受控降级条件。`frames: "any"` 规则不能启用平台尚未提供的能力。
 
 ### 11.5 Host→Web 推送的注入安全
 
@@ -494,7 +515,7 @@ window.__OJSB_RECEIVE__ && window.__OJSB_RECEIVE__(<JSON.stringify(envelopeJsonS
 
 ### 11.6 防重放与完整性
 
-- 同一 sid 内 request id 去重（§3.3）；sid 在导航时失效（§12），迟到/重放的旧会话消息返回 `-32009`。
+- 同一 sid 内静默丢弃重复 request（§3.3）。sid 在导航时失效（§12），迟到或重放的旧会话消息按 H4 和 H6 拒绝。旧会话的响应不得投递到新 document。
 - 协议 **不**引入签名/HMAC：注入页面的任何密钥同样可被同源脚本读取，签名无法提供额外保证，反而带来"已安全"的错觉。对需要更强保证的业务（支付），应由业务服务端做票据校验，bridge 只负责传递。
 
 ### 11.7 敏感数据
@@ -512,16 +533,17 @@ stateDiagram-v2
   [*] --> NoSession: WebView 创建
   NoSession --> Pending: navigation commit（注入 shim）
   Pending --> Active: bridge.hello 成功（生成 sid）
-  Active --> Invalidated: 主 frame 导航 / reload / 进程崩溃 / WebView 销毁
+  Active --> Invalidated: 新 document 提交 / 进程崩溃 / WebView 销毁
   Pending --> Invalidated: 同上
   Invalidated --> Pending: 新 document commit
   Invalidated --> [*]: WebView 销毁
 ```
 
 - **L1** 一个 sid 绑定一个 (WebView, frame, document)。Host MUST 在 frame 发生新 document 提交时使旧 sid 失效。
-- **L2** sid 失效时，Host MUST：取消该 sid 下所有进行中的 handler（ctx 取消信号）、清理事件订阅、释放 blob、丢弃对该 sid 的所有待发送响应（不得投递给新 document）。
+- **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放 blob，并丢弃该 sid 下所有待发送消息。
+- 使用脚本执行等下行方式时，Host MUST 在目标 document 内执行消息交付前确认身份，或使用由平台绑定到该 document 的通道。仅在入队时检查、等待 TTL 回收或依靠 SDK 收到后丢弃，均不能保证旧消息不进入新 document。无法保证时，Host MUST 关闭对应的下行能力。
 - **L3** 同 document 内的 History API 路由（SPA `pushState`）**不**改变 sid。
-- **L4** Web 侧在 `pagehide` 时 SHOULD 将所有 pending reject `-32002`；bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。
+- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
 - **L5** WebView 渲染进程崩溃（iOS `webViewWebContentProcessDidTerminate`、Android `onRenderProcessGone`）MUST 视同 sid 失效。
 
 ### 12.2 WebView 复用 / 预热
@@ -549,7 +571,7 @@ stateDiagram-v2
 
 ### 14.1 Trace
 
-- `meta.traceId`：32 位 hex，SHOULD 与 W3C Trace Context 的 trace-id 格式一致；SDK 允许业务传入现有 traceId，便于把前端请求、bridge 调用、Native 网络请求串成一条链。
+- `meta.traceId` 为可选字符串，SHOULD 使用与 W3C Trace Context 兼容的 32 位十六进制 trace-id。SDK 允许业务传入现有 traceId，便于关联前端请求、bridge 调用和 Native 网络请求。
 - Host 在 handler 内发起的网络请求 SHOULD 透传该 traceId（如 `traceparent` header）。
 
 ### 14.2 统一日志字段
@@ -559,7 +581,7 @@ stateDiagram-v2
 | `side` | `web` / `host` |
 | `platform` | `ios` / `android` / `flutter` / `rn` / `browser` |
 | `sid`, `id`, `traceId` | 关联字段 |
-| `type`, `method` | 消息类型、方法 |
+| `type`, `method` | 解析后确定的日志消息类型、RPC 方法 |
 | `phase` | `send` / `recv` / `dispatch` / `done` / `drop` |
 | `code` | 错误码（如有） |
 | `durMs` | 耗时 |
@@ -586,8 +608,8 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 
 | 变更类型 | 允许在 | 要求 |
 |---------|-------|------|
-| 新增 `meta` 字段、新增可选信封字段 | MINOR | 接收方必须忽略未知字段（§3.1） |
-| 新增 `type` | MAJOR | 旧实现无法正确处理新 type |
+| 新增 `meta` 字段、新增可选外层信封字段 | MINOR | 接收方必须忽略未知字段（§3.1） |
+| 变更 `rpc` 消息结构 | MAJOR | 旧实现按原有字段组合校验（§3.2） |
 | 新增错误码（保留段内） | MINOR | 调用方对未知码按 `-32603` 处理 |
 | 新增 `bridge.*` method / feature | MINOR | 通过 `features` 广告 |
 | 改变已有字段语义或删除字段 | MAJOR | 握手协商，旧 MAJOR 至少维护 12 个月 |
@@ -602,50 +624,27 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 ## 附录 A：完整消息示例
 
 ```jsonc
+// Web → Host hello request
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"@open-jsbridge/web","version":"1.2.0"}}}}
+// Host → Web hello response
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseImage":{"versions":[1]}},"events":["app.didEnterBackground"],"features":["callbacks","cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
 // Web → Host request
-{"jsb":"1.0","id":"w-a1b2-7","type":"request","method":"media.chooseImage","params":{"count":3},"meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":0}}
-// Host → Web callback（进度）
-{"jsb":"1.0","id":"w-a1b2-7","type":"callback","result":{"selected":1},"meta":{"sid":"a1b2c3d4","seq":0}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":0},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","method":"media.chooseImage","params":{"count":3}}}
+// Host → Web 进度通知
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.progress","params":{"requestId":"w-a1b2-7","seq":0,"chunk":{"selected":1}}}}
 // Host → Web response
-{"jsb":"1.0","id":"w-a1b2-7","type":"response","result":{"images":[{"blob":{"url":"ojsb-blob://blob/9f1c...","mime":"image/jpeg","size":823412}}]},"meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}}}
-// Host → Web event
-{"jsb":"1.0","type":"event","method":"app.didEnterBackground","params":{},"meta":{"sid":"a1b2c3d4"}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"images":[{"blob":{"url":"ojsb-blob://blob/9f1c...","mime":"image/jpeg","size":823412}}]}}}
+// Host → Web 事件通知
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"app.didEnterBackground","payload":null}}}
 // 错误响应
-{"jsb":"1.0","id":"w-a1b2-8","type":"response","error":{"code":-32003,"message":"Permission denied","data":{"reason":"frame_not_allowed","retryable":false,"method":"acme.pay.create"}},"meta":{"sid":"a1b2c3d4"}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-8","error":{"code":-32003,"message":"Permission denied","data":{"reason":"frame_not_allowed","retryable":false,"method":"acme.pay.create"}}}}
+// 无可识别的请求 id，且能安全投递到当前会话时的解析错误
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}}
 ```
 
-## 附录 B：`spec/protocol/envelope.schema.json`（节选）
+## 附录 B：机器可读规范
 
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://open-jsbridge.dev/spec/envelope.schema.json",
-  "type": "object",
-  "required": ["jsb", "type"],
-  "properties": {
-    "jsb": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
-    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "type": { "enum": ["request", "response", "event", "callback", "cancel"] },
-    "method": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+(@[0-9]+)?$" },
-    "params": { "type": "object" },
-    "result": {},
-    "error": {
-      "type": "object",
-      "required": ["code", "message"],
-      "properties": {
-        "code": { "type": "integer" },
-        "message": { "type": "string" },
-        "data": { "type": "object" }
-      }
-    },
-    "meta": { "type": "object" }
-  },
-  "allOf": [
-    { "if": { "properties": { "type": { "const": "request" } } }, "then": { "required": ["id", "method"] } },
-    { "if": { "properties": { "type": { "const": "event" } } }, "then": { "required": ["method"] } },
-    { "if": { "properties": { "type": { "const": "response" } } },
-      "then": { "required": ["id"], "oneOf": [ { "required": ["result"] }, { "required": ["error"] } ] } },
-    { "if": { "properties": { "type": { "enum": ["callback", "cancel"] } } }, "then": { "required": ["id"] } }
-  ]
-}
-```
+- 信封与内部 RPC 形状。[envelope.schema.json](../spec/protocol/envelope.schema.json)
+- 协议错误码注册表。[errors.json](../spec/protocol/errors.json)
+- `bridge.hello` 的请求参数和成功结果。[hello.json](../spec/methods/bridge/hello.json)
+- 跨实现复用的 wire 正反例。[wire.json](../conformance-tests/fixtures/wire.json)

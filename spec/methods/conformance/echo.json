@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/conformance.echo",
+  "title": "conformance.echo",
+  "description": "原样返回对象参数。省略参数时返回空对象。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": { "type": "object" },
+  "result": { "type": "object" }
+}

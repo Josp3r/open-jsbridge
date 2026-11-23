@@ -108,7 +108,7 @@ flowchart TB
     R --> RAW[Raw Probe<br/>直接用 __OJSB_TRANSPORT__ 发畸形/伪造消息]
   end
   subgraph Host["被测宿主（iOS / Android / Flutter / RN / Mock）"]
-    TH[Conformance Handlers<br/>conformance.*] 
+    TH[Conformance Handlers<br/>conformance.*]
     HC[Host Control API<br/>测试驱动：导航、注入事件、改 ACL、杀进程]
   end
   SDK <--> TH
@@ -138,9 +138,25 @@ flowchart TB
 
 由平台测试驱动（不是页面）调用，用于制造页面无法自行制造的状况：`reload()`、`navigate(url)`、`setAcl(json)`、`emitEvent(name, payload)`、`killRenderProcess()`（平台支持时）、`loadInFrame(origin)`。
 
+### 2.3 PR #1 审查回归用例
+
+以下为用例契约。SDK 队列与入站规则以 Fake Transport 配合可控时钟验证。调用来源和 document 投递隔离以真实 WebView 验证。
+
+| 用例 | 驱动步骤 | 必须断言 |
+|------|----------|----------|
+| `SEC-ACL-ERROR-001` | 让测试权限规则抛出未分类异常，从已握手、原本允许调用的上下文发起请求 | 返回 `-32603`，业务 handler 调用数为零，响应不包含内部异常信息 |
+| `SEC-JSI-DEFAULT-001` | 在无 WebMessageListener 的 Android WebView 上使用默认配置，导航后检测注入通道 | 不安装 `addJavascriptInterface`；握手判定为 bridge 不可用；不建立会话 |
+| `HS-SID-001` | 在握手前或切换会话时送入旧会话消息，握手后送入缺失或不匹配 `sid` 的消息，最后送入当前会话消息 | 只有匹配当前会话的消息进业务分派。非当前握手 id、超时后迟到的 hello 响应均不能安装会话 |
+| `LIFE-DOCUMENT-001` | 在旧 document 留下未完成的 handler 和待投递的结果，再导航到新 document；声明 iframe 时还要单独导航子 frame | 旧会话的 handler、订阅、blob 和待发送结果被清理；在新 document 的 transport 接收层断言未收到旧 payload |
+| `CALL-PRE-READY-001` | 延迟 hello，通过可控时钟使排队请求超时，然后完成握手 | 调用返回 `-32001`；transport 仅收到 hello，未收到该 request 或 cancel |
+| `CALL-PRE-READY-002` | 延迟 hello，对排队请求触发 AbortSignal，然后完成握手 | 调用返回 `-32002`；transport 仅收到 hello，未收到该 request 或 cancel |
+| `CALL-PRE-READY-003` | 延迟 hello 但在调用 deadline 之前完成握手，确认 request 发出后触发 AbortSignal | 发出的 request 使用剩余时长；`bridge.cancel` 通知的 `params.requestId` 指向原请求，外层 `meta.sid` 与原请求相同 |
+
 ## 3. 用例格式
 
-与平台无关，放在 `conformance-tests/cases/*.yaml`：
+当前的[共享 JSON 样例](../conformance-tests/fixtures/wire.json)声明信封是否合法，非法样例还声明预期错误码。Node 测试用同一组样例验证 JSON Schema 与 TypeScript codec。Swift、Kotlin 及后续宿主接入时读取同一份样例。
+
+宿主行为场景计划放在 `conformance-tests/cases/*.yaml`：
 
 ```yaml
 id: CALL-TIMEOUT-001
@@ -172,7 +188,7 @@ steps:
 
 | 前缀 | 覆盖 | 示例 |
 |------|------|------|
-| `ENV-` | 信封解析、未知字段忽略、畸形 JSON、重复 id | 畸形 JSON 无响应；重复 id → -32600 |
+| `ENV-` | JSON-RPC 信封解析、未知外层字段、畸形 JSON、重复 id | 安全路由内的畸形 JSON → `-32700`、`id: null`；重复 id 不执行、不结算原调用 |
 | `HS-` | 握手、版本协商、幂等、降级 | 主版本无交集 → -32004 |
 | `CALL-` | request/response、错误码、超时、取消、并发顺序 | 1000 并发调用无串号 |
 | `CB-` | 流式 callback seq、最终 response | |
@@ -190,22 +206,22 @@ steps:
 | 宿主 | trust | iframe | blob URL | reply 通道 | 备注 |
 |------|-------|--------|----------|-----------|------|
 | `mock` | full（模拟） | 模拟 | 模拟 | 可切换 | Web SDK 单测与 runner 自检 |
-| `ios-wk`（iOS 14+） | full | ✅ | ✅ `WKURLSchemeHandler` | ✅ WithReply | |
-| `ios-wk-legacy`（iOS 13） | full | ❌ | ✅ | ❌ | |
-| `android-wml` | full | ✅ | ✅（下行） | ❌ | 上传走分片 |
-| `android-jsi` | degraded | ❌ | ✅（下行） | ❌ | 回退通道 |
-| `flutter-inappwebview` | full / degraded（取决于能否拿到可信 origin，需核实） | 视插件能力 | 视实现 | ✅ callHandler | 方案 A |
-| `flutter-webview_flutter` | degraded | ❌ | ❌ | ❌ | |
-| `rn-webview` | degraded | ❌ | ❌ | ❌ | 方案 A |
-| `rn-native`（方案 B） | full | ✅ | ✅ | 同 iOS/Android | 复用原生实现 |
+| `ios-wk`（iOS 14+） | full | M1 关闭，开放须通过 F5 | ✅ `WKURLSchemeHandler` | ✅ WithReply | 主 frame |
+| `ios-wk-legacy`（iOS 13） | full | ❌ | 需验证 | ❌ | 验证 document 隔离后再启用 |
+| `android-wml` | full | M1 关闭，开放须通过 F5 | ✅（下行） | ❌ | 主 frame；上传走分片 |
+| `android-jsi` | degraded | ❌ | 待评估 | ❌ | 默认停用，仅在 S2 的受控配置下评估 |
+| `flutter-inappwebview` | 由可信元数据决定 | 须通过 F5 | 视实现 | ✅ callHandler | 方案 A；无可信来源时按 S2 启用 |
+| `flutter-webview_flutter` | degraded | ❌ | ❌ | ❌ | 须满足 S2 |
+| `rn-webview` | degraded | ❌ | ❌ | ❌ | 方案 A，须满足 S2 |
+| `rn-native`（方案 B） | full | 随原生宿主 | 随原生宿主 | 同 iOS/Android | 复用原生实现 |
 
-**所有宿主都必须通过**：`ENV-*`、`HS-*`、`CALL-*`、`CB-*`、`EVT-*`、`LIFE-*` 的核心用例，以及 `SEC-*` 中"degraded 会话拒绝非 allowDegraded method"等与 trust 等级相关的用例。
+所有宿主必须通过 `ENV-*`、`HS-*`、`CALL-*`、`LIFE-*` 的适用核心用例及相应的 `SEC-*` 用例。流式回调与事件用例分别随宿主声明的对应能力启用。任何启用降级通道的宿主还须验证 degraded 会话拒绝未标 `allowDegraded` 的 method。
 
 ## 5. 运行方式
 
 | 宿主 | 驱动 | 命令（示意） |
 |------|------|------------|
-| mock | Vitest + Playwright（Chromium/WebKit） | `pnpm -F conformance test:mock` |
+| mock | Node test runner | 仓库根目录执行 `npm ci`、`npm test` |
 | iOS | XCTest（宿主 App 加载 runner 页面，经 Host Control API 驱动） | `xcodebuild test -scheme ConformanceHost` |
 | Android | Instrumentation | `./gradlew :openjsbridge-test:connectedAndroidTest` |
 | Flutter | `integration_test` | `flutter test integration_test/conformance_test.dart` |

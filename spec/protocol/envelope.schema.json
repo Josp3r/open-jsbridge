@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-jsbridge.dev/spec/protocol/envelope.schema.json",
+  "title": "Open JSBridge 1.0 frame",
+  "type": "object",
+  "$ref": "#/$defs/portableJson",
+  "required": ["jsb", "rpc"],
+  "properties": {
+    "jsb": { "const": "1.0" },
+    "meta": { "$ref": "#/$defs/meta" },
+    "rpc": {
+      "oneOf": [
+        { "$ref": "#/$defs/request" },
+        { "$ref": "#/$defs/notification" },
+        { "$ref": "#/$defs/success" },
+        { "$ref": "#/$defs/failure" }
+      ]
+    }
+  },
+  "$defs": {
+    "portableJson": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "string" },
+        {
+          "type": "number",
+          "minimum": -1.7976931348623157e308,
+          "maximum": 1.7976931348623157e308,
+          "if": { "type": "integer" },
+          "then": { "$ref": "#/$defs/safeInteger" }
+        },
+        { "type": "array", "items": { "$ref": "#/$defs/portableJson" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/portableJson" } }
+      ]
+    },
+    "safeInteger": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "method": {
+      "type": "string",
+      "pattern": "^(?!rpc\\.)[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+(@[1-9][0-9]*)?$"
+    },
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "sid": { "type": "string", "minLength": 1 },
+        "timeout": { "$ref": "#/$defs/nonNegativeInteger" },
+        "ts": { "$ref": "#/$defs/nonNegativeInteger" },
+        "traceId": { "type": "string" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/id" },
+        "method": { "$ref": "#/$defs/method" },
+        "params": { "type": "object" }
+      }
+    },
+    "notification": {
+      "type": "object",
+      "required": ["jsonrpc", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "$ref": "#/$defs/method" },
+        "params": { "type": "object" }
+      }
+    },
+    "success": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/id" },
+        "result": {}
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "$ref": "#/$defs/safeInteger" },
+        "message": { "type": "string" },
+        "data": {}
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # iOS 实现层（WKWebView）
 
-> Swift Package：`OpenJSBridge`。最低系统：**iOS 13**（iOS 14+ 走首选通道，iOS 13 走回退通道）。不支持 UIWebView。
+> Swift Package：`OpenJSBridge`。首版参考实现使用 **iOS 14+ 的 WKWebView**，仅开放主 frame。iOS 13 回退通道按 §3 的条件后续启用。
 > 本文 API 以 Apple 公开 WebKit API 为准；标注 "iOS 14+" 的 API 请在接入时以当前 Xcode SDK 文档复核。
 
 ## 1. 总体结构
@@ -8,7 +8,7 @@
 ```mermaid
 flowchart TB
   subgraph WK["WKWebView"]
-    US["WKUserScript (shim)<br/>atDocumentStart"] 
+    US["WKUserScript (shim)<br/>atDocumentStart"]
     MH["WeakScriptMessageHandler<br/>name: ojsb"]
   end
   MH --> BR[OJSBridge（每个 WebView 一个）]
@@ -35,7 +35,7 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
   var transport = Object.freeze({
     name: 'ios-wk',
     protocols: Object.freeze([1]),
-    // iOS 14+ WithReply：postMessage 返回 Promise，resolve 为 response 字符串
+    // iOS 14+ WithReply：Promise resolve 为 JSON-RPC 响应信封字符串或传输回执 null
     postMessage: function (s) { return h.postMessage(s); }
   });
   Object.defineProperty(window, '__OJSB_TRANSPORT__', { value: transport, writable: false, configurable: false });
@@ -55,21 +55,22 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
 | 选项 | 选择 | 理由 |
 |------|------|------|
 | `injectionTime` | `.atDocumentStart` | 保证页面任何脚本执行前 shim 就绪；SDK 可以同步检测 |
-| `forMainFrameOnly` | **默认 `true`**；ACL 中存在 `frames: "any"` 规则时设为 `false` | 默认只给主 frame 开能力（protocol F1）。设为 `false` 后 shim 会进入所有 iframe（包括第三方广告 frame），但调用仍会被 Native 侧按 frame 的 origin 校验，安全不依赖注入范围 |
+| `forMainFrameOnly` | 首版固定为 `true` | Native 接收入口同时校验 `frameInfo.isMainFrame`。后续通过 §8 的 iframe 验证后，才允许显式配置开放子 frame |
 | `contentWorld`（iOS 14+） | `.page` | SDK 跑在页面 world，必须与 shim 同一 world 才能互相访问。若 Host 还有不想让页面看到的私有脚本，放到 `.defaultClient` 或自定义 `WKContentWorld.world(name:)` |
 
-> 关于 content world：`window.webkit.messageHandlers.ojsb` 本身对 `.page` world 是可见的，页面脚本可绕过 shim 直接 postMessage。这是**可接受的**，因为所有安全判断都在 Native 侧基于 `frameInfo` 做，shim 只是适配层，不是安全边界。
+消息 handler 对 `.page` world 中的所有 frame 可见。即使 shim 只注入主 frame，Native 入口也必须用 WebKit 提供的 `frameInfo` 校验每条消息的来源和 frame。
 
 ## 3. 通信通道
 
-| 方向 | iOS 14+（首选） | iOS 13（回退） |
+| 方向 | iOS 14+（首版参考实现） | iOS 13（回退候选） |
 |------|---------------|---------------|
-| Web→Native request | `WKScriptMessageHandlerWithReply`，`replyHandler` 直接回 response | `WKScriptMessageHandler` |
-| Native→Web response | `replyHandler(responseString, nil)` → JS 侧 Promise resolve | `evaluateJavaScript` 调 `__OJSB_RECEIVE__` |
-| Native→Web callback / event / 反向 request | `evaluateJavaScript(_:in:in:completionHandler:)`（可指定 frame + content world） | `evaluateJavaScript(_:completionHandler:)`（仅主 frame） |
+| Web→Native 消息 | `WKScriptMessageHandlerWithReply` | `WKScriptMessageHandler` |
+| Native→Web JSON-RPC 响应 | `replyHandler(responseString, nil)` → JS 侧 Promise resolve | `evaluateJavaScript` 调 `__OJSB_RECEIVE__` |
+| Native→Web 通知 / 反向请求（待验证） | §9 验证后，可用 `evaluateJavaScript(_:in:in:completionHandler:)` | §9 验证后，可用 `evaluateJavaScript(_:completionHandler:)`（仅主 frame） |
 
-- `replyHandler` 的第二个参数是错误字符串，会让 JS Promise reject。**协议错误一律走第一个参数（error 信封）**，只在 Native 自身故障时使用第二个参数，SDK 将其映射为 `-32603`。
-- 回退通道（iOS 13）无法指定 frame 推送，因此 iOS 13 上 iframe 能力 MUST 关闭。
+- `replyHandler` 的第二个参数用于通道故障，SDK 将 Promise rejection 映射为 `-32603`。协议响应通过第一个参数返回序列化后的信封。
+- WithReply 的每次入站调用都要完成一次回执。对通知、反向调用的响应以及直接丢弃的消息，调用 `replyHandler(NSNull(), nil)`。这个 `null` 是传输回执。`bridge.cancel` 引发的最终 `-32002` 响应使用原请求的 `replyHandler`，并携带原请求的 `rpc.id`。
+- iOS 13 只能向主 frame 执行 JavaScript。回退通道的响应也依赖 §9 的 document 校验，验证通过后才能启用回退。
 - 两种通道下，shim 的 `postMessage` 返回值不同（Promise vs undefined），SDK 已统一处理（web-sdk.md §2.2）。
 
 ```mermaid
@@ -82,7 +83,7 @@ sequenceDiagram
   JS->>WK: messageHandlers.ojsb.postMessage(json)
   WK->>P: didReceive(message, replyHandler)  [main thread]
   P->>B: forward（弱引用）
-  B->>B: decode · frameInfo.securityOrigin · SecurityChain
+  B->>B: 解码 JSON-RPC · 调用者授权 · 会话校验 · 请求去重 · method ACL
   B->>H: Task { try await handle(params, ctx) }  [handler 自选线程]
   H-->>B: result
   B->>B: MainActor：会话仍有效？
@@ -124,7 +125,7 @@ final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler, WKScript
 - Bridge Core（会话、pending、ACL 判定）标注 `@MainActor`，避免加锁。
 - Handler 是 `async` 函数，由 handler 自己决定在哪执行（默认继承调用者的 actor 隔离；耗时 handler 应自行 `Task.detached` 或使用自有 actor）。需要操作 UI 的 handler 标注 `@MainActor`。
 - 结果回到 `@MainActor` 后再调用 `replyHandler` / `evaluateJavaScript`。
-- 取消：每个 request 对应一个 `Task`，收到 `cancel` 或会话失效时 `task.cancel()`，handler 内用 `try Task.checkCancellation()` 协作取消。
+- 每个 request 对应一个 `Task`。收到匹配的 `bridge.cancel` 或会话失效时调用 `task.cancel()`，handler 内用 `try Task.checkCancellation()` 协作取消。
 
 ## 6. Handler 注册机制
 
@@ -138,7 +139,7 @@ public struct BridgeContext: Sendable {
     public let origin: String           // 来自 frameInfo.securityOrigin，可信
     public let isMainFrame: Bool
     public let trust: Trust             // .full | .degraded
-    public let callback: @Sendable (Encodable) async -> Void   // 流式回调
+    public let callback: @Sendable (Encodable) async -> Void   // 发送 bridge.progress 通知
     public weak var webView: WKWebView? { _webView.value }
     let _webView: WeakBox<WKWebView>
 }
@@ -199,7 +200,7 @@ public final class HandlerRegistry: @unchecked Sendable {
     private let lock = NSLock()
 
     public func register<H: BridgeHandler>(_ h: H) {
-        precondition(!H.method.hasPrefix("bridge.") && !H.method.hasPrefix("ojsb."), "reserved namespace")
+        precondition(!["bridge.", "ojsb.", "rpc."].contains(where: H.method.hasPrefix), "reserved namespace")
         let run: Erased = { raw, v, ctx in
             let p: H.Params
             do { p = try JSONDecoder().decode(H.Params.self, from: raw) }
@@ -222,13 +223,16 @@ let bridge = OJSBridge(
     webView: webView,
     registry: .shared,                            // 全局 handler 可共享
     acl: try ACL(jsonFile: Bundle.main.url(forResource: "ojsb-acl", withExtension: "json")!),
-    options: .init(enableIframes: false, debugLogging: isDebug)
+    options: .init(debugLogging: isDebug)
 )
 bridge.registry.register(DeviceGetInfo())
 bridge.registry.register(ChooseImage())
+```
 
-// Native → Web
-bridge.emit("network.changed", ["type": "wifi"])                 // 只发给订阅了且有权限的 frame
+以下 Native → Web API 在 §9 的 document 定向机制验证后开放，宿主只声明已启用的能力。
+
+```swift
+bridge.emit("network.changed", ["type": "wifi"])
 let share: ShareInfo = try await bridge.callWeb("page.getShareInfo", timeout: 3)
 ```
 
@@ -243,47 +247,85 @@ Bridge 需要感知导航，但 `navigationDelegate` 往往被业务占用。参
 
 ## 7. 接收与权限校验链
 
+`Envelope.decode` 按 protocol §3 解析一个 `{jsb, meta?, rpc}` 对象，要求 `rpc.jsonrpc` 为 `"2.0"`，并拒绝批量数组。示例中的 `env.rpc` 是解码后的枚举。请求携带 `rpc.method` 和字符串 `rpc.id`，响应携带 `rpc.id` 以及 `rpc.result`、`rpc.error` 中恰好一项，通知携带 `rpc.method` 且省略 `rpc.id`。
+
 ```swift
 @MainActor
 func receive(_ message: WKScriptMessage, reply: ((Any?, String?) -> Void)?) {
     let out = Outbound(reply: reply, frame: message.frameInfo, webView: webView)
-    guard let raw = message.body as? String, let env = try? Envelope.decode(raw) else {
-        return out.sendError(id: nil, .parse)                  // 无 id：仅日志
+    guard let raw = message.body as? String else {
+        logDrop(reason: "unsupported_payload_type")
+        return out.acknowledge()
     }
-    let origin = message.frameInfo.securityOrigin               // 可信来源（S1）
+    let decoded = Envelope.decode(raw)
+    let origin = message.frameInfo.securityOrigin
     let caller = Caller(origin: Origin(origin), isMainFrame: message.frameInfo.isMainFrame, frame: message.frameInfo)
 
-    switch env.type {
-    case .request:
-        if env.method == "bridge.hello" { return session.hello(env, caller, out) }
-        guard let s = session.validate(sid: env.meta?.sid, caller: caller) else {
-            return out.sendError(env, .sessionExpired)
+    do {
+        try security.checkCaller(caller)
+        let document = try session.requireCurrentDocument(caller)
+        guard case .message(let env) = decoded else {
+            return rejectMalformed(decoded, document: document, out: out)
         }
-        do {
-            try security.check(method: env.method!, caller: caller, session: s)   // 链式
-        } catch let e as BridgeError { return out.sendError(env, e) } catch {}
-        dispatch(env, s, out)
-    case .cancel:   session.cancel(id: env.id!, caller: caller)
-    case .response, .callback: reverse.settle(env, caller)
-    case .event:    events.receiveFromWeb(env, caller)
+        if case .request(let request) = env.rpc, request.method == "bridge.hello" {
+            guard session.recordHelloID(request.id, in: document) else { return out.acknowledge() }
+            return try session.hello(request, meta: env.meta, document: document, out: out)
+        }
+        let s = try session.requireActive(sid: env.meta?.sid, document: document)
+
+        switch env.rpc {
+        case .request(let request):
+            guard s.recordIncomingRequestID(request.id) else { return out.acknowledge() }
+            try security.checkMethod(request.method, caller: caller, session: s)
+            return dispatch(request, meta: env.meta, session: s, out: out)
+        case .response(let response):
+            if response.id != nil { reverse.settle(response, in: s) }
+        case .notification(let notification):
+            switch notification {
+            case .cancel(let control):
+                session.cancel(id: control.requestId, reason: control.reason, in: s)
+            case .event(let event):
+                try events.receiveFromWeb(event, caller: caller, session: s)
+            case .progress(let progress):
+                reverse.progress(progress, in: s)
+            case .unknown:
+                break
+            }
+        }
+        out.acknowledge()
+    } catch {
+        let failure = error as? BridgeError ?? BridgeError(code: -32603, message: "Internal error")
+        return rejectIfSafe(decoded, failure: failure, caller: caller, out: out)
     }
 }
 ```
 
-`SecurityChain` 由一组可插拔的 `SecurityRule` 组成，按顺序短路：
+`rejectMalformed` 仅在请求类型明确、能安全恢复 `rpc.id` 且在对应范围内首次登记该 id 时，才发送关联的格式错误。无法关联的格式错误可通过满足会话校验且绑定到原 document 的通道发送 `rpc.id: null` 的诊断错误，或记录后丢弃。已能识别为通知或响应的无效消息直接丢弃。日志只记录错误类别等元数据。
+
+`checkCaller` 校验 scheme、origin 白名单和可信主 frame 标记，覆盖握手。仅 `bridge.hello` 请求及其关联响应可省略 `meta.sid`。握手仅为当前已确认的 document 建立或复用会话，并返回经授权的能力。握手请求若携带 sid，须匹配当前活动会话。其余消息须匹配当前 (WebView, frame, document, sid)。符合调用者授权、尚未握手且未提供 sid 的请求对应 `-32005`。提供无效、过期或不匹配的 sid，以及活动会话中缺少 sid 的请求，对应 `-32009`。`rejectIfSafe` 仅在能安全确定响应所需的 sid、排除重复请求并确认投递到原 document 时，才为请求返回对应错误。其余情况只完成传输回执。
+
+握手按 document 去重，其他请求按 sid 和发起方向去重。重复 id 在分发前静默丢弃，格式错误的副本也适用。WithReply 只完成该副本的传输回执。最终结果在投递前再次验证目标 document 和适用的会话。
+
+示例只分发显式允许的控制通知 `bridge.cancel`（`requestId`、可选 `reason`）、`bridge.event`（`name`、`payload`）和 `bridge.progress`（`requestId`、`seq`、可选 `chunk`）。这些控制方法仅接受通知格式。通知须通过方向、参数和权限校验，取消、进度和反向响应只匹配当前会话内对应的请求。入站事件须通过事件注册和 ACL 检查。
+
+`SecurityChain` 由可插拔的调用者规则和方法规则组成。任何规则抛出错误都终止当前入站处理，未分类异常转换为通用 `-32603`。
 
 ```swift
-public protocol SecurityRule { func check(_ method: String, _ caller: Caller, _ s: Session) throws }
+public protocol CallerRule { func check(_ caller: Caller) throws }
+public protocol MethodRule { func check(_ method: String, _ caller: Caller, _ s: Session) throws }
 
-let security = SecurityChain([
-    SchemeRule(allowHTTP: isDebug),         // 拒绝 http/file/data/null origin（S4）
-    OriginAllowlistRule(acl),               // 精确或最左子域通配（S3）
-    FrameRule(acl),                         // main-only 或 any（F1/F2）
-    MethodACLRule(acl),                     // deny 优先（11.3）
-    DegradedTrustRule(),                    // 回退通道只允许 allowDegraded 的 method（S2）
-    RateLimitRule(acl),                     // 令牌桶，按 (sid, method)
-    SystemPermissionRule(),                 // 相机/相册等系统授权前置检查（可选）
-])
+let security = SecurityChain(
+    callerRules: [
+        SchemeRule(allowHTTP: isDebug),
+        OriginAllowlistRule(acl),
+        MainFrameRule()
+    ],
+    methodRules: [
+        MethodACLRule(acl),
+        RateLimitRule(acl),
+        SystemPermissionRule()
+    ]
+)
 ```
 
 > 白名单外的 origin 实际上收不到 shim 吗？**不一定**：`WKUserScript` 不支持按 origin 过滤注入，所以 shim 会进入任何导航到的页面。这正是校验必须在 Native 侧逐条进行的原因。可以在 shim 里额外判断 `location.origin` 决定是否暴露（降低能力探测面），但这只是"减少暴露"，不是安全措施。
@@ -292,25 +334,28 @@ let security = SecurityChain([
 
 | 事件 | 处理 |
 |------|------|
-| 主 frame `didCommit` | 使该 WebView **所有** sid 失效（主 frame 新 document 意味着所有子 frame 也被替换） |
-| 子 frame 新 document | WebKit 公开 API 没有子 frame commit 回调；新 document 会重新 `bridge.hello` 得到新 sid；旧 sid 在下次向该 frame 投递失败或 TTL 到期后回收。SDK 侧 sid 校验保证旧 sid 的消息不会被新 document 接受 |
+| 主 frame 新 document 提交（`didCommit`） | 使旧 document 的 sid 失效；新 document 从握手开始 |
+| 同一 document 内路由变化 | 保留原 sid 和会话状态 |
 | `webViewWebContentProcessDidTerminate` | 所有 sid 失效，取消所有 Task |
 | WebView 释放 / `detach()` | 取消所有 Task、移除 handler 与 user script、释放 blob |
 
-失效时：pending 的 handler `Task.cancel()`；`replyHandler` 仍需调用一次（WebKit 要求每个 replyHandler 被调用；document 已不存在时结果被丢弃），参考实现以 `-32009` 回复。
+会话失效时取消进行中的 handler 和反向请求，清理订阅、释放 blob，丢弃尚未投递的旧会话消息。仍持有的 WithReply 回调以传输层 `null` 完成一次，避免将旧会话的协议数据交给新 document。同一 document 内使用新 id 重试握手时，复用活动 sid。
+
+宿主须协调 `didCommit` 与 document-start 握手的到达顺序。只有确认握手来自当前提交的 document，才允许建立或复用会话。
+
+子 frame 能力留待后续验证。WebKit 的 `WKFrameInfo` 可用于路由，但无法跨 delegate 调用唯一标识 frame，公开的 `didCommit` 也只报告主 frame。开放 iframe 前，宿主必须能验证来源 frame 和 document 的身份，在子 frame 导航提交时使旧 sid 失效，并证明旧载荷在切换后不会进入新 document。[WebKit `WKFrameInfo` 契约](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKFrameInfo.h#L29-L33) · [WebKit 导航回调](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKNavigationDelegate.h#L101-L123)
 
 ## 9. Native → Web 推送
 
 ```swift
 @MainActor
-func push(_ env: Envelope, to target: FrameTarget) {
+func push(_ env: Envelope, to target: DocumentTarget) {
+    guard session.isCurrent(target) else { return }
     let json = env.jsonString()                                   // 第一次编码：信封
     let literal = JSString.literal(json)                          // 第二次编码：安全的 JS 字符串字面量（protocol 11.5）
-    let js = "window.__OJSB_RECEIVE__&&window.__OJSB_RECEIVE__(\(literal))"
-    if #available(iOS 14.0, *), let frame = target.frameInfo, !frame.isMainFrame {
-        webView?.evaluateJavaScript(js, in: frame, in: .page) { r in if case .failure = r { self.session.markUnreachable(target) } }
-    } else {
-        webView?.evaluateJavaScript(js) { _, err in if err != nil { self.session.markUnreachable(target) } }
+    guard let js = target.deliveryScript(jsonLiteral: literal) else { return }
+    webView?.evaluateJavaScript(js) { _, error in
+        if let error { self.logDeliveryFailure(error) }
     }
 }
 
@@ -324,7 +369,7 @@ enum JSString {
 }
 ```
 
-> 对子 frame 推送依赖在会话中保存的 `WKFrameInfo`；frame 被移除或导航后推送会失败，此时把对应 sid 标记为不可达并回收。该行为需要在 conformance 的 iframe 用例中实际验证。
+`deliveryScript` 代表待验证的 document 定向机制。Native 排队前检查会话，脚本执行时还须确认目标仍是本次会话绑定的 document，确认后才把信封交给页面接收器。`evaluateJavaScript` 以 frame 为目标，调用成功无法证明其 document 与会话匹配。验证通过前，不启用基于该方式的异步推送和 iOS 13 回退。[Apple frame 执行 API](https://developer.apple.com/documentation/webkit/wkwebview/evaluatejavascript(_:in:in:completionhandler:))
 
 ## 10. 大数据：`WKURLSchemeHandler`
 
@@ -353,9 +398,9 @@ final class BlobSchemeHandler: NSObject, WKURLSchemeHandler {
 | 层 | 工具 | 内容 |
 |----|------|------|
 | 纯逻辑 | XCTest（无 WebView） | Envelope 编解码、ACL 匹配（含 `example.com.evil.io` 等反例）、SecurityChain、RateLimit、JSString.literal 转义（含 `</script>`、U+2028、emoji） |
-| Core 状态机 | XCTest + FakeTransport | 握手幂等、sid 失效后 `-32009`、cancel → `Task.isCancelled`、每个 replyHandler 恰好调用一次 |
-| 集成 | XCTest + 真 `WKWebView` | `loadHTMLString(html, baseURL: URL(string: "https://trusted.test")!)` 构造任意 origin；验证 origin 拒绝、iframe（`srcdoc` / 不同 baseURL）、reload 后迟到响应被丢弃 |
+| Core 状态机 | XCTest + FakeTransport | 握手幂等、握手前 `-32005`、旧 sid `-32009`、重复请求静默丢弃、校验异常终止分发、`bridge.cancel` 按 sid 隔离、每个 replyHandler 恰好调用一次 |
+| 集成 | XCTest + 真 `WKWebView` | 验证可信主 frame 握手、陌生 origin 与子 frame 拒绝、reload 后无旧消息交给新 document。启用推送或回退前验证对应的导航竞态 |
 | 一致性 | conformance runner（见 conformance.md） | 在宿主 App target 里加载 runner 页面，跑全量 cases，输出 JUnit |
 | 泄漏 | XCTest teardown | WebView 与 bridge 均能释放 |
 
-CI：`xcodebuild test -scheme OpenJSBridge -destination 'platform=iOS Simulator,name=<device>'`，矩阵覆盖最低支持系统（回退通道）与最新系统（首选通道）。
+CI：`xcodebuild test -scheme OpenJSBridge -destination 'platform=iOS Simulator,name=<device>'`，矩阵覆盖最低支持的 WithReply 系统与最新系统。
