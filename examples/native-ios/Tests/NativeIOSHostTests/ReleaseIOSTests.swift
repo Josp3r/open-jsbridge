@@ -197,7 +197,8 @@ final class ReleaseIOSTests: XCTestCase {
         let loaded = expectation(description: "Finished loading \(url.absoluteString)")
         delegate.didFinish = loaded
         webView.loadHTMLString("<!doctype html><title>Release bridge test</title>", baseURL: url)
-        await fulfillment(of: [loaded], timeout: 5)
+        // The first navigation also waits for cold WebKit processes on the hosted simulator.
+        await fulfillment(of: [loaded], timeout: 20)
     }
 
     @MainActor
