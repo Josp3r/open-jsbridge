@@ -9,6 +9,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DocumentTransportTest {
@@ -230,6 +231,106 @@ class DocumentTransportTest {
     }
 
     @Test
+    fun cancellingBusinessWorkFreesTheSlotBeforeReplyAndSuppressesLateCompletion() {
+        val scheduled = ArrayDeque<() -> Unit>()
+        var deferReplies = false
+        val runner = PendingBusiness()
+        val host = runner.host { reply ->
+            if (deferReplies) scheduled.addLast(reply) else reply()
+        }
+        val sid = host.confirmAndGetSid()
+        val originalReplies = mutableListOf<String>()
+        host.receive(frame(token, request("config", sid, method = BUSINESS_METHOD)), ORIGIN, true, proxy) {
+            originalReplies.add(it)
+        }
+        val busy = host.exchange(frame(token, request("busy", sid, method = BUSINESS_METHOD)), ORIGIN, true, proxy)!!
+        assertEquals(-32008, envelope(busy).getAsJsonObject("rpc").getAsJsonObject("error").get("code").asInt)
+
+        deferReplies = true
+        val notificationReplies = mutableListOf<String>()
+        host.receive(frame(token, cancel(sid, "config")), ORIGIN, true, proxy) { notificationReplies.add(it) }
+        assertEquals(1, runner.cancellations)
+        assertEquals(1, scheduled.size)
+        assertTrue(originalReplies.isEmpty())
+
+        val nextReplies = mutableListOf<String>()
+        host.receive(frame(token, request("next", sid, method = BUSINESS_METHOD)), ORIGIN, true, proxy) {
+            nextReplies.add(it)
+        }
+        assertEquals(2, runner.completions.size)
+        host.receive(frame(token, cancel(sid, "config")), ORIGIN, true, proxy) { notificationReplies.add(it) }
+        assertEquals(1, runner.cancellations)
+        runner.completions.removeFirst()(Result.success(JsonPrimitive("late")))
+        assertEquals(1, scheduled.size)
+        runner.completions.removeFirst()(Result.success(JsonPrimitive("system")))
+        assertEquals(2, scheduled.size)
+
+        scheduled.removeFirst().invoke()
+        scheduled.removeFirst().invoke()
+        assertTrue(notificationReplies.isEmpty())
+        val cancelled = envelope(originalReplies.single())
+        assertEquals(sid, cancelled.getAsJsonObject("meta").get("sid").asString)
+        assertEquals("config", cancelled.getAsJsonObject("rpc").get("id").asString)
+        assertEquals(-32002, cancelled.getAsJsonObject("rpc").getAsJsonObject("error").get("code").asInt)
+        assertEquals("system", envelope(nextReplies.single()).getAsJsonObject("rpc").get("result").asString)
+    }
+
+    @Test
+    fun ignoresInvalidCancelNotificationsAndStaleSessionWithAReusedRequestId() {
+        val runner = PendingBusiness()
+        val host = runner.host()
+        val oldSid = host.confirmAndGetSid()
+        val oldRequest = request("config", oldSid, method = BUSINESS_METHOD)
+        assertNull(host.exchange(frame(token, oldRequest), ORIGIN, true, proxy))
+        runner.completions.removeFirst()(Result.success(JsonPrimitive("old")))
+        val nextToken = "b".repeat(32)
+        val nextProxy = Any()
+        val sid = host.confirmAndGetSid(nextToken, nextProxy)
+        val originalReplies = mutableListOf<String>()
+        host.receive(frame(nextToken, request("config", sid, method = BUSINESS_METHOD)), ORIGIN, true, nextProxy) {
+            originalReplies.add(it)
+        }
+
+        val notifications = listOf(
+            cancel(oldSid, "config"),
+            cancel(null, "config"),
+            cancel(sid, "missing"),
+            cancel(sid, ""),
+            request(null, sid, method = "bridge.cancel", params = """{"requestId":"config","reason":1}"""),
+            request(null, sid, method = "bridge.cancel", params = """{"requestId":true}"""),
+            cancel(sid, "config").replace(""""method":""", """"id":null,"method":"""),
+        )
+        for (raw in notifications) {
+            assertNull(host.exchange(frame(nextToken, raw), ORIGIN, true, nextProxy))
+        }
+        assertNull(host.exchange(frame(nextToken, cancel(sid, "config")), ORIGIN, false, nextProxy))
+        assertNull(host.exchange(frame(nextToken, cancel(sid, "config")), ORIGIN, true, proxy))
+        assertEquals(0, runner.cancellations)
+        assertTrue(originalReplies.isEmpty())
+
+        assertNull(host.exchange(frame(nextToken, cancel(sid, "config", "bridge.cancel@1")), ORIGIN, true, nextProxy))
+        assertEquals(1, runner.cancellations)
+        assertEquals(-32002, envelope(originalReplies.single(), nextToken)
+            .getAsJsonObject("rpc").getAsJsonObject("error").get("code").asInt)
+    }
+
+    @Test
+    fun cancelControlsRejectRequestsWithIds() {
+        val runner = PendingBusiness()
+        val host = runner.host()
+        val sid = host.confirmAndGetSid()
+        for ((index, method) in listOf("bridge.cancel", "bridge.cancel@1").withIndex()) {
+            val id = "cancel-$index"
+            val req = request(id, sid, method, """{"requestId":"config"}""")
+            val response = envelope(host.exchange(frame(token, req), ORIGIN, true, proxy)!!)
+                .getAsJsonObject("rpc")
+            assertEquals(id, response.get("id").asString)
+            assertEquals(-32600, response.getAsJsonObject("error").get("code").asInt)
+        }
+        assertEquals(0, runner.cancellations)
+    }
+
+    @Test
     fun pagehideAndInvalidationCancelBusinessWorkOnce() {
         val runner = PendingBusiness()
         val host = runner.host()
@@ -331,7 +432,7 @@ class DocumentTransportTest {
         val completions = ArrayDeque<(Result<JsonElement>) -> Unit>()
         var cancellations = 0
 
-        fun host() = DocumentTransport(
+        fun host(scheduleReply: (() -> Unit) -> Unit = { it() }) = DocumentTransport(
             ORIGIN,
             enableEcho = false,
             businessMethods = listOf(BusinessMethod(BUSINESS_METHOD) { JsonPrimitive("system") }),
@@ -339,6 +440,7 @@ class DocumentTransportTest {
                 completions.addLast(complete)
                 ({ cancellations += 1 })
             },
+            scheduleReply = scheduleReply,
         )
     }
 
@@ -367,6 +469,9 @@ class DocumentTransportTest {
 
     private fun hello(id: String, protocols: String = "[1]") =
         request(id, method = "bridge.hello", params = """{"protocols":$protocols}""")
+
+    private fun cancel(sid: String?, id: String, method: String = "bridge.cancel") =
+        request(null, sid, method, params = """{"requestId":"$id"}""")
 
     private fun request(
         id: String?,

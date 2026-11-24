@@ -9,6 +9,10 @@ final class WireHost {
         fileprivate let id: String
         fileprivate let sid: String
         fileprivate let meta: [String: String]
+
+        func matches(requestID: String) -> Bool {
+            id.utf8.elementsEqual(requestID.utf8)
+        }
     }
 
     private enum NetworkSubscription: Equatable {
@@ -25,6 +29,7 @@ final class WireHost {
     private static let echo = "conformance.echo"
     private static let subscribe = "bridge.subscribe"
     private static let unsubscribe = "bridge.unsubscribe"
+    private static let cancellationMethods: Set<String> = ["bridge.cancel", "bridge.cancel@1"]
 
     private let platform: String
     private let methods: [String: [String: [Int]]]
@@ -65,6 +70,7 @@ final class WireHost {
     /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
                  onBusinessCall: ((BusinessCall) -> Void)? = nil,
+                 onCancelRequest: ((String) -> Void)? = nil,
                  afterReply: (@escaping () -> Void) -> Void = { $0() }) -> String? {
         guard raw.utf8.count <= Self.maxMessageBytes else { return nil }
         let bytes = Data(raw.utf8)
@@ -88,8 +94,23 @@ final class WireHost {
         let incomingSID = meta["sid"] as? String
         let hello = method == "bridge.hello" || method == "bridge.hello@1"
 
-        // Neither notification-like frames nor response-like frames get a response.
-        if let rpc, rpc["method"] == nil || rpc["id"] == nil { return nil }
+        let cancel = method.map(Self.cancellationMethods.contains) ?? false
+
+        if let rpc, rpc["id"] == nil {
+            if cancel, let sid, incomingSID == sid,
+               envelope?["jsb"] as? String == "1.0",
+               rpc["jsonrpc"] as? String == "2.0",
+               Set(rpc.keys).isSubset(of: Self.requestKeys),
+               Self.validMeta(envelope?["meta"]),
+               Self.isPortableJSON(value),
+               let params = rpc["params"] as? NSDictionary,
+               let requestID = Self.requestID(params["requestId"]),
+               params["reason"] == nil || params["reason"] is String {
+                onCancelRequest?(requestID)
+            }
+            return nil
+        }
+        if let rpc, rpc["method"] == nil { return nil }
         if let incomingSID, !incomingSID.isEmpty, incomingSID != sid { return nil }
 
         var responseMeta: [String: String] = [:]
@@ -100,7 +121,7 @@ final class WireHost {
               let rpc, rpc["jsonrpc"] as? String == "2.0",
               Set(rpc.keys).isSubset(of: Self.requestKeys),
               let method, method.range(of: Self.methodPattern, options: .regularExpression) != nil,
-              let id,
+              let id, !cancel,
               rpc["params"] == nil || rpc["params"] is NSDictionary,
               Self.validMeta(envelope?["meta"]),
               Self.isPortableJSON(value)
@@ -200,6 +221,11 @@ final class WireHost {
             }
             return failure(-32603, "Internal error", id: call.id, meta: call.meta)
         }
+    }
+
+    func cancelBusinessCall(_ call: BusinessCall) -> String? {
+        guard sid == call.sid else { return nil }
+        return failure(-32002, "Call cancelled", id: call.id, meta: call.meta)
     }
 
     func networkEvent(_ type: NetworkConnection, for sid: String) -> String? {
@@ -309,7 +335,7 @@ final class WireHost {
             "capabilities": [
                 "methods": methods,
                 "events": events,
-                "features": [String]()
+                "features": businessMethods.isEmpty ? [] : ["cancel"]
             ],
             "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": 15_000]
         ]

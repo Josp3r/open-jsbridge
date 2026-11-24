@@ -94,6 +94,96 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
+    func testWireCancellationFreesFullBusinessSlotBeforeFollowingRequest() async throws {
+        let started = expectation(description: "Every business slot is in use")
+        var cancelledReturned: XCTestExpectation?
+        var held = [Int: CheckedContinuation<Void, Never>]()
+        let business = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+            guard let index = params["index"] as? Int else { throw NativeIOSHost.BusinessMethodError.invalidParams }
+            await withCheckedContinuation { continuation in
+                held[index] = continuation
+                started.fulfill()
+            }
+            if index == 0 {
+                XCTAssertTrue(Task.isCancelled)
+                cancelledReturned?.fulfill()
+            }
+            return ["index": index]
+        }
+        let (webView, delegate) = makeWebView()
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: origin,
+                                                  options: .init(deviceInfo: true), methods: [business])
+        delegate.attachment = attachment
+        defer {
+            attachment.detach()
+            held.values.forEach { $0.resume() }
+        }
+
+        await loadPage(in: webView, with: delegate, at: origin)
+        let helloResult = try await request("bridge.hello", id: "hello", in: webView)
+        let handshake = try XCTUnwrap(helloResult as? [String: Any])
+        let sid = try XCTUnwrap(handshake["sid"] as? String)
+        let limits = try XCTUnwrap(handshake["limits"] as? [String: Int])
+        let limit = try XCTUnwrap(limits["maxInflight"])
+        started.expectedFulfillmentCount = limit
+        _ = try await webView.callAsyncJavaScript("""
+            window.postBridgeFrame = (rpc, session = sid, traceId) =>
+                window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                    jsb: '1.0', meta: {sid: session, traceId}, rpc: {jsonrpc: '2.0', ...rpc}
+                }));
+            window.heldReplies = Array.from({length: limit}, (_, index) => window.postBridgeFrame({
+                method: 'acme.app.getConfig', id: 'held-' + index, params: {index}
+            }, sid, 'business-trace'));
+            return true;
+            """, arguments: ["sid": sid, "limit": limit], in: nil, contentWorld: .page)
+        await fulfillment(of: [started], timeout: 10)
+        XCTAssertEqual(held.count, limit)
+
+        let invalidResult = try await webView.callAsyncJavaScript("""
+            const cancel = {method: 'bridge.cancel', params: {requestId: 'held-0'}};
+            const stale = await window.postBridgeFrame(cancel, 'retired-session');
+            const malformed = await window.postBridgeFrame({
+                ...cancel, params: {...cancel.params, reason: 42}
+            });
+            const raw = await window.postBridgeFrame({method: 'device.getInfo', id: 'busy'});
+            return {silent: stale === null && malformed === null, code: JSON.parse(raw).rpc.error?.code};
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let ignored = try XCTUnwrap(invalidResult as? [String: Any])
+        XCTAssertEqual(ignored["silent"] as? Bool, true)
+        XCTAssertEqual(ignored["code"] as? Int, -32008)
+
+        let result = try await webView.callAsyncJavaScript("""
+            const cancel = window.postBridgeFrame({method: 'bridge.cancel', params: {requestId: 'held-0'}});
+            const next = window.postBridgeFrame({method: 'device.getInfo', id: 'next'});
+            const original = await Promise.race([
+                window.heldReplies[0], new Promise(resolve => setTimeout(() => resolve(null), 3000))
+            ]);
+            const reply = JSON.parse(await next);
+            return {silent: await cancel === null, original: JSON.parse(original),
+                os: reply.rpc.result?.os ?? null, nextCode: reply.rpc.error?.code ?? null};
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let observed = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(observed["silent"] as? Bool, true)
+        XCTAssertEqual(observed["os"] as? String, "ios", "Next request must claim the released slot: \(observed)")
+        let original = try XCTUnwrap(observed["original"] as? [String: Any])
+        let meta = try XCTUnwrap(original["meta"] as? [String: String])
+        let rpc = try XCTUnwrap(original["rpc"] as? [String: Any])
+        XCTAssertEqual(meta, ["sid": sid, "traceId": "business-trace"])
+        XCTAssertEqual(rpc["id"] as? String, "held-0")
+        XCTAssertEqual((rpc["error"] as? [String: Any])?["code"] as? Int, -32002)
+
+        let capabilities = try XCTUnwrap(handshake["capabilities"] as? [String: Any])
+        XCTAssertTrue((capabilities["features"] as? [String])?.contains("cancel") == true)
+        let returned = expectation(description: "Cancelled business task returned")
+        cancelledReturned = returned
+        let cancelled = try XCTUnwrap(held.removeValue(forKey: 0))
+        cancelled.resume()
+        await fulfillment(of: [returned], timeout: 5)
+        let afterLateReturn = try await request("device.getInfo", id: "after-late-return", sid: sid, in: webView)
+        XCTAssertEqual((afterLateReturn as? [String: String])?["os"], "ios")
+    }
+
+    @MainActor
     func testDetachCancelsSuspendedBusinessAndDiscardsItsLateResult() async throws {
         let started = expectation(description: "Business handler suspended before detach")
         let returned = expectation(description: "Business handler returned after detach")

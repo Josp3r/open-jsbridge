@@ -84,6 +84,41 @@ final class WireHostTests: XCTestCase {
         XCTAssertEqual(parse.error?["code"] as? Int, -32700)
     }
 
+    func testCancelNotificationDispatchRequiresAnActiveSessionAndValidControlShape() throws {
+        let host = WireHost(platform: "ios")
+        var cancellations = [String]()
+        let cancel: (String) -> Void = { cancellations.append($0) }
+        func frame(sid: String, method: String = "bridge.cancel", params: String = #"{"requestId":"target"}"#,
+                   extra: String = "") -> String {
+            #"{"jsb":"1.0","meta":{"sid":"\#(sid)"},"rpc":{"jsonrpc":"2.0","method":"\#(method)","params":\#(params)\#(extra)}}"#
+        }
+
+        XCTAssertNil(host.receive(frame(sid: "fresh"), onCancelRequest: cancel))
+        let sid = try session(host)
+        let invalid = [
+            frame(sid: "old"),
+            frame(sid: sid, method: "bridge.cancel@2"),
+            frame(sid: sid, params: #"{"requestId":""}"#),
+            frame(sid: sid, params: #"{"requestId":"target","reason":null}"#),
+            frame(sid: sid, extra: #","result":null"#)
+        ]
+        for raw in invalid {
+            XCTAssertNil(host.receive(raw, onCancelRequest: cancel))
+        }
+
+        let request = try unpack(host.receive(frame(sid: sid, extra: #","id":"cancel-request""#),
+                                             onCancelRequest: cancel))
+        XCTAssertEqual(request.rpc["id"] as? String, "cancel-request")
+        XCTAssertEqual(request.error?["code"] as? Int, -32600)
+        XCTAssertEqual(cancellations, [])
+
+        XCTAssertNil(host.receive(frame(sid: sid), exceedsInflightLimit: true, onCancelRequest: cancel))
+        XCTAssertNil(host.receive(frame(sid: sid, method: "bridge.cancel@1",
+                                       params: #"{"requestId":"second","reason":"abort"}"#),
+                                  onCancelRequest: cancel))
+        XCTAssertEqual(cancellations, ["target", "second"])
+    }
+
     func testSubscriptionControlsDenyUnavailableEventsAndValidateNames() throws {
         let host = WireHost(platform: "ios")
         let sid = try session(host)

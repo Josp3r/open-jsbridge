@@ -113,7 +113,7 @@ sequenceDiagram
 - **BridgeCore 只在主线程运行**（会话表、pending、订阅无需加锁）。
 - 每个 WebView 一个 `CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)`；`detach()` 时 `scope.cancel()`。
 - Handler 声明自己的 `dispatcher`（默认 `Dispatchers.Default`，UI 类 handler 用 `Dispatchers.Main`）。
-- 每个 request 一个 `Job`，收到匹配的 `bridge.cancel` 或会话失效时调用 `job.cancel()`，handler 中的挂起点自动响应取消。
+- 注册异步业务方法后，参考宿主在握手中声明 `cancel`。每个异步业务请求对应一个 `Job`。收到当前会话中匹配的 `bridge.cancel` 时，宿主先释放并发槽，再调用 `job.cancel()`，通过原请求的通道返回一次 `-32002`。挂起的业务处理器通过协程取消机制退出。
 - `replyProxy.postMessage` 只在主线程调用。
 
 ## 6. Handler 注册

@@ -127,7 +127,7 @@ final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler, WKScript
 - Bridge Core（会话、pending、ACL 判定）标注 `@MainActor`，避免加锁。
 - Handler 是 `async` 函数，由 handler 自己决定在哪执行（默认继承调用者的 actor 隔离；耗时 handler 应自行 `Task.detached` 或使用自有 actor）。需要操作 UI 的 handler 标注 `@MainActor`。
 - 结果回到 `@MainActor` 后再调用 `replyHandler` / `evaluateJavaScript`。
-- 每个 request 对应一个 `Task`。收到匹配的 `bridge.cancel` 或会话失效时调用 `task.cancel()`，handler 内用 `try Task.checkCancellation()` 协作取消。
+- 注册异步业务方法后，参考宿主在握手中声明 `cancel`。每个异步业务请求对应一个 `Task`。收到当前会话中匹配的 `bridge.cancel` 时，宿主先释放并发槽，再调用 `task.cancel()`，通过原请求的通道返回一次 `-32002`。业务处理器可用 `try Task.checkCancellation()` 协作取消。
 
 ## 6. Handler 注册机制
 

@@ -182,6 +182,160 @@ test('maxInflight drops expired and aborted waiting calls and sends cancel befor
   assert.equal(await next, true);
 });
 
+function transportWithCancelReceipts(t, onCancel) {
+  const sent = [];
+  const receipts = [];
+  const shim = shimWindow(t, {
+    name: 'with-reply', protocols: [1],
+    postMessage(raw) {
+      const request = JSON.parse(raw);
+      sent.push(request);
+      if (request.rpc.method === 'bridge.cancel') {
+        onCancel?.();
+        return new Promise((resolve, reject) => receipts.push({ resolve, reject }));
+      }
+    },
+  });
+  t.after(() => shim.window.dispatchEvent(new Event('pagehide')));
+  return { window: shim.window, sent, receipts, push: (raw) => shim.window.__OJSB_RECEIVE__(raw) };
+}
+
+test('asynchronous cancel receipts reserve each aborted slot until requests can be replaced', async (t) => {
+  const transport = transportWithCancelReceipts(t);
+  const client = createBridge({ queueLimit: 2 });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 2 });
+  await ready;
+
+  const controller = new AbortController();
+  const aborted = [1, 2].map((order) => assert.rejects(
+    client.call(echo, { order }, { signal: controller.signal }),
+    { code: ErrorCode.Cancelled },
+  ));
+  const results = Promise.all([3, 4].map((order) => client.call(echo, { order })));
+  void results.catch(() => {});
+  controller.abort();
+  await Promise.all(aborted);
+
+  const sentMethods = () => transport.sent.map(({ rpc }) => rpc.method);
+  assert.deepEqual(sentMethods(), ['bridge.hello', echo, echo, 'bridge.cancel', 'bridge.cancel']);
+  await assert.rejects(client.call(echo), { code: ErrorCode.NotReady });
+  assert.deepEqual(transport.sent.slice(3).map(({ rpc }) => rpc.params.requestId), [
+    transport.sent[1].rpc.id, transport.sent[2].rpc.id,
+  ]);
+
+  transport.receipts[0].resolve(null);
+  await setImmediate();
+  assert.deepEqual(sentMethods(), ['bridge.hello', echo, echo, 'bridge.cancel', 'bridge.cancel', echo]);
+  assert.equal(transport.sent[5].rpc.params.order, 3);
+  transport.receipts[1].reject(new Error('Cancel send failed'));
+  await setImmediate();
+  assert.equal(transport.sent[6].rpc.params.order, 4);
+  for (const { rpc } of transport.sent.slice(5)) {
+    transport.push(frame({ id: rpc.id, result: rpc.params.order }, { sid: hello.sid }));
+  }
+  assert.deepEqual(await results, [3, 4]);
+});
+
+test('an unreturned cancel receipt frees its slot at the session default timeout', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = transportWithCancelReceipts(t);
+  const client = createBridge();
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 1, defaultTimeoutMs: 10 });
+  await ready;
+
+  const controller = new AbortController();
+  const aborted = assert.rejects(client.call(echo, {}, { signal: controller.signal }), {
+    code: ErrorCode.Cancelled,
+  });
+  const results = Promise.all([1, 2].map((order) => client.call(echo, { order }, { timeout: 1000 })));
+  void results.catch(() => {});
+  controller.abort();
+  await aborted;
+
+  now = 9;
+  t.mock.timers.tick(9);
+  assert.equal(transport.sent.length, 3);
+  now = 10;
+  t.mock.timers.tick(1);
+  assert.equal(transport.sent[3]?.rpc.params.order, 1);
+
+  transport.receipts[0].resolve(null);
+  await setImmediate();
+  assert.equal(transport.sent.length, 4);
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: 1 }, { sid: hello.sid }));
+  assert.equal(transport.sent[4]?.rpc.params.order, 2);
+  transport.push(frame({ id: transport.sent[4].rpc.id, result: 2 }, { sid: hello.sid }));
+  assert.deepEqual(await results, [1, 2]);
+});
+
+test('cancel send reserves its slot during synchronous reentry and releases it on throw', async (t) => {
+  let reentrant;
+  const transport = transportWithCancelReceipts(t, () => {
+    reentrant = client.call(echo);
+    void reentrant.catch(() => {});
+    throw new Error('Cancel send failed');
+  });
+  const client = createBridge({ queueLimit: 0 });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await ready;
+
+  const controller = new AbortController();
+  const aborted = assert.rejects(client.call(echo, {}, { signal: controller.signal }), {
+    code: ErrorCode.Cancelled,
+  });
+  controller.abort();
+  await aborted;
+  await assert.rejects(reentrant, { code: ErrorCode.NotReady });
+
+  const next = client.call(echo);
+  void next.catch(() => {});
+  assert.equal(transport.sent[3]?.rpc.method, echo);
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: true }, { sid: hello.sid }));
+  assert.equal(await next, true);
+});
+
+test('pagehide retires the cancel receipt reservation before the restored session', async (t) => {
+  const transport = transportWithCancelReceipts(t);
+  const client = createBridge({ queueLimit: 0 });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await ready;
+
+  const controller = new AbortController();
+  const aborted = assert.rejects(client.call(echo, {}, { signal: controller.signal }), {
+    code: ErrorCode.Cancelled,
+  });
+  controller.abort();
+  await aborted;
+  transport.window.dispatchEvent(new Event('pagehide'));
+  restorePage(transport.window);
+  const restored = client.ready();
+  await setImmediate();
+  const sid = 'restored-session';
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: {
+    ...hello, sid, limits: { ...hello.limits, maxInflight: 1 },
+  } }));
+  await restored;
+
+  const pending = client.call(echo);
+  void pending.catch(() => {});
+  assert.equal(transport.sent[4]?.rpc.method, echo);
+  transport.receipts[0].resolve(null);
+  await setImmediate();
+  await assert.rejects(client.call(echo), { code: ErrorCode.NotReady });
+  transport.push(frame({ id: transport.sent[4].rpc.id, result: true }, { sid }));
+  assert.equal(await pending, true);
+});
+
 test('maxInflight reserves queueLimit for waiting calls once the session is ready', async (t) => {
   const transport = controlledTransport();
   const client = createBridge({ adapter: transport.adapter, queueLimit: 1 });

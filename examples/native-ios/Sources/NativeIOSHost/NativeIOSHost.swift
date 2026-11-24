@@ -249,11 +249,12 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     private struct Delivery {
         let document: String
         let raw: String
-        let exceedsInflightLimit: Bool
+        let exceedsBacklogLimit: Bool
         let reply: (String?) -> Void
     }
 
     private struct BusinessWork {
+        let call: WireHost.BusinessCall
         let task: Task<Void, Never>
         let reply: (String?) -> Void
     }
@@ -308,7 +309,8 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
-        let outstanding = pending.count + deferredReplies.count + businessWork.count
+        let backlog = pending.count + deferredReplies.count
+        let outstanding = backlog + businessWork.count
         guard let webView, message.webView === webView, message.name == handlerName,
               message.frameInfo.isMainFrame,
               origin.matches(message.frameInfo.securityOrigin),
@@ -323,9 +325,9 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             return
         }
 
-        // Leave space for ordered, correlated rate-limit responses after authorization.
+        // Bound the transport backlog independently of active business work.
         pending.append(Delivery(document: body[0], raw: body[1],
-                                exceedsInflightLimit: outstanding >= WireHost.maxInflight,
+                                exceedsBacklogLimit: backlog >= WireHost.maxInflight,
                                 reply: { replyHandler($0 as Any? ?? NSNull(), nil) }))
         verifyNext()
     }
@@ -389,8 +391,11 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                     }
                     var acknowledge: (() -> Void)?
                     var businessCall: WireHost.BusinessCall?
-                    if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: delivery.exceedsInflightLimit,
+                    // Earlier verified cancellations can release work before this request is admitted.
+                    let exceedsInflightLimit = delivery.exceedsBacklogLimit || self.businessWork.count >= WireHost.maxInflight
+                    if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: exceedsInflightLimit,
                                                         onBusinessCall: { businessCall = $0 },
+                                                        onCancelRequest: { self.cancel($0, document: delivery.document) },
                                                         afterReply: { acknowledge = $0 }) {
                         self.updateNetworkObservation()
                         self.queueReply(response, document: delivery.document, send: delivery.reply,
@@ -430,7 +435,19 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             }
             self.queueReply(response, document: document, send: work.reply)
         }
-        businessWork[id] = BusinessWork(task: task, reply: delivery.reply)
+        businessWork[id] = BusinessWork(call: call, task: task, reply: delivery.reply)
+    }
+
+    private func cancel(_ requestID: String, document: String) {
+        guard let id = businessWork.first(where: { $0.value.call.matches(requestID: requestID) })?.key,
+              let work = businessWork.removeValue(forKey: id) else { return }
+        // Removing the task gives cancellation sole ownership of the original WithReply.
+        work.task.cancel()
+        guard let response = wire.cancelBusinessCall(work.call) else {
+            work.reply(nil)
+            return
+        }
+        queueReply(response, document: document, send: work.reply)
     }
 
     private func queueReply(_ response: String, document: String, send: @escaping (String?) -> Void,
