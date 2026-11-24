@@ -1,6 +1,7 @@
+import Network
 import WebKit
 
-/// A standalone WebView for exercising the native bridge with the shared Web demo.
+/// Hosts the native bridge in an app-owned WebView or the standalone Debug demo.
 public enum NativeIOSHost {
     public struct Options {
         public let deviceInfo: Bool
@@ -16,6 +17,85 @@ public enum NativeIOSHost {
 
     /// Schedules a response completion. Completion returns true when it sends the protocol frame.
     typealias ReplyScheduler = @MainActor (String, @escaping @MainActor () -> Bool) -> Void
+
+    public enum AttachmentError: Error, Equatable {
+        case invalidOrigin
+        case webViewAlreadyLoaded
+        case alreadyAttached
+    }
+
+    @MainActor
+    public final class Attachment {
+        private var host: WebKitHost?
+        private weak var controller: WKUserContentController?
+
+        fileprivate init(host: WebKitHost, controller: WKUserContentController) {
+            self.host = host
+            self.controller = controller
+        }
+
+        /// Forward the WebView's main-frame navigation commit to retire the previous route.
+        public func didCommitNavigation() {
+            host?.didCommitNavigation()
+        }
+
+        /// Forward WebKit's content process termination to clear the document and its pending work.
+        public func webContentProcessDidTerminate() {
+            host?.webContentProcessDidTerminate()
+        }
+
+        /// Cancels outstanding work and removes the bridge's script message handler.
+        public func detach() {
+            guard let host else { return }
+            self.host = nil
+            NativeIOSHost.detach(host, from: controller)
+        }
+    }
+
+    @MainActor
+    private static let attachments = NSMapTable<WKUserContentController, WebKitHost>.weakToWeakObjects()
+
+    /// Installs the bridge for one HTTPS origin. Call before the app's first navigation.
+    /// Retain the attachment and forward lifecycle callbacks from the app's navigation delegate.
+    @MainActor
+    public static func attach(to webView: WKWebView, allowing originURL: URL,
+                              options: Options = .init(), methods: [BusinessMethod] = []) throws -> Attachment {
+        guard let origin = AllowedOrigin(originURL) else { throw AttachmentError.invalidOrigin }
+        let controller = webView.configuration.userContentController
+        let previous = attachments.object(forKey: controller)
+        guard previous?.webView == nil else { throw AttachmentError.alreadyAttached }
+        guard webView.url == nil, !webView.isLoading, webView.backForwardList.currentItem == nil else {
+            throw AttachmentError.webViewAlreadyLoaded
+        }
+
+        var handlers: [String: BusinessMethod.Handler] = [:]
+        for method in methods {
+            guard handlers.updateValue(method.handler, forKey: method.name) == nil else {
+                throw BusinessMethodError.duplicateName(method.name)
+            }
+        }
+        if let previous { detach(previous, from: controller) }
+
+        let handlerName = "ojsb_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let host = WebKitHost(origin: origin, options: options, businessMethods: handlers,
+                              enableEcho: false, handlerName: handlerName, watchNetwork: nil) { _, complete in
+            _ = complete()
+        }
+        host.webView = webView
+        host.install(in: controller)
+        attachments.setObject(host, forKey: controller)
+        return Attachment(host: host, controller: controller)
+    }
+
+    @MainActor
+    private static func detach(_ host: WebKitHost, from controller: WKUserContentController?) {
+        if let controller, attachments.object(forKey: controller) === host {
+            attachments.removeObject(forKey: controller)
+            host.uninstall(from: controller)
+        }
+        host.webView = nil
+        host.webContentProcessDidTerminate()
+    }
 
     @MainActor
     public static func makeWebView(allowing originURL: URL) -> WKWebView {
@@ -34,18 +114,16 @@ public enum NativeIOSHost {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         #if DEBUG
-        if let origin = AllowedOrigin(originURL) {
-            let adapter = WebKitHost(origin: origin, options: options, watchNetwork: watchNetwork, scheduleReply: scheduleReply)
+        if let origin = AllowedOrigin(originURL, forDemo: true) {
+            let adapter = WebKitHost(origin: origin, options: options, businessMethods: [:],
+                                     enableEcho: true, handlerName: "ojsb", watchNetwork: watchNetwork,
+                                     scheduleReply: scheduleReply)
             let controller = configuration.userContentController
-            controller.addUserScript(WKUserScript(source: adapter.shim,
-                                                 injectionTime: .atDocumentStart,
-                                                 forMainFrameOnly: true,
-                                                 in: .page))
-            // The controller retains the adapter, and the adapter references the WebView weakly.
-            controller.addScriptMessageHandler(adapter, contentWorld: .page, name: "ojsb")
+            adapter.install(in: controller)
             let webView = WKWebView(frame: .zero, configuration: configuration)
             adapter.webView = webView
             webView.navigationDelegate = adapter
+            attachments.setObject(adapter, forKey: controller)
             return webView
         }
         #endif
@@ -58,20 +136,42 @@ private struct AllowedOrigin {
     let host: String
     let port: Int
 
-    init?(_ url: URL) {
+    init?(_ url: URL, forDemo: Bool = false) {
         guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(), !host.isEmpty,
               url.user == nil, url.password == nil,
-              scheme == "https" || (scheme == "http" && host == "127.0.0.1") else { return nil }
-        let port = url.port ?? Self.defaultPort(scheme)
-        guard (1...65_535).contains(port) else { return nil }
+              scheme == "https" || (forDemo && scheme == "http" && host == "127.0.0.1") else { return nil }
+        let port = url.port
+        var normalizedHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if !forDemo {
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let encodedHost = components.percentEncodedHost,
+                  components.scheme != nil, components.query == nil, components.fragment == nil,
+                  port != nil || components.rangeOfPort == nil,
+                  components.percentEncodedPath.isEmpty || components.percentEncodedPath == "/"
+            else { return nil }
+            let forbidden = CharacterSet.controlCharacters.union(.whitespacesAndNewlines)
+                .union(CharacterSet(charactersIn: "#%/<>?@[\\]^|"))
+            let bracketed = encodedHost.hasPrefix("[")
+            guard (bracketed ? normalizedHost : host).rangeOfCharacter(from: forbidden) == nil else { return nil }
+            if bracketed {
+                guard let address = IPv6Address(normalizedHost) else { return nil }
+                normalizedHost = Self.serializedIPv6Host(address)
+            } else {
+                guard !host.contains(":"), !Self.endsInNumber(host) || IPv4Address(host)?.debugDescription == host
+                else { return nil }
+            }
+        }
+        let effectivePort = port ?? Self.defaultPort(scheme)
+        guard (1...65_535).contains(effectivePort) else { return nil }
         self.scheme = scheme
-        self.host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        self.port = port
+        self.host = normalizedHost
+        self.port = effectivePort
     }
 
     @MainActor
     func matches(_ origin: WKSecurityOrigin) -> Bool {
-        scheme == origin.`protocol`.lowercased() && host == origin.host.lowercased() &&
+        scheme == origin.`protocol`.lowercased() &&
+            host == origin.host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]")) &&
             port == (origin.port == 0 ? Self.defaultPort(scheme) : origin.port)
     }
 
@@ -83,6 +183,25 @@ private struct AllowedOrigin {
 
     private static func defaultPort(_ scheme: String) -> Int {
         scheme == "https" ? 443 : 80
+    }
+
+    /// WebKit treats a host ending in a decimal or hexadecimal label as an IPv4 address.
+    private static func endsInNumber(_ host: String) -> Bool {
+        guard let last = host.split(separator: ".").last else { return false }
+        if last.utf8.allSatisfy({ (48...57).contains($0) }) { return true }
+        return last.hasPrefix("0x") && last.utf8.dropFirst(2).allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    private static func serializedIPv6Host(_ address: IPv6Address) -> String {
+        let compressed = address.debugDescription
+        guard compressed.contains("."), let lastColon = compressed.lastIndex(of: ":") else { return compressed }
+        // WebKit serializes the last two IPv6 groups as hex even for an embedded IPv4 address.
+        let bytes = Array(address.rawValue.suffix(4))
+        let first = UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+        let second = UInt16(bytes[2]) << 8 | UInt16(bytes[3])
+        return "\(compressed[...lastColon])\(String(first, radix: 16)):\(String(second, radix: 16))"
     }
 }
 
@@ -134,33 +253,64 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         let reply: (String?) -> Void
     }
 
+    private struct BusinessWork {
+        let task: Task<Void, Never>
+        let reply: (String?) -> Void
+    }
+
     private let origin: AllowedOrigin
+    private let handlerName: String
     private let scheduleReply: NativeIOSHost.ReplyScheduler
     private let wire: WireHost
     private let network: NetworkModule?
     private var activeDocument: String?
     private var pending: [Delivery] = []
+    private var businessWork: [UUID: BusinessWork] = [:]
     private let deferredReplies = DeferredReplies()
     private var validating = false
     private var validationEpoch = 0
     private var navigationEpoch = 0
+    private var userScript: WKUserScript?
     weak var webView: WKWebView?
 
-    init(origin: AllowedOrigin, options: NativeIOSHost.Options, watchNetwork: NetworkModule.Watch?,
+    init(origin: AllowedOrigin, options: NativeIOSHost.Options,
+         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler], enableEcho: Bool, handlerName: String,
+         watchNetwork: NetworkModule.Watch?,
          scheduleReply: @escaping NativeIOSHost.ReplyScheduler) {
         self.origin = origin
+        self.handlerName = handlerName
         self.scheduleReply = scheduleReply
         let network = options.networkStatus || options.networkChanges
             ? NetworkModule(watch: watchNetwork ?? NetworkModule.watchSystemPath) : nil
         self.network = network
-        wire = WireHost(platform: "ios", options: options, networkType: { network?.type ?? .unknown })
+        wire = WireHost(platform: "ios", options: options, businessMethods: businessMethods, enableEcho: enableEcho,
+                        networkType: { network?.type ?? .unknown })
+    }
+
+    func install(in controller: WKUserContentController) {
+        let script = WKUserScript(source: shim, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)
+        userScript = script
+        controller.addUserScript(script)
+        // The controller retains this handler. Its reference to the WebView is weak.
+        controller.addScriptMessageHandler(self, contentWorld: .page, name: handlerName)
+    }
+
+    func uninstall(from controller: WKUserContentController) {
+        controller.removeScriptMessageHandler(forName: handlerName, contentWorld: .page)
+        var scripts = controller.userScripts
+        guard let index = scripts.firstIndex(where: { $0 === userScript }) else { return }
+        // WebKit only supports removing scripts as a group. Restore the app's original instances in order.
+        scripts.remove(at: index)
+        controller.removeAllUserScripts()
+        scripts.forEach(controller.addUserScript)
     }
 
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
-        let outstanding = pending.count + deferredReplies.count
-        guard let webView, message.webView === webView, message.frameInfo.isMainFrame,
+        let outstanding = pending.count + deferredReplies.count + businessWork.count
+        guard let webView, message.webView === webView, message.name == handlerName,
+              message.frameInfo.isMainFrame,
               origin.matches(message.frameInfo.securityOrigin),
               let body = message.body as? [String], body.count == 2,
               body[0].utf8.count == 32, body[0].utf8.allSatisfy({
@@ -181,11 +331,19 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        didCommitNavigation()
+    }
+
+    func didCommitNavigation() {
         navigationEpoch += 1
         resetDocument()
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webContentProcessDidTerminate()
+    }
+
+    func webContentProcessDidTerminate() {
         navigationEpoch += 1
         validationEpoch += 1
         validating = false
@@ -200,6 +358,12 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         wire.reset()
         network?.stop()
         deferredReplies.discard()
+        let abandoned = businessWork.values
+        businessWork.removeAll()
+        for work in abandoned {
+            work.task.cancel()
+            work.reply(nil)
+        }
     }
 
     private func verifyNext() {
@@ -224,10 +388,15 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                         self.activeDocument = delivery.document
                     }
                     var acknowledge: (() -> Void)?
+                    var businessCall: WireHost.BusinessCall?
                     if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: delivery.exceedsInflightLimit,
+                                                        onBusinessCall: { businessCall = $0 },
                                                         afterReply: { acknowledge = $0 }) {
                         self.updateNetworkObservation()
-                        self.queueReply(response, for: delivery, acknowledge: acknowledge)
+                        self.queueReply(response, document: delivery.document, send: delivery.reply,
+                                        acknowledge: acknowledge)
+                    } else if let businessCall {
+                        self.start(businessCall, for: delivery)
                     } else {
                         delivery.reply(nil)
                     }
@@ -241,9 +410,32 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         }
     }
 
-    private func queueReply(_ response: String, for delivery: Delivery, acknowledge: (() -> Void)?) {
-        let id = deferredReplies.insert(response, document: delivery.document,
-                                        navigation: navigationEpoch, send: delivery.reply)
+    private func start(_ call: WireHost.BusinessCall, for delivery: Delivery) {
+        let id = UUID()
+        let document = delivery.document
+        let navigation = navigationEpoch
+        let task = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, self?.activeDocument == document, self?.navigationEpoch == navigation else { return }
+            let result: Result<Any, Error>
+            do {
+                result = .success(try await call.handler(call.params))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self, let work = self.businessWork.removeValue(forKey: id) else { return }
+            guard self.activeDocument == document, self.navigationEpoch == navigation,
+                  let response = self.wire.finishBusinessCall(call, result: result) else {
+                work.reply(nil)
+                return
+            }
+            self.queueReply(response, document: document, send: work.reply)
+        }
+        businessWork[id] = BusinessWork(task: task, reply: delivery.reply)
+    }
+
+    private func queueReply(_ response: String, document: String, send: @escaping (String?) -> Void,
+                            acknowledge: (() -> Void)? = nil) {
+        let id = deferredReplies.insert(response, document: document, navigation: navigationEpoch, send: send)
         scheduleReply(response) { [weak self] in
             guard let self, self.deferredReplies.complete(id, document: self.activeDocument, navigation: self.navigationEpoch)
             else { return false }
@@ -272,13 +464,16 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         }
     }
 
-    var shim: String {
-        guard let originJSON = try? JSONEncoder().encode(origin.serialized) else { return "" }
+    private var shim: String {
+        let encoder = JSONEncoder()
+        guard let originJSON = try? encoder.encode(origin.serialized),
+              let handlerJSON = try? encoder.encode(handlerName) else { return "" }
         let allowed = String(decoding: originJSON, as: UTF8.self)
+        let handler = String(decoding: handlerJSON, as: UTF8.self)
         return """
         (() => {
           if (location.origin !== \(allowed) || '__OJSB_TRANSPORT__' in window) return;
-          const handler = window.webkit?.messageHandlers?.ojsb;
+          const handler = window.webkit?.messageHandlers?.[\(handler)];
           if (!handler) return;
           const post = handler.postMessage.bind(handler);
           const newDocumentToken = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -321,7 +516,9 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             protocols: Object.freeze([1]),
             async postMessage(raw) {
               if (typeof raw !== 'string') return null;
-              return await post([documentToken, raw]);
+              const candidate = documentToken;
+              const reply = await post([candidate, raw]);
+              return candidate === documentToken ? reply : null;
             }
           });
           Object.defineProperty(window, '__OJSB_TRANSPORT__', {

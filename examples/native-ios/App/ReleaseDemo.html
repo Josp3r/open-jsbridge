@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenJSBridge iOS Release Demo</title>
+<style>
+  body { margin: 2rem 1rem; font: 1rem system-ui; color-scheme: light dark; }
+  h1 { font-size: 1.5rem; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>OpenJSBridge iOS Release Demo</h1>
+<pre id="bridge-results" aria-live="polite">Connecting to the native bridge…</pre>
+<script>
+  async function request(id, method, params, sid) {
+    const transport = window.__OJSB_TRANSPORT__;
+    if (!transport) throw new Error('The native transport is unavailable.');
+    const frame = { jsb: '1.0', rpc: { jsonrpc: '2.0', id, method, params } };
+    if (sid) frame.meta = { sid };
+    const raw = await transport.postMessage(JSON.stringify(frame));
+    const reply = JSON.parse(raw)?.rpc;
+    if (reply?.id !== id) throw new Error(`No reply for ${method}.`);
+    if (reply.error) throw new Error(reply.error.message);
+    return reply.result;
+  }
+
+  async function showResults() {
+    const output = document.querySelector('#bridge-results');
+    try {
+      const { sid } = await request('hello', 'bridge.hello', { protocols: [1] });
+      const [device, config] = await Promise.all([
+        request('device', 'device.getInfo@1', {}, sid),
+        request('config', 'acme.app.getConfig@1', {}, sid),
+      ]);
+      output.textContent = JSON.stringify({ device, config }, null, 2);
+      output.dataset.state = 'ready';
+    } catch (error) {
+      output.textContent = error.message;
+      output.dataset.state = 'error';
+    }
+  }
+
+  void showResults();
+</script>
+</html>

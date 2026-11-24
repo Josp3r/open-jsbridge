@@ -1,4 +1,4 @@
-#if canImport(WebKit)
+#if canImport(WebKit) && DEBUG
 import WebKit
 import XCTest
 @testable import NativeIOSHost

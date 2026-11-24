@@ -3,7 +3,7 @@
 > Swift Package：`OpenJSBridge`。首版参考实现使用 **iOS 14+ 的 WKWebView**，仅开放主 frame。iOS 13 回退通道按 §3 的条件后续启用。
 > 本文 API 以 Apple 公开 WebKit API 为准；标注 "iOS 14+" 的 API 请在接入时以当前 Xcode SDK 文档复核。
 
-要运行握手与 echo，参见 [Swift 示例](../examples/native-ios/README.md)。最小宿主的接入和验收条件见 [Native Host 最小接入](native-host.md)。
+要运行握手与 echo，参见 [Swift 示例](../examples/native-ios/README.md)。已有 App 可在 Release 中通过 `NativeIOSHost.attach` 接入自己的 `WKWebView`，注册业务方法，并继续管理原有导航。[Release 接入示例](../examples/native-ios/README.md#接入-app-自己的-wkwebview) · [Native Host 最小接入](native-host.md)
 
 ## 1. 总体结构
 
@@ -70,7 +70,7 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
 | Native→Web JSON-RPC 响应 | `replyHandler(responseString, nil)` → JS 侧 Promise resolve | `evaluateJavaScript` 调 `__OJSB_RECEIVE__` |
 | Native→Web 通知 | `callAsyncJavaScript` 向当前受信文档投递，见 §9 | 主 frame 回退待验证 |
 
-- `replyHandler` 的第二个参数用于通道故障，SDK 将 Promise rejection 映射为 `-32603`。协议响应通过第一个参数返回序列化后的信封。
+- `replyHandler` 的第二个参数用于通道故障。Web SDK 将传输 Promise 的拒绝映射为 `-32000`。业务 handler 意外抛错时，宿主通过第一个参数返回脱敏的 `-32603` JSON-RPC 响应，并保留原请求的 id 和会话关联。
 - WithReply 的每次入站调用都要完成一次回执。对通知、反向调用的响应以及直接丢弃的消息，调用 `replyHandler(NSNull(), nil)`。这个 `null` 是传输回执。`bridge.cancel` 引发的最终 `-32002` 响应使用原请求的 `replyHandler`，并携带原请求的 `rpc.id`。
 - iOS 13 只能向主 frame 执行 JavaScript。回退通道的响应也依赖 §9 的 document 校验，验证通过后才能启用回退。
 - 两种通道下，shim 的 `postMessage` 返回值不同（Promise vs undefined），SDK 已统一处理（web-sdk.md §2.2）。
@@ -339,7 +339,7 @@ let security = SecurityChain(
 | 主 frame 新 document 提交（`didCommit`） | 使旧 document 的 sid 失效；新 document 从握手开始 |
 | 同一 document 内路由变化 | 保留原 sid 和会话状态 |
 | `webViewWebContentProcessDidTerminate` | 所有 sid 失效，取消所有 Task |
-| WebView 释放 / `detach()` | 取消所有 Task、移除 handler 与 user script、释放 blob |
+| App 拆卸 WebView | App 调用 `Attachment.detach()`，取消旧任务并移除桥接 handler 与注入脚本 |
 
 会话失效时取消进行中的 handler 和反向请求，清理订阅、释放 blob，丢弃尚未投递的旧会话消息。仍持有的 WithReply 回调以传输层 `null` 完成一次，避免将旧会话的协议数据交给新 document。同一 document 内使用新 id 重试握手时，复用活动 sid。
 
