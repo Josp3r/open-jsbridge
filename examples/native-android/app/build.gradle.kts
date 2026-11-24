@@ -1,7 +1,9 @@
 plugins {
-    id("com.android.application") version "8.7.3"
-    id("org.jetbrains.kotlin.android") version "2.0.21"
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
+
+val androidTestBuildType = providers.gradleProperty("ojsbTestBuildType").orElse("debug")
 
 android {
     namespace = "dev.openjsbridge.example"
@@ -16,11 +18,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    buildFeatures {
-        buildConfig = true
-    }
+    testBuildType = androidTestBuildType.get()
 
-    sourceSets.getByName("test").resources.srcDir(rootProject.file("../../conformance-tests/fixtures"))
+    buildTypes {
+        release {
+            if (testBuildType == "release") {
+                signingConfig = signingConfigs.getByName("debug")
+            }
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -33,9 +39,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("androidx.webkit:webkit:1.12.1")
-    implementation("com.google.code.gson:gson:2.12.1")
-    testImplementation("junit:junit:4.13.2")
+    implementation(project(":host"))
+    releaseImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

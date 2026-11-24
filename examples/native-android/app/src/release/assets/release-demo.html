@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenJSBridge Android Release Demo</title>
+<style>
+  body { margin: 2rem 1rem; font: 1rem system-ui; color-scheme: light dark; }
+  h1 { font-size: 1.5rem; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>OpenJSBridge Android Release Demo</h1>
+<pre id="bridge-results" aria-live="polite">Connecting to the native bridge…</pre>
+<script>
+  async function showResults() {
+    const output = document.querySelector('#bridge-results');
+    const transport = window.__OJSB_TRANSPORT__;
+    const replies = new Map();
+    window.__OJSB_RECEIVE__ = raw => {
+      const { rpc } = JSON.parse(raw);
+      replies.get(rpc.id)?.(rpc);
+    };
+
+    async function request(id, method, params, sid) {
+      const frame = { jsb: '1.0', rpc: { jsonrpc: '2.0', id, method, params } };
+      if (sid) frame.meta = { sid };
+      let timeout;
+      try {
+        const reply = await new Promise((resolve, reject) => {
+          replies.set(id, resolve);
+          timeout = setTimeout(() => reject(new Error(`No reply for ${method}.`)), 5000);
+          transport.postMessage(JSON.stringify(frame));
+        });
+        if (reply.error) throw new Error(reply.error.message);
+        return reply.result;
+      } finally {
+        clearTimeout(timeout);
+        replies.delete(id);
+      }
+    }
+
+    try {
+      if (!transport) throw new Error('The native transport is unavailable.');
+      const { sid } = await request('hello', 'bridge.hello', { protocols: [1] });
+      const device = await request('device', 'device.getInfo@1', {}, sid);
+      const config = await request('config', 'acme.app.getConfig@1', {}, sid);
+      output.textContent = JSON.stringify({ device, config }, null, 2);
+      output.dataset.state = 'ready';
+    } catch (error) {
+      output.textContent = error.message;
+      output.dataset.state = 'error';
+    }
+  }
+
+  void showResults();
+</script>
+</html>
