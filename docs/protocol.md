@@ -8,7 +8,7 @@
 ```mermaid
 flowchart LR
   subgraph Web["Web 页面（任意 frame）"]
-    APP[业务代码] --> SDK["@open-jsbridge/web"]
+    APP[业务代码] --> SDK["open-jsbridge"]
     SDK --> SHIM["Host Shim<br/>window.__OJSB_TRANSPORT__"]
   end
   subgraph Host["Host（iOS / Android / Flutter / RN）"]
@@ -270,7 +270,7 @@ sequenceDiagram
 ```jsonc
 {
   "protocols": [1],                              // SDK 支持的主版本
-  "sdk": { "name": "@open-jsbridge/web", "version": "1.2.0" },
+  "sdk": { "name": "open-jsbridge", "version": "1.2.0" },
   "wants": ["events", "callbacks", "blob"]        // MAY，SDK 希望使用的可选特性
 }
 ```
@@ -633,7 +633,7 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 
 ```jsonc
 // Web → Host hello request
-{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"@open-jsbridge/web","version":"1.2.0"}}}}
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"open-jsbridge","version":"1.2.0"}}}}
 // Host → Web hello response
 {"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseImage":{"versions":[1]}},"events":["app.didEnterBackground"],"features":["callbacks","cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
 // Web → Host request

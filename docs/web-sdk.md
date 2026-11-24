@@ -1,4 +1,4 @@
-# Web SDK 设计（`@open-jsbridge/web`）
+# Web SDK 设计（`open-jsbridge`）
 
 > 目标：**一份 SDK 跑在所有宿主**（iOS / Android / Flutter / React Native / 浏览器 / mock）。SDK 只依赖 [protocol.md §2 Host Shim 契约](protocol.md#2-host-shim-契约transport-层)，不感知具体平台。
 
@@ -9,13 +9,12 @@
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
 ```ts
-import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
+import { bridge, BridgeError, ErrorCode } from 'open-jsbridge';
 
 await bridge.ready();                                   // 握手完成（或降级判定完成）
 
 if (bridge.has('device.getInfo', 1)) {
-  const info = await bridge.call('device.getInfo', {}, { timeout: 3000 });
-  // info 的类型由 codegen 推导：DeviceGetInfoResult
+  const info = await bridge.call<{ os: string; osVersion: string }>('device.getInfo', {}, { timeout: 3000 });
 }
 
 if (bridge.hasEvent('network.changed')) {
@@ -28,12 +27,6 @@ if (bridge.hasEvent('network.changed')) {
 const ac = new AbortController();
 bridge.call('media.chooseImage', { count: 3 }, { signal: ac.signal, timeout: 3000 });
 ac.abort();
-
-// 流式回调
-await bridge.call('file.download', { url }, { onCallback: (p) => setProgress(p.percent) });
-
-// 反向调用：Host 调用 Web
-bridge.handle('page.getShareInfo', async () => ({ title: document.title, url: location.href }));
 
 try { await bridge.call('acme.pay.create', { orderId }); }
 catch (e) {
@@ -94,7 +87,7 @@ export const bridge: Bridge;                                     // 默认单例
 
 设计说明：
 
-- **为什么是 `call(method, params)` 而不是 `bridge.device.getInfo()` 代理对象**：字符串 method 便于 tree-shaking、日志与 codegen 对齐；强类型通过 `MethodMap` 获得。codegen MAY 额外生成 `api.device.getInfo()` 的薄封装（可选子路径导出 `@open-jsbridge/web/typed`）。
+- **为什么是 `call(method, params)` 而不是 `bridge.device.getInfo()` 代理对象**：字符串 method 便于 tree-shaking、日志与 codegen 对齐；强类型通过 `MethodMap` 获得。codegen MAY 额外生成 `api.device.getInfo()` 的薄封装（可选子路径导出 `open-jsbridge/typed`）。
 - `params` 必须是 object（协议约束），SDK 在开发模式下对非 object 直接抛错。
 - `BridgeError extends Error`，带 `code / data / method / traceId`，可 `instanceof` 判断。
 
@@ -110,7 +103,7 @@ flowchart TB
   CODEC --> AD{Adapter}
   AD --> A1[InjectedShimAdapter<br/>window.__OJSB_TRANSPORT__]
   AD --> A2[BrowserFallbackAdapter]
-  AD --> A3["MockAdapter（@open-jsbridge/mock）"]
+  AD --> A3["MockAdapter（open-jsbridge/mock）"]
   AD --> A4[PostMessageAdapter（可选：受控 iframe 宿主/测试）]
 ```
 
@@ -214,10 +207,12 @@ addEventListener('pageshow', (e) => { if (e.persisted) core.rehandshake(); });
 - `invalidateSession()` 先清除活动会话、能力和握手尝试，再用 `-32002` 结算出站 pending 和队列，并取消旧会话中的 Web handler。旧 handler 完成后不向新会话发送响应。
 - `rehandshake()` 先使任何旧会话与握手失效，再发起新的 `bridge.hello`。仅在验证新尝试的响应后恢复业务消息分派，并重新订阅当前监听的事件。
 
-## 3. 降级与 polyfill
+## 3. 降级与 polyfill（设计）
+
+下例展示规划中的浏览器降级接口。
 
 ```ts
-import { createBridge, BrowserFallbackAdapter } from '@open-jsbridge/web';
+import { createBridge, BrowserFallbackAdapter } from 'open-jsbridge';
 
 const bridge = createBridge({
   fallback: new BrowserFallbackAdapter({
@@ -237,7 +232,7 @@ const bridge = createBridge({
 - 产物：`packages/web-sdk/src/generated/methods.d.ts`（标准 profile），业务方可在自己仓库对自定义 schema 运行 `ojsb-codegen --target ts` 并通过 **declaration merging** 扩展：
 
 ```ts
-declare module '@open-jsbridge/web' {
+declare module 'open-jsbridge' {
   interface MethodMap {
     'acme.pay.create': { params: { orderId: string }; result: { status: 'paid' | 'cancelled' } };
   }
@@ -246,45 +241,27 @@ declare module '@open-jsbridge/web' {
 
 - CI：codegen 结果入库，CI 运行 codegen 后 `git diff --exit-code`，防止 schema 与类型不一致。
 
-## 5. 构建产物与体积
+## 5. 构建与 npm 包
 
-| 产物 | 路径 | 用途 |
-|------|------|------|
-| ESM | `dist/index.mjs` | 现代打包器，`sideEffects: false`（默认单例放在独立入口 `@open-jsbridge/web/auto`） |
-| CJS | `dist/index.cjs` | SSR / 测试环境（SSR 下 `detect()` 返回 false，不访问 window） |
-| UMD/IIFE | `dist/ojsb.umd.min.js` | `<script>` 直接引入，全局 `OpenJSBridge` |
-| 类型 | `dist/index.d.ts` | 含 `MethodMap` 等可扩展接口 |
+`npm run build` 用 TypeScript 生成 ES2020 模块和声明文件。`npm run pack:web` 生成 `dist/open-jsbridge-0.1.0.tgz`，可以在独立项目里本地安装。
 
-- 构建：tsup 或 Rollup + esbuild，target `es2017`（覆盖 iOS 11+ WKWebView 与 Android System WebView 主流版本；更老环境由业务自行转译）。
-- 体积预算（min+gzip，CI 用 size-limit 卡口）：core ≤ 4 KB；含事件/反向调用/回调 ≤ 6 KB；devtools 单独包不计入。
-- 零运行时依赖；不使用 `Proxy`（低版本兼容与可调试性）。
+- `open-jsbridge` 提供默认 `bridge`、`createBridge`、错误类型和相关 TypeScript 声明。
+- `open-jsbridge/mock` 提供 `installMockTransport`、`createMockAdapter` 和对应的类型声明。开发页显式调用 `installMockTransport()` 后开始联调。
+- 包包含零运行时依赖的 ESM 模块。仓库的 `npm run demo:web` 仍直接使用本地编译产物。
+- 体积目标以 min+gzip 为准，核心 ≤ 4 KB，含事件、反向调用和回调的完整形态 ≤ 6 KB。
 
-`package.json` 关键字段：
-
-```json
-{
-  "name": "@open-jsbridge/web",
-  "type": "module",
-  "exports": {
-    ".":       { "types": "./dist/index.d.ts", "import": "./dist/index.mjs", "require": "./dist/index.cjs" },
-    "./auto":  { "types": "./dist/auto.d.ts",  "import": "./dist/auto.mjs" },
-    "./typed": { "types": "./dist/typed.d.ts", "import": "./dist/typed.mjs" }
-  },
-  "sideEffects": ["./dist/auto.mjs"],
-  "unpkg": "./dist/ojsb.umd.min.js"
-}
-```
+[独立项目接入示例](../examples/web-demo/README.md#在独立-web-项目安装)
 
 ## 6. Mock 与调试工具
 
-### 6.1 `@open-jsbridge/mock`
+### 6.1 `open-jsbridge/mock`
 
 M1 提供 `installMockTransport()`，开发环境可以在页面启动时调用一次，把 Mock 注册为 `window.__OJSB_TRANSPORT__`。业务代码使用同一个默认 `bridge`，首次调用走 SDK 的通道检测和自动握手。Node.js 或需要彼此隔离的测试也可以使用 `createMockAdapter()`。
 
 后续完整 Mock 宿主的配置和操作设计如下。
 
 ```ts
-import { installMockHost } from '@open-jsbridge/mock';
+import { installMockHost } from 'open-jsbridge/mock';
 
 const host = installMockHost({
   platform: 'ios',

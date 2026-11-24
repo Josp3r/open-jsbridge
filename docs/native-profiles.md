@@ -23,7 +23,7 @@
 ## Web 接入
 
 ```ts
-import { bridge } from '@open-jsbridge/web'
+import { bridge } from 'open-jsbridge'
 
 await bridge.ready()
 
