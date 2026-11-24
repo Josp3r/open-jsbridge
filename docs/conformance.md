@@ -115,7 +115,11 @@ flowchart TB
 | `LIFE-DOCUMENT-001` | 在旧 document 留下未完成的 handler 和待投递的结果，再导航到新 document；声明 iframe 时还要单独导航子 frame | 旧会话的 handler、订阅、blob 和待发送结果被清理；在新 document 的 transport 接收层断言未收到旧 payload |
 | `CALL-PRE-READY-001` | 延迟 hello，通过可控时钟使排队请求超时，然后完成握手 | 调用返回 `-32001`；transport 仅收到 hello，未收到该 request 或 cancel |
 | `CALL-PRE-READY-002` | 延迟 hello，对排队请求触发 AbortSignal，然后完成握手 | 调用返回 `-32002`；transport 仅收到 hello，未收到该 request 或 cancel |
-| `CALL-PRE-READY-003` | 延迟 hello 但在调用 deadline 之前完成握手，确认 request 发出后触发 AbortSignal | 发出的 request 使用剩余时长；`bridge.cancel` 通知的 `params.requestId` 指向原请求，外层 `meta.sid` 与原请求相同 |
+| `CALL-PRE-READY-003` | 延迟 hello，让宿主在调用 deadline 之前完成握手并声明 `cancel`，确认 request 发出后触发 AbortSignal | 发出的 request 使用剩余时长；`bridge.cancel` 通知的 `params.requestId` 指向原请求，外层 `meta.sid` 与原请求相同 |
+
+并发回归用例用 `maxInflight: 1` 验证握手前后提交的请求按顺序发出。占用并发槽的调用结算后，才发下一笔。等待并发槽时触发超时或 abort 的请求只在本地结算。宿主声明 `cancel` 时，取消已发送的请求会先发取消通知，再从队列继续发送。 [Web SDK 用例](../conformance-tests/bridge.test.mjs)
+
+事件用例验证订阅和调用共享并发槽，以及 `queueLimit: 0` 时仍会排队发送退订和 bfcache 恢复订阅。 [Web SDK 事件用例](../conformance-tests/web-events-sdk.test.mjs)
 
 验收 `LIFE-DOCUMENT-001` 时，先在旧文档发出请求并在原生侧暂停应答。整页导航后让新文档完成握手，再释放旧应答。在新文档的传输边界检查应答投递，再验证新文档仍能完成调用。iOS 还验证失效请求的 WithReply 回调仅收到一次 `null` 传输回执。
 

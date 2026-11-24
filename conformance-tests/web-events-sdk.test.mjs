@@ -15,14 +15,19 @@ function event(payload, sid = 'first', eventName = name) {
   return frame({ method: 'bridge.event', params: { name: eventName, payload } }, sid);
 }
 
-function fixture(defaultTimeoutMs = 15_000) {
+function fixture(defaultTimeoutMs = 15_000, { maxInflight = 64, onSend, queueLimit } = {}) {
   const sent = [];
   const routes = [];
   let route;
   const client = createBridge({
+    queueLimit,
     adapter: {
       send(raw) {
-        return new Promise((reply) => sent.push({ ...JSON.parse(raw), reply }));
+        return new Promise((reply) => {
+          const request = { ...JSON.parse(raw), reply };
+          sent.push(request);
+          onSend?.(request, route);
+        });
       },
       listen(receive) {
         routes.push(receive);
@@ -43,12 +48,108 @@ function fixture(defaultTimeoutMs = 15_000) {
     reply(request, {
       jsb: '1.0', sid, host: { platform: 'fixture', name: 'fixture', version: '1' },
       capabilities: { methods: {}, ...capabilities },
-      limits: { maxMessageBytes: 1_048_576, maxInflight: 64, defaultTimeoutMs },
+      limits: { maxMessageBytes: 1_048_576, maxInflight, defaultTimeoutMs },
     }, sid);
     await client.ready();
   };
   return { client, sent, routes, push, reply, hello };
 }
+
+test('event controls share the negotiated slot and process the acknowledgement before sending again', async (t) => {
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
+  t.after(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    delete globalThis.window;
+  });
+
+  const method = 'acme.app.getConfig';
+  const { client, sent, hello, reply, push } = fixture(15_000, {
+    maxInflight: 1,
+    onSend(request, receive) {
+      if (request.rpc.params?.afterSubscription) receive(event('during the next send'));
+    },
+  });
+  void client.ready();
+  await hello('first', { events: [name], features: [], methods: { [method]: { versions: [1] } } });
+  const first = client.call(method);
+  const seen = [];
+  const stop = client.on(name, (payload) => seen.push(payload));
+  const next = client.call(method, { afterSubscription: true });
+  void first.catch(() => {});
+  void next.catch(() => {});
+
+  assert.deepEqual(sent.map(({ rpc }) => rpc.method), ['bridge.hello', method]);
+  reply(sent[1], {});
+  assert.deepEqual(sent.map(({ rpc }) => rpc.method), ['bridge.hello', method, 'bridge.subscribe']);
+  push(event('before acknowledgement'));
+  assert.deepEqual(seen, []);
+
+  reply(sent[2], subscribed);
+  assert.deepEqual(sent.map(({ rpc }) => rpc.method), ['bridge.hello', method, 'bridge.subscribe', method]);
+  assert.deepEqual(seen, ['during the next send']);
+  reply(sent[3], {});
+  await Promise.all([first, stop.ready, next]);
+});
+
+test('a subscribe that times out while queued does not send an unsubscribe', async (t) => {
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
+  t.after(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    delete globalThis.window;
+  });
+
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const method = 'acme.app.getConfig';
+  const { client, sent, hello, reply } = fixture(5, { maxInflight: 1 });
+  void client.ready();
+  await hello('first', { events: [name], features: [], methods: { [method]: { versions: [1] } } });
+  const first = client.call(method, {}, { timeout: 1000 });
+  void first.catch(() => {});
+  const stop = client.on(name, () => {});
+  now = 5;
+  await assert.rejects(stop.ready, { code: ErrorCode.Timeout });
+
+  reply(sent[1], {});
+  await first;
+  assert.deepEqual(sent.map(({ rpc }) => rpc.method), ['bridge.hello', method]);
+});
+
+test('the last listener unsubscribes after a busy slot even with zero waiting capacity', async (t) => {
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
+  t.after(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    delete globalThis.window;
+  });
+
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const method = 'acme.app.getConfig';
+  const { client, sent, hello, reply, push } = fixture(5, { maxInflight: 1, queueLimit: 0 });
+  void client.ready();
+  await hello('first', { events: [name], features: [], methods: { [method]: { versions: [1] } } });
+  const seen = [];
+  const stop = client.on(name, (payload) => seen.push(payload));
+  reply(sent[1], subscribed);
+  await stop.ready;
+  const first = client.call(method, {}, { timeout: 1000 });
+  void first.catch(() => {});
+  stop();
+  now = 10;
+  await assert.rejects(client.call(method), { code: ErrorCode.NotReady });
+  push(event('after removing listener'));
+  assert.deepEqual(seen, []);
+  assert.deepEqual(sent.map(({ rpc }) => rpc.method), ['bridge.hello', 'bridge.subscribe', method]);
+
+  reply(sent[2], {});
+  await first;
+  assert.equal(sent[3]?.rpc.method, 'bridge.unsubscribe');
+  assert.equal(sent[3].meta.timeout, 5);
+  reply(sent[3], unsubscribed);
+});
 
 test('one acknowledged remote subscription fans out to listeners until the last one is removed', async () => {
   const { client, sent, push, reply, hello } = fixture();
@@ -298,6 +399,42 @@ test('bfcache restoration resubscribes the same listeners and ignores retired ro
   assert.deepEqual(seen, ['first', 'restored']);
   stop();
   reply(sent.at(-1), unsubscribed, 'restored');
+});
+
+test('bfcache restoration serializes acknowledged subscriptions with zero waiting capacity', async (t) => {
+  const window = new EventTarget();
+  Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
+  t.after(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    delete globalThis.window;
+  });
+  const second = 'app.foreground';
+  const capabilities = { events: [name, second], features: [] };
+  const { client, sent, push, reply, hello } = fixture(15_000, { maxInflight: 1, queueLimit: 0 });
+  void client.ready();
+  await hello('first', capabilities);
+  const seen = [];
+  const firstStop = client.on(name, (payload) => seen.push(payload));
+  reply(sent[1], subscribed);
+  await firstStop.ready;
+  const secondStop = client.on(second, (payload) => seen.push(payload));
+  const secondAck = { subscribed: [second], denied: [] };
+  reply(sent[2], secondAck);
+  await secondStop.ready;
+
+  window.dispatchEvent(new Event('pagehide'));
+  const restored = new Event('pageshow');
+  Object.defineProperty(restored, 'persisted', { value: true });
+  window.dispatchEvent(restored);
+  await hello('restored', capabilities);
+  assert.equal(sent.length, 5);
+  assert.deepEqual(sent[4].rpc.params.events, [name]);
+  reply(sent[4], subscribed, 'restored');
+  assert.deepEqual(sent[5]?.rpc.params.events, [second]);
+  reply(sent[5], secondAck, 'restored');
+  push(event('first', 'restored'));
+  push(event('second', 'restored', second));
+  assert.deepEqual(seen, ['first', 'second']);
 });
 
 test('a failed bfcache resubscribe cleans up without retrying established listeners in a loop', async (t) => {

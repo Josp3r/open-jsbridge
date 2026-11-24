@@ -16,6 +16,8 @@ export interface Session {
   features: readonly string[];
   defaultTimeout: number;
   maxMessageBytes: number;
+  maxInflight: number;
+  inflight: number;
 }
 
 export function isObject(value: unknown): value is JsonObject {
@@ -68,5 +70,7 @@ export function readSession(result: JsonValue, sid?: string): Session | undefine
     features: capabilities.features,
     defaultTimeout: limits.defaultTimeoutMs,
     maxMessageBytes: limits.maxMessageBytes,
+    maxInflight: limits.maxInflight,
+    inflight: 0,
   };
 }

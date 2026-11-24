@@ -31,8 +31,10 @@ function frame(rpc, meta) {
   return JSON.stringify({ jsb: '1.0', meta, rpc: { jsonrpc: '2.0', ...rpc } });
 }
 
-function connect(transport) {
-  transport.push(frame({ id: transport.sent[0].rpc.id, result: hello }));
+function connect(transport, limits = {}) {
+  transport.push(frame({ id: transport.sent[0].rpc.id, result: {
+    ...hello, limits: { ...hello.limits, ...limits },
+  } }));
 }
 
 function shimWindow(t, transport) {
@@ -74,6 +76,198 @@ test('Web and Mock negotiate once and echo concurrent requests without crossing 
   assert.equal(client.has(echo), true);
   assert.equal(client.has(echo, 1), true);
   assert.equal(client.has(echo, 2), false);
+});
+
+test('maxInflight preserves call order across the handshake and ready state', async (t) => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const first = client.call(echo, { order: 1 }, { signal: controller.signal });
+  const second = client.call(echo, { order: 2 }, { signal: controller.signal });
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await client.ready();
+  const third = client.call(echo, { order: 3 }, { signal: controller.signal });
+  const results = Promise.all([first, second, third]);
+  void results.catch(() => {});
+
+  const sentOrders = () => transport.sent.slice(1).map(({ rpc }) => rpc.params.order);
+  assert.deepEqual(sentOrders(), [1]);
+  transport.push(frame({ id: transport.sent[1].rpc.id, result: 'one' }, { sid: hello.sid }));
+  await setImmediate();
+  assert.deepEqual(sentOrders(), [1, 2]);
+  transport.push(frame({ id: transport.sent[2].rpc.id, result: 'two' }, { sid: hello.sid }));
+  await setImmediate();
+  assert.deepEqual(sentOrders(), [1, 2, 3]);
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: 'three' }, { sid: hello.sid }));
+  assert.deepEqual(await results, ['one', 'two', 'three']);
+});
+
+test('maxInflight rejects unsupported calls from before ready while the only slot is occupied', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const options = { signal: controller.signal };
+  const first = client.call(echo, {}, options);
+  void first.catch(() => {});
+  const unsupported = client.call(echo, {}, { ...options, version: 2 });
+  const expired = client.call('unknown.method', {}, { ...options, timeout: 10 });
+  const settled = Promise.allSettled([unsupported, expired]);
+  await setImmediate();
+  now = 10;
+  connect(transport, { maxInflight: 1 });
+  await client.ready();
+
+  const rejections = await Promise.race([settled, setImmediate()]);
+  assert.deepEqual(rejections?.map(({ reason }) => reason?.code), [ErrorCode.MethodNotFound, ErrorCode.Timeout]);
+  assert.equal(rejections[0].reason.data.reason, 'version_unsupported');
+  assert.deepEqual(transport.sent.map(({ rpc }) => rpc.method), ['bridge.hello', echo]);
+  transport.push(frame({ id: transport.sent[1].rpc.id, result: true }, { sid: hello.sid }));
+  assert.equal(await first, true);
+});
+
+test('maxInflight drops expired and aborted waiting calls and sends cancel before the next call', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await ready;
+
+  const activeController = new AbortController();
+  const waitingController = new AbortController();
+  const cleanup = new AbortController();
+  t.after(() => {
+    cleanup.abort();
+    waitingController.abort();
+    activeController.abort();
+  });
+  const abortedActive = assert.rejects(client.call(echo, {}, { signal: activeController.signal }), {
+    code: ErrorCode.Cancelled,
+  });
+  const expired = assert.rejects(client.call(echo, {}, { timeout: 10, signal: cleanup.signal }), {
+    code: ErrorCode.Timeout,
+  });
+  const abortedWaiting = assert.rejects(client.call(echo, {}, { signal: waitingController.signal }), {
+    code: ErrorCode.Cancelled,
+  });
+  const next = client.call(echo, { next: true }, { timeout: 1000, signal: cleanup.signal });
+  void Promise.all([abortedActive, expired, abortedWaiting, next]).catch(() => {});
+  const sentMethods = () => transport.sent.map(({ rpc }) => rpc.method);
+  assert.deepEqual(sentMethods(), ['bridge.hello', echo]);
+
+  waitingController.abort();
+  now = 10;
+  t.mock.timers.tick(10);
+  await Promise.all([expired, abortedWaiting]);
+  assert.deepEqual(sentMethods(), ['bridge.hello', echo]);
+
+  activeController.abort();
+  await abortedActive;
+  await setImmediate();
+  assert.deepEqual(sentMethods(), ['bridge.hello', echo, 'bridge.cancel', echo]);
+  assert.deepEqual(transport.sent[2].rpc.params, { requestId: transport.sent[1].rpc.id });
+  assert.deepEqual(transport.sent[2].meta, { sid: hello.sid });
+  assert.deepEqual(transport.sent[3].rpc.params, { next: true });
+  assert.equal(transport.sent[3].meta.timeout, 990);
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: true }, { sid: hello.sid }));
+  assert.equal(await next, true);
+});
+
+test('maxInflight reserves queueLimit for waiting calls once the session is ready', async (t) => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter, queueLimit: 1 });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await ready;
+
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const options = { signal: controller.signal };
+  const first = client.call(echo, {}, options);
+  const waiting = client.call(echo, {}, options);
+  const results = Promise.all([first, waiting]);
+  void results.catch(() => {});
+  assert.equal(transport.sent.length, 2);
+  await assert.rejects(client.call(echo, {}, { ...options, timeout: 1000 }), { code: ErrorCode.NotReady });
+  await assert.rejects(client.call(echo, {}, { ...options, version: 2 }), {
+    code: ErrorCode.MethodNotFound, data: { reason: 'version_unsupported' },
+  });
+  assert.equal(transport.sent.length, 2);
+
+  transport.push(frame({ id: transport.sent[1].rpc.id, result: 'first' }, { sid: hello.sid }));
+  await setImmediate();
+  assert.equal(transport.sent.length, 3);
+  transport.push(frame({ id: transport.sent[2].rpc.id, result: 'waiting' }, { sid: hello.sid }));
+  assert.deepEqual(await results, ['first', 'waiting']);
+});
+
+test('maxInflight admits each available slot when queueLimit is zero', async (t) => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter, queueLimit: 0 });
+  const ready = client.ready();
+  await setImmediate();
+  connect(transport, { maxInflight: 2 });
+  await ready;
+
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const options = { signal: controller.signal };
+  const first = client.call(echo, {}, options);
+  const second = client.call(echo, {}, options);
+  const results = Promise.all([first, second]);
+  void results.catch(() => {});
+  await setImmediate();
+  assert.equal(transport.sent.length, 3);
+  await assert.rejects(client.call(echo, {}, { ...options, timeout: 1000 }), { code: ErrorCode.NotReady });
+  assert.equal(transport.sent.length, 3);
+
+  transport.push(frame({ id: transport.sent[2].rpc.id, result: 'second' }, { sid: hello.sid }));
+  transport.push(frame({ id: transport.sent[1].rpc.id, result: 'first' }, { sid: hello.sid }));
+  assert.deepEqual(await results, ['first', 'second']);
+});
+
+test('maxInflight releases slots after both synchronous and asynchronous send failures', async (t) => {
+  const transport = controlledTransport();
+  let rejectSend;
+  const client = createBridge({ adapter: {
+    ...transport.adapter,
+    send(raw) {
+      transport.adapter.send(raw);
+      const order = transport.sent.at(-1).rpc.params?.order;
+      if (order === 1) throw new Error('Fixture synchronous send error');
+      if (order === 2) return new Promise((_, reject) => { rejectSend = reject; });
+    },
+  } });
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const options = { signal: controller.signal };
+  const sync = assert.rejects(client.call(echo, { order: 1 }, options), { code: ErrorCode.Unavailable });
+  const async = assert.rejects(client.call(echo, { order: 2 }, options), { code: ErrorCode.Unavailable });
+  const final = client.call(echo, { order: 3 }, options);
+  void Promise.all([sync, async, final]).catch(() => {});
+  await setImmediate();
+  connect(transport, { maxInflight: 1 });
+  await client.ready();
+  await sync;
+
+  const sentOrders = () => transport.sent.slice(1).map(({ rpc }) => rpc.params.order);
+  assert.deepEqual(sentOrders(), [1, 2]);
+  rejectSend(new Error('Fixture asynchronous send error'));
+  await async;
+  await setImmediate();
+  assert.deepEqual(sentOrders(), [1, 2, 3]);
+  transport.push(frame({ id: transport.sent[3].rpc.id, result: 'third' }, { sid: hello.sid }));
+  assert.equal(await final, 'third');
 });
 
 test('methods and explicit versions absent from capabilities fail locally', async () => {
@@ -295,12 +489,15 @@ test('pagehide retires the receiver and pending calls, then bfcache restore nego
   const client = createBridge({ handshakeTimeout: 200 });
   const before = client.ready();
   await setImmediate();
-  sent[0].resolve(frame({ id: sent[0].rpc.id, result: hello }));
+  sent[0].resolve(frame({ id: sent[0].rpc.id, result: {
+    ...hello, limits: { ...hello.limits, maxInflight: 1 },
+  } }));
   await before;
   const pending = assert.rejects(client.call(echo), { code: ErrorCode.Cancelled });
+  const queued = assert.rejects(client.call(echo), { code: ErrorCode.Cancelled });
 
   shim.window.dispatchEvent(new Event('pagehide'));
-  await pending;
+  await Promise.all([pending, queued]);
   assert.equal(shim.receiver, undefined);
   assert.equal(client.has(echo), false);
   assert.equal(sent.length, 2);

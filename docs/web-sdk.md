@@ -6,7 +6,7 @@
 
 当前实现提供 `createBridge`、默认 `bridge`、`ready`、`has`、`call` 和事件相关的 `on`、`off`、`hasEvent`。浏览器 Mock 可用于事件联调。原生宿主的事件能力以握手声明为准。此处还展示了后续的流式回调、反向调用和 codegen 设计。
 
-App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后发送排队的请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
+App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
@@ -26,7 +26,7 @@ if (bridge.hasEvent('network.changed')) {
 
 // 取消
 const ac = new AbortController();
-bridge.call('media.chooseImage', { count: 3 }, { signal: ac.signal, timeout: 0 });
+bridge.call('media.chooseImage', { count: 3 }, { signal: ac.signal, timeout: 3000 });
 ac.abort();
 
 // 流式回调
@@ -147,11 +147,13 @@ Web SDK 和 Mock 共用 [TypeScript codec](../packages/protocol/src/index.ts)。
 - 把请求登记到 pending 时启动基于单调时钟的超时计时，并安装 `AbortSignal` 监听。响应、发送失败、超时或取消都会移除 pending、定时器和监听。同一请求只结算一次。
 - Adapter 的 Promise 回复与 push 共用接收路径。先校验信封和 RPC 结构，随后验证会话。只有当前会话中已发送、仍有效并匹配 `rpc.id` 的响应才能结算调用。`rpc.id: null` 仅用于协议诊断。
 - `bridge.hello` 直接发送。握手的响应按本次尝试的 id 与 deadline 匹配。成功时校验 `rpc.result.sid`、协商版本、能力和限制，响应外层若提供 `meta.sid` 则须与结果一致。旧握手响应无法建立会话。
-- 对已发出的请求，取消使用无 RPC id 的 `bridge.cancel` notification，`rpc.params.requestId` 是原请求 id。SDK 仅向原活动会话发送取消。
-- M2 通知分发器将显式处理 `bridge.event` 与 `bridge.progress`。进度通过 `rpc.params.requestId` 和 `seq` 关联，最终结果仍由一次普通 response 结束。
-- M1 按协商的 `maxMessageBytes` 检查完整信封的 UTF-8 字节数。发送端在超限时以 `-32006` 本地结算，接收端在解析前丢弃超限帧。按 `maxInflight` 排队和 schema 授权的无超时长任务留待后续。
+- 对已发出的请求，取消使用无 RPC id 的 `bridge.cancel` 通知，`rpc.params.requestId` 是原请求 id。SDK 仅向仍然有效且声明 `cancel` 能力的原会话发送取消。
+- 通知分发器目前处理 `bridge.event`。后续的 `bridge.progress` 会通过 `rpc.params.requestId` 和 `seq` 关联进度，最终结果仍由一次普通 response 结束。
+- SDK 按协商的 `maxMessageBytes` 检查完整信封的 UTF-8 字节数。发送端在超限时以 `-32006` 本地结算，接收端在解析前丢弃超限帧。schema 授权的无超时长任务留待后续。
 
 ### 2.3 Pre-ready 队列
+
+等待握手和等待并发槽的调用共用一个 FIFO 队列。握手后，普通调用和订阅控制请求都按 `limits.maxInflight` 发送。
 
 ```mermaid
 sequenceDiagram
@@ -165,20 +167,17 @@ sequenceDiagram
   S->>H: bridge.hello
   S->>S: A 的 deadline 到达 → 移出队列
   S-->>B: A reject -32001
-  H-->>S: 有效 hello 响应 { sid, capabilities }
-  loop 冲刷
-    S->>S: 核对 pending 与剩余时间，检查 capabilities
-    alt method 不可用
-      S-->>B: reject -32601（不发送）
-    else
-      S->>H: B（当前 sid 与剩余 timeout）
-    end
+  H-->>S: 有效 hello 响应 { sid, capabilities, limits }
+  S->>S: 检查等待中的调用与 capabilities
+  loop 并发槽可用时按入队顺序处理
+    S->>S: 核对 pending 与剩余时间
+    S->>H: B（当前 sid 与剩余 timeout）
   end
 ```
 
-- 队列上限默认 100，溢出 reject `-32005`。
-- deadline 从业务调用时开始。冲刷时按入队顺序从队列移除各项，再调用 `sendRequest` 跳过已结算的项，检查剩余时间和能力。若 deadline 已到，即使定时器回调尚未运行，也立即 reject `-32001`。发出时 `meta.ts` 写入发送时刻，`meta.timeout` 写入剩余时间。定时器仍按原 deadline 运行。
-- 入队后发生 abort 或超时，SDK 分别以 `-32002` / `-32001` 在本地结算并移除该项，尚未发出的调用不发送 wire `cancel`。已发出的调用只向原会话发送 `cancel`，会话失效后直接完成本地清理。
+- `createBridge({ queueLimit })` 控制新调用可加入的等待队列，默认 100。队列满时，需排队的业务调用和首次订阅返回 `ErrorCode.NotReady`（`-32005`）。`queueLimit: 0` 下，这些请求需要握手完成并有可用并发槽。
+- 业务调用的 deadline 包含等待握手和等待并发槽的时间。首次订阅从握手后进入队列时计时。握手后按能力过滤等待的调用。发送前再次检查剩余时间，即使定时器回调尚未运行，过期调用也立即返回 `-32001`。发出时 `meta.ts` 写入发送时刻，`meta.timeout` 写入剩余时间。
+- 尚未发送的调用发生 abort 或超时，只在本地以 `-32002` 或 `-32001` 结算。已发出的调用结算后释放 SDK 的并发槽。若调用发生 abort 或超时，且原会话仍有效并声明 `cancel`，SDK 先发取消通知，再发后续请求。当前 iOS 和 Android 参考宿主的 wire 取消仍待实现，本地结算后旧任务可能继续运行，后续请求仍可能收到宿主的 `-32008`。
 - 降级判定为 `unavailable` 时，队列中所有调用 reject `-32000`。
 
 ### 2.4 事件多路复用
@@ -203,6 +202,7 @@ try {
 - `await bridge.ready()` 后可以用 `bridge.hasEvent(name)` 查询当前宿主声明。订阅许可仍以 `off.ready` 的结果为准。
 - 同一事件的监听者共用一次远端订阅。`bridge.off(name, listener)` 移除指定监听，`bridge.off(name)` 移除该事件的全部监听。最后一个监听移除时，SDK 发送退订。
 - SDK 只分发当前会话中已获确认的事件。`pagehide` 后旧会话的通知失效。页面从 bfcache 恢复并重新握手时，SDK 为仍注册的监听重新订阅。
+- 自动退订和已确认监听的恢复订阅可以在队列满时入队。它们按同一队列顺序等待并发槽，从发送时开始计时，随当前会话失效一并清除。
 
 ### 2.5 生命周期处理
 
@@ -319,9 +319,9 @@ export interface BridgePlugin {
 - 当前使用 Node test runner。仓库根目录执行 `npm ci`、`npm test`，编译 TypeScript 后运行 JSON 信封样例和 SDK ↔ Mock 用例。浏览器与真实 WebView 用例在对应宿主接入时加入。
 - 覆盖点（与 conformance 用例 id 对应）：
   - id 唯一性、并发 1000 次调用无串号
-  - 超时触发 → reject -32001 → 发送 cancel；迟到 response 被丢弃
+  - 在途调用超时返回 `-32001`，向支持取消的原会话发送通知并丢弃迟到响应
   - AbortSignal 取消（调用前已 abort / 调用中 abort）
-  - pre-ready 队列：顺序、溢出、握手失败全部 reject，等待握手时超时或 abort 不发送 request/cancel，剩余 timeout 随发出时写入
+  - 调用队列：握手前后按 `maxInflight` 和入队顺序发出请求，覆盖队列满、握手失败、排队期间的超时或 abort，以及发送时的剩余 timeout
   - 能力过滤：未广告 method 不发送
   - reply 通道（send 返回 Promise）与异步通道行为一致（同一组用例参数化跑两遍）
   - 事件引用计数订阅/退订、重新握手后重新订阅

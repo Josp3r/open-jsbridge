@@ -3,7 +3,7 @@ import {
   type Envelope, type JsonObject, type JsonValue, type RpcRequest,
 } from '../../protocol/src/index.js';
 import { BridgeError } from './errors.js';
-import { EventSubscriptions, hasSessionEvent, type EventListener, type EventSubscription } from './events.js';
+import { EventSubscriptions, hasSessionEvent, type EventControl, type EventListener, type EventSubscription } from './events.js';
 import { isObject, readSession, type HostInfo, type Session } from './session.js';
 import { findBrowserAdapter, type Adapter } from './transport.js';
 
@@ -41,7 +41,8 @@ interface PendingCall {
   request: RpcRequest;
   eventControl: boolean;
   traceId: string | undefined;
-  deadline: number;
+  deadline: number | undefined;
+  onDispatch: (() => void) | undefined;
   session?: Session;
   stopTimer?: () => void;
   stopListening?: () => void;
@@ -85,8 +86,9 @@ class WebBridge implements Bridge {
   private session: Session | undefined;
   private hello: HelloAttempt | undefined;
   private readonly pending = new Map<string, PendingCall>();
+  private draining = false;
   private readonly events = new EventSubscriptions(
-    (method, params, onReply) => this.request(method, params, {}, onReply),
+    (method, params, control) => this.request(method, params, {}, control),
     () => this.connectForEvents(),
   );
   private readonly idPrefix = `w-${++bridgeCount}-${Math.random().toString(36).slice(2, 8)}`;
@@ -138,7 +140,7 @@ class WebBridge implements Bridge {
     method: string,
     params: JsonObject | undefined,
     options: CallOptions,
-    onEventControlReply?: (result: JsonValue) => void,
+    control?: EventControl,
   ): Promise<T> {
     const { signal, traceId, version } = options;
     if (typeof method !== 'string') {
@@ -161,32 +163,40 @@ class WebBridge implements Bridge {
     if (!Number.isSafeInteger(timeout) || timeout <= 0) {
       return Promise.reject(new BridgeError(ErrorCode.InvalidParams, 'Expected a positive timeout', context));
     }
-    if (!this.session && this.pending.size >= this.queueLimit) {
+    const wireMethod = version === undefined || suffix ? method : `${method}@${version}`;
+    const eventControl = control !== undefined;
+    const waitForSlot = control?.waitForSlot === true;
+    const session = this.session;
+    if (session) {
+      const error = this.unsupportedMethod(wireMethod, eventControl, traceId);
+      if (error) return Promise.reject(error);
+    }
+    // Event maintenance must eventually run even when the waiting queue is full.
+    if (!waitForSlot && this.pending.size - (session?.maxInflight ?? 0) >= this.queueLimit) {
       return Promise.reject(new BridgeError(ErrorCode.NotReady, 'Pending call queue is full', context));
     }
 
     const id = this.createId();
-    const wireMethod = version === undefined || suffix ? method : `${method}@${version}`;
     const request: RpcRequest = {
       jsonrpc: '2.0', id, method: wireMethod, ...(params === undefined ? {} : { params }),
     };
-    const deadline = performance.now() + timeout;
+    const deadline = waitForSlot ? undefined : performance.now() + timeout;
     return new Promise<T>((resolve, reject) => {
       const pending: PendingCall = {
-        request, traceId, deadline, eventControl: onEventControlReply !== undefined, reject,
+        request, traceId, deadline, eventControl, onDispatch: control?.onDispatch, reject,
         resolve: (value) => {
-          onEventControlReply?.(value);
+          control?.onReply(value);
           resolve(value as T);
         },
       };
       this.pending.set(id, pending);
-      pending.stopTimer = atDeadline(deadline, () => this.fail(id, ErrorCode.Timeout, 'Call timed out', true));
+      if (deadline !== undefined) this.startTimeout(pending, deadline);
       if (signal) {
         const abort = () => this.fail(id, ErrorCode.Cancelled, 'Call cancelled', true);
         signal.addEventListener('abort', abort, { once: true });
         pending.stopListening = () => signal.removeEventListener('abort', abort);
       }
-      if (this.session) this.dispatch(pending, this.session);
+      if (this.session) this.drain();
       else void this.ready().catch(() => {});
     });
   }
@@ -259,7 +269,14 @@ class WebBridge implements Bridge {
       requireActive();
       this.session = session;
       this.currentState = 'ready';
-      for (const pending of this.pending.values()) this.dispatch(pending, session);
+      for (const call of this.pending.values()) {
+        const { request: { id, method }, deadline, eventControl, traceId } = call;
+        const error = deadline !== undefined && performance.now() >= deadline
+          ? new BridgeError(ErrorCode.Timeout, 'Call timed out', { method, traceId })
+          : this.unsupportedMethod(method, eventControl, traceId);
+        if (error) this.take(id)?.reject(error);
+      }
+      this.drain();
       requireActive();
       this.events.start(session);
       requireActive();
@@ -299,20 +316,34 @@ class WebBridge implements Bridge {
     }
   }
 
-  private dispatch(pending: PendingCall, session: Session): void {
-    const { request, deadline, traceId } = pending;
-    if (pending.session) return;
-    const timeout = Math.ceil(deadline - performance.now());
-    if (timeout <= 0) return this.fail(request.id, ErrorCode.Timeout, 'Call timed out');
-    const internalEventControl = pending.eventControl &&
-      (request.method === 'bridge.subscribe' || request.method === 'bridge.unsubscribe');
-    if (!internalEventControl && !this.has(request.method)) {
-      const reason = this.has(request.method.replace(versionSuffix, '')) ? 'version_unsupported' : 'method_not_found';
-      this.take(request.id)?.reject(new BridgeError(ErrorCode.MethodNotFound, 'Method not available', {
-        method: request.method, traceId, data: { reason },
-      }));
-      return;
+  private drain(): void {
+    const session = this.session;
+    if (!session || this.draining || session.inflight >= session.maxInflight) return;
+    // Adapters can synchronously deliver a response while send() is on the stack.
+    this.draining = true;
+    try {
+      for (const call of this.pending.values()) {
+        if (this.session !== session || session.inflight >= session.maxInflight) break;
+        if (!call.session) this.dispatch(call, session);
+      }
+    } finally {
+      this.draining = false;
     }
+  }
+
+  private unsupportedMethod(method: string, eventControl: boolean, traceId: string | undefined): BridgeError | undefined {
+    if (eventControl && (method === 'bridge.subscribe' || method === 'bridge.unsubscribe')) return;
+    if (this.has(method)) return;
+    const reason = this.has(method.replace(versionSuffix, '')) ? 'version_unsupported' : 'method_not_found';
+    return new BridgeError(ErrorCode.MethodNotFound, 'Method not available', { method, traceId, data: { reason } });
+  }
+
+  private dispatch(pending: PendingCall, session: Session): void {
+    const { request, traceId } = pending;
+    const now = performance.now();
+    const deadline = pending.deadline ?? now + session.defaultTimeout;
+    const timeout = Math.ceil(deadline - now);
+    if (timeout <= 0) return this.fail(request.id, ErrorCode.Timeout, 'Call timed out');
 
     let raw: string;
     try {
@@ -333,8 +364,16 @@ class WebBridge implements Bridge {
       this.fail(request.id, ErrorCode.Timeout, 'Call timed out');
       return;
     }
+    if (pending.deadline === undefined) this.startTimeout(pending, deadline);
     pending.session = session;
+    session.inflight++;
+    pending.onDispatch?.();
     this.post(raw, request.id, () => this.fail(request.id, ErrorCode.Unavailable, 'Call failed to send'));
+  }
+
+  private startTimeout(pending: PendingCall, deadline: number): void {
+    pending.deadline = deadline;
+    pending.stopTimer = atDeadline(deadline, () => this.fail(pending.request.id, ErrorCode.Timeout, 'Call timed out', true));
   }
 
   private post(raw: string, id?: string, onFailure: () => void = () => {}): void {
@@ -379,7 +418,7 @@ class WebBridge implements Bridge {
     if (!activeSession || activeSession.sid !== meta?.sid) return;
     const call = this.pending.get(rpc.id);
     if (call?.session !== activeSession) return;
-    if (performance.now() >= call.deadline) {
+    if (call.deadline !== undefined && performance.now() >= call.deadline) {
       this.fail(rpc.id, ErrorCode.Timeout, 'Call timed out', true);
       return;
     }
@@ -389,12 +428,14 @@ class WebBridge implements Bridge {
         data: rpc.error.data, method: call.request.method, traceId: call.traceId,
       }));
     } else call.resolve(rpc.result);
+    this.drain();
   }
 
   private take(id: string): PendingCall | undefined {
     const call = this.pending.get(id);
     if (!call) return;
     this.pending.delete(id);
+    if (call.session) call.session.inflight--;
     call.stopTimer?.();
     call.stopListening?.();
     return call;
@@ -411,6 +452,7 @@ class WebBridge implements Bridge {
         rpc: { jsonrpc: '2.0', method: 'bridge.cancel', params: { requestId: id } },
       }));
     }
+    this.drain();
   }
 }
 
