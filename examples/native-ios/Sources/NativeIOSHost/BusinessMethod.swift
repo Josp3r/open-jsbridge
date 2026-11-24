@@ -15,12 +15,16 @@ public extension NativeIOSHost {
 
         /// Registers a qualified name such as `acme.app.getConfig` with a version 1 handler.
         public init(_ name: String, handler: @escaping Handler) throws {
-            let namespace = name.prefix(while: { $0 != "." })
-            guard !Self.reservedNamespaces.contains(namespace), WireHost.isQualifiedBaseName(name) else {
+            guard Self.isAllowedName(name) else {
                 throw BusinessMethodError.invalidName(name)
             }
             self.name = name
             self.handler = handler
+        }
+
+        static func isAllowedName(_ name: String) -> Bool {
+            let namespace = name.prefix(while: { $0 != "." })
+            return !Self.reservedNamespaces.contains(namespace) && WireHost.isQualifiedBaseName(name)
         }
     }
 

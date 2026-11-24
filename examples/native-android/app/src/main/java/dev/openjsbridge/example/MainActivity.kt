@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
 import android.view.Gravity
+import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -34,7 +35,7 @@ class MainActivity : Activity() {
                 bridge = null
                 webView = null
                 showMessage("WebView 进程已退出。请重新打开示例。")
-                view.destroy()
+                destroyWebView(view)
                 return true
             }
         }
@@ -47,19 +48,21 @@ class MainActivity : Activity() {
 
         bridge = attachment
         webView = demo
-        setContentView(demo)
+        setContentView(createExampleView(demo, attachment))
         loadExamplePage(demo)
     }
 
     override fun onDestroy() {
         bridge?.detach()
         bridge = null
-        webView?.let {
-            setContentView(TextView(this))
-            it.destroy()
-        }
+        webView?.let(::destroyWebView)
         webView = null
         super.onDestroy()
+    }
+
+    private fun destroyWebView(view: WebView) {
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.destroy()
     }
 
     private fun showMessage(message: String) {

@@ -12,6 +12,22 @@
 
 联调构建注册 `conformance.echo` v1，原样返回对象参数，省略参数时返回 `{}`。示例还启用可选的设备查询、网络查询和网络事件。宿主握手时分别声明可用的方法和事件。客户端执行本地超时与取消。远端取消、反向调用或 iframe 需要宿主实现对应契约后再声明能力。[echo Schema](../spec/methods/conformance/echo.json) · [原生基础能力](native-profiles.md)
 
+## App 自定义事件
+
+App 可在接入时注册自己的事件名，例如 `acme.app.configChanged`。名称沿用业务方法的命名规则。每个接入实例通过 `emit` 向当前文档发送事件。事件写入 `capabilities.events`，订阅确认后才允许推送。退订或换页会结束原订阅。
+
+```ts
+const refreshConfig = () => bridge.call('acme.app.getConfig').then(renderConfig)
+const off = bridge.on('acme.app.configChanged', () => {
+  void refreshConfig().catch(reportError)
+})
+await off.ready
+await refreshConfig()
+// 组件卸载时调用 off()
+```
+
+事件用来通知状态变化，页面可以调用原查询方法读取当前值。`emit` 返回 `true` 表示宿主接受本次推送，页面收取取决于当前文档的生命周期。 [事件协议](protocol.md#9-事件native--web-推送) · [iOS 接入](../examples/native-ios/README.md#接入-app-自己的-wkwebview) · [Android 接入](../examples/native-android/README.md#接入-app-自己的-webview)
+
 ## 验收
 
 - 打开 `/?host=native` 后直接发送 echo，确认首次调用得到原样结果，连接状态显示真实平台。用未注入通道的浏览器打开该 URL，调用应报告通道不可用。

@@ -1,14 +1,21 @@
 package dev.openjsbridge.example
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.SystemClock
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import dev.openjsbridge.host.AndroidBridge
 import dev.openjsbridge.host.BusinessMethod
 import kotlinx.coroutines.awaitCancellation
@@ -44,7 +51,32 @@ class ReleaseActivityTest {
             assertEquals("\"$ORIGIN\"", evaluate(scenario, "location.origin"))
             assertEquals("\"android\"", evaluate(scenario, "$results.device.os"))
             assertEquals("true", evaluate(scenario, "typeof $results.device.osVersion === 'string' && $results.device.osVersion.length > 0"))
-            assertEquals("\"system\"", evaluate(scenario, "$results.config.theme"))
+            val theme = configPreferences().getString("theme", null) ?: "system"
+            assertEquals(JsonPrimitive(theme).toString(), evaluate(scenario, "$results.config.theme"))
+        }
+    }
+
+    @Test
+    fun nativeThemeToggleUpdatesTheReleasePage() {
+        val preferences = configPreferences()
+        val originalTheme = preferences.getString("theme", null)
+        val expectedTheme = if (originalTheme == "dark") "light" else "dark"
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                awaitScript(scenario, "document.querySelector('#bridge-results')?.dataset.state === 'ready'")
+                scenario.onActivity { activity ->
+                    val toggle = checkNotNull(activity.findViewById<Button>(R.id.demo_toggle_theme))
+                    assertTrue(toggle.performClick())
+                }
+                awaitScript(scenario, """
+                    document.querySelector('#config-event')?.textContent === '$CONFIG_CHANGED: $expectedTheme' &&
+                      JSON.parse(document.querySelector('#bridge-results').textContent).config.theme === '$expectedTheme'
+                """.trimIndent())
+                assertEquals(expectedTheme, preferences.getString("theme", null))
+            }
+        } finally {
+            // Restores the prior value, or removes the key if it had no value.
+            assertTrue(preferences.edit().putString("theme", originalTheme).commit())
         }
     }
 
@@ -55,14 +87,94 @@ class ReleaseActivityTest {
             hello(scenario, "/")
             assertEquals("true", evaluate(scenario, """
                 (() => {
-                    const { methods } = nativeReplies['probe-hello'].result.capabilities;
+                    const { methods, events } = nativeReplies['probe-hello'].result.capabilities;
                     return methods['device.getInfo'].versions.join() === '1' &&
                       methods['acme.app.getConfig'].versions.join() === '1' &&
+                      events.join() === '$CONFIG_CHANGED' &&
                       !('conformance.echo' in methods);
                 })()
             """.trimIndent()))
             evaluate(scenario, "window.sendNative('invalid-config', 'acme.app.getConfig', {unexpected: true})")
             awaitScript(scenario, "nativeReplies['invalid-config']?.error?.code === -32602")
+        }
+    }
+
+    @Test
+    fun unregisteredBusinessEventIsDeniedAndCannotBeEmitted() {
+        withEventProbe { scenario, webView, attachment ->
+            scenario.onActivity { loadPage(webView, "$ORIGIN/unregistered") }
+            hello(scenario, "/unregistered")
+            assertEquals("0", evaluate(scenario, "nativeReplies['probe-hello'].result.capabilities.events.length"))
+
+            evaluate(scenario, "window.sendNative('subscribe', 'bridge.subscribe', {events: ['$CONFIG_CHANGED']})")
+            awaitScript(scenario, """
+                nativeReplies.subscribe?.result?.subscribed?.length === 0 &&
+                  nativeReplies.subscribe?.result?.denied?.join() === '$CONFIG_CHANGED'
+            """.trimIndent())
+            scenario.onActivity { assertFalse(attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE)) }
+            awaitDeviceRoundTrip(scenario)
+            assertEquals("0", evaluate(scenario, "nativeEvents.length"))
+        }
+    }
+
+    @Test
+    fun businessEventRequiresAConfirmedSubscriptionInTheCurrentReleaseDocument() {
+        val firstCommit = CompletableFuture<String>()
+        var forwardCommits = false
+        withEventProbe(
+            events = listOf(CONFIG_CHANGED),
+            shouldForwardCommit = { url ->
+                if (!forwardCommits) firstCommit.complete(url)
+                forwardCommits
+            },
+        ) { scenario, webView, attachment ->
+            scenario.onActivity { loadPage(webView, "$ORIGIN/events-first") }
+            startHello(scenario, "/events-first")
+            val commitUrl = firstCommit.get(5, TimeUnit.SECONDS)
+            assertEquals("false", evaluate(scenario, "'probe-hello' in nativeReplies"))
+            scenario.onActivity {
+                assertFalse("Emit before forwarding the first commit", attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE))
+                forwardCommits = true
+                attachment.onPageCommitVisible(commitUrl)
+            }
+            val firstSid = awaitHello(scenario)
+            scenario.onActivity {
+                assertFalse("Emit before subscribing", attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE))
+            }
+
+            subscribe(scenario)
+            val payload = JsonParser.parseString("""{"theme":"dark","details":{"changes":[true,null,2,"native"]}}""")
+            scenario.onActivity { assertTrue(attachment.emit(CONFIG_CHANGED, payload)) }
+            assertEvent(scenario, firstSid, payload)
+
+            evaluate(scenario, "window.sendNative('off', 'bridge.unsubscribe@1', {events: ['$CONFIG_CHANGED']})")
+            awaitScript(scenario, "nativeReplies.off?.result?.unsubscribed?.join() === '$CONFIG_CHANGED'")
+            scenario.onActivity {
+                assertFalse("Emit after unsubscribe", attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE))
+            }
+            subscribe(scenario, id = "resubscribe")
+            assertEquals("1", evaluate(scenario, "nativeEvents.length"))
+
+            // Leave the old page subscribed so a leaked subscription would affect the replacement.
+            scenario.onActivity { loadPage(webView, "$ORIGIN/events-replacement") }
+            val replacementSid = hello(scenario, "/events-replacement")
+            assertNotEquals(firstSid, replacementSid)
+            scenario.onActivity {
+                assertFalse("Replacement must subscribe again", attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE))
+            }
+            evaluate(scenario, """
+                window.sendNative('stale', 'bridge.subscribe', {events: ['$CONFIG_CHANGED']}, ${JsonPrimitive(firstSid)})
+            """.trimIndent())
+            awaitDeviceRoundTrip(scenario)
+            assertEquals("false", evaluate(scenario, "'stale' in nativeReplies"))
+            scenario.onActivity {
+                assertFalse("Stale SID must not subscribe", attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE))
+            }
+
+            subscribe(scenario)
+            val replacementPayload = JsonPrimitive("replacement")
+            scenario.onActivity { assertTrue(attachment.emit(CONFIG_CHANGED, replacementPayload)) }
+            assertEvent(scenario, replacementSid, replacementPayload)
         }
     }
 
@@ -178,11 +290,43 @@ class ReleaseActivityTest {
         }
     }
 
+    private fun withEventProbe(
+        events: List<String> = emptyList(),
+        shouldForwardCommit: (String) -> Boolean = { true },
+        run: (ActivityScenario<MainActivity>, WebView, AndroidBridge) -> Unit,
+    ) {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            lateinit var testView: WebView
+            lateinit var attachment: AndroidBridge
+            scenario.onActivity { activity ->
+                assertFalse(activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+                attachment = attachProbe(
+                    activity,
+                    options = AndroidBridge.Options(deviceInfo = true),
+                    events = events,
+                    shouldForwardCommit = shouldForwardCommit,
+                )
+                testView = findWebView(activity)
+            }
+            try {
+                run(scenario, testView, attachment)
+            } finally {
+                scenario.onActivity {
+                    attachment.detach()
+                    (testView.parent as? ViewGroup)?.removeView(testView)
+                    testView.destroy()
+                }
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun attachProbe(
         activity: MainActivity,
-        config: BusinessMethod,
+        config: BusinessMethod? = null,
         options: AndroidBridge.Options = AndroidBridge.Options(),
+        events: List<String> = emptyList(),
+        shouldForwardCommit: (String) -> Boolean = { true },
     ): AndroidBridge {
         lateinit var attachment: AndroidBridge
         val webView = WebView(activity).apply {
@@ -190,35 +334,81 @@ class ReleaseActivityTest {
             settings.javaScriptEnabled = true
             webViewClient = object : WebViewClient() {
                 override fun onPageCommitVisible(view: WebView, url: String) {
-                    attachment.onPageCommitVisible(url)
+                    if (shouldForwardCommit(url)) attachment.onPageCommitVisible(url)
                 }
             }
         }
-        attachment = checkNotNull(AndroidBridge.attach(webView, ORIGIN, options, methods = listOf(config)))
+        attachment = checkNotNull(AndroidBridge.attach(webView, ORIGIN, options, methods = listOfNotNull(config), events = events))
         activity.setContentView(webView)
         return attachment
     }
 
     private fun hello(scenario: ActivityScenario<MainActivity>, path: String): String {
+        startHello(scenario, path)
+        return awaitHello(scenario)
+    }
+
+    private fun startHello(scenario: ActivityScenario<MainActivity>, path: String) {
         awaitScript(scenario, "location.pathname === '$path' && !!window.__OJSB_TRANSPORT__")
         evaluate(scenario, """
             window.nativeReplies = {};
             window.nativeReplyIds = [];
+            window.nativeEvents = [];
             window.__OJSB_RECEIVE__ = raw => {
-                const { rpc } = JSON.parse(raw);
-                nativeReplies[rpc.id] = rpc;
-                nativeReplyIds.push(rpc.id);
+                const frame = JSON.parse(raw);
+                const { rpc } = frame;
+                if ('id' in rpc) {
+                    nativeReplies[rpc.id] = rpc;
+                    nativeReplyIds.push(rpc.id);
+                } else {
+                    nativeEvents.push(frame);
+                }
             };
-            window.sendNative = (id, method, params) => {
-                const sid = nativeReplies['probe-hello']?.result.sid;
+            window.sendNative = (id, method, params, sid = nativeReplies['probe-hello']?.result?.sid) => {
                 const rpc = { jsonrpc: '2.0', id, method, params };
                 window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({ jsb: '1.0', rpc, meta: sid ? { sid } : undefined }));
             };
             window.sendNative('probe-hello', 'bridge.hello', { protocols: [1] });
         """.trimIndent())
-        awaitScript(scenario, "!!nativeReplies['probe-hello']?.result.sid")
-        return evaluate(scenario, "nativeReplies['probe-hello'].result.sid")
     }
+
+    private fun awaitHello(scenario: ActivityScenario<MainActivity>): String {
+        awaitScript(scenario, "!!nativeReplies['probe-hello']?.result?.sid")
+        return JsonParser.parseString(evaluate(scenario, "nativeReplies['probe-hello'].result.sid")).asString
+    }
+
+    private fun subscribe(scenario: ActivityScenario<MainActivity>, id: String = "subscribe") {
+        evaluate(scenario, "window.sendNative('$id', 'bridge.subscribe@1', {events: ['$CONFIG_CHANGED']})")
+        awaitScript(scenario, """
+            nativeReplies['$id']?.result?.subscribed?.join() === '$CONFIG_CHANGED' &&
+              nativeReplies['$id']?.result?.denied?.length === 0
+        """.trimIndent())
+    }
+
+    private fun awaitDeviceRoundTrip(scenario: ActivityScenario<MainActivity>) {
+        // The reply is ordered after any frame already posted to this document's channel.
+        evaluate(scenario, "window.sendNative('probe-device', 'device.getInfo@1', {})")
+        awaitScript(scenario, "nativeReplies['probe-device']?.result?.os === 'android'")
+    }
+
+    private fun assertEvent(scenario: ActivityScenario<MainActivity>, sid: String, payload: JsonElement) {
+        awaitScript(scenario, "nativeEvents.length > 0")
+        val events = JsonParser.parseString(evaluate(scenario, "nativeEvents")).asJsonArray
+        assertEquals(1, events.size())
+        val event = events[0].asJsonObject
+        assertEquals("1.0", event["jsb"].asString)
+        assertEquals(sid, event.getAsJsonObject("meta")["sid"].asString)
+        val rpc = event.getAsJsonObject("rpc")
+        assertEquals("2.0", rpc["jsonrpc"].asString)
+        assertEquals("bridge.event", rpc["method"].asString)
+        assertFalse(rpc.has("id"))
+        val params = rpc.getAsJsonObject("params")
+        assertEquals(CONFIG_CHANGED, params["name"].asString)
+        assertEquals(payload, params["payload"])
+    }
+
+    private fun configPreferences() = InstrumentationRegistry.getInstrumentation().targetContext
+        .getSharedPreferences("app-config", Context.MODE_PRIVATE)
 
     private fun loadPage(webView: WebView, baseUrl: String) {
         webView.loadDataWithBaseURL(baseUrl, "<!doctype html><body id=probe></body>", "text/html", "UTF-8", null)
@@ -239,11 +429,14 @@ class ReleaseActivityTest {
             if (evaluate(scenario, script) == "true") return
             SystemClock.sleep(100)
         } while (SystemClock.elapsedRealtime() < deadline)
-        val status = evaluate(scenario, "[location.href, document.querySelector('#bridge-results')?.textContent]")
+        val status = evaluate(scenario, """
+            [location.href, document.querySelector('#bridge-results')?.textContent, window.nativeReplies, window.nativeEvents]
+        """.trimIndent())
         fail("Timed out while evaluating $script. WebView state was $status")
     }
 
     private companion object {
         const val ORIGIN = "https://app.example.test"
+        const val CONFIG_CHANGED = "acme.app.configChanged"
     }
 }

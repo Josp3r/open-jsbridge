@@ -10,6 +10,7 @@ Debug App 加载仓库的 [Web Demo](../web-demo/README.md)，用于验证握手
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import dev.openjsbridge.host.AndroidBridge
 import dev.openjsbridge.host.BusinessMethod
@@ -19,15 +20,17 @@ val origin = "https://app.example.com"
 val browser = WebView(this)
 browser.settings.javaScriptEnabled = true
 
+var currentTheme = "system"
 val getConfig = BusinessMethod("acme.app.getConfig") { params ->
     if (params.size() != 0) throw InvalidBusinessParamsException()
-    JsonObject().apply { addProperty("theme", "system") }
+    JsonObject().apply { addProperty("theme", currentTheme) }
 }
 val attachment = AndroidBridge.attach(
     webView = browser,
     allowedOrigin = origin,
     options = AndroidBridge.Options(deviceInfo = true),
     methods = listOf(getConfig),
+    events = listOf("acme.app.configChanged"),
 )
 
 if (attachment != null) {
@@ -63,11 +66,20 @@ const config = await bridge.call('acme.app.getConfig')
 
 `deviceInfo`、`networkStatus` 和 `networkChanges` 分别开启设备查询、默认网络查询和网络变化事件。使用网络能力的 App 在 manifest 声明 `ACCESS_NETWORK_STATE`。观察器在订阅时注册，会话退订或销毁时释放。 [设备和网络 Profiles](../../docs/native-profiles.md)
 
+示例的 `currentTheme` 由 App 持有。配置更新回调在主线程修改状态，再发出已注册的事件。
+
+```kotlin
+currentTheme = "dark"
+attachment?.emit("acme.app.configChanged", JsonNull.INSTANCE)
+```
+
+`emit` 接收符合协议的 `JsonElement`，使用 `JsonNull.INSTANCE` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
+
 ## 在模拟器验证
 
 准备 JDK 17、Android SDK Platform 35、Build Tools 34.0.0 和 Platform Tools。命令行使用 `JAVA_HOME` 和 `ANDROID_HOME`，并将 `platform-tools` 加入 `PATH`。启动一台 API 24+ 且支持上述 WebView 功能的 Android Emulator。Windows 使用 `gradlew.bat`。
 
-Release 示例为 App 内嵌页面设置 HTTPS base URL。可直接查看设备系统版本和业务配置，无需启动 Web Demo 服务。以下属性仅用于模拟器测试，启用 Release 测试变体和本地测试签名。
+Release 示例为 App 内嵌页面设置 HTTPS base URL。可直接查看设备系统版本和业务配置，无需启动 Web Demo 服务。点击 App 的 **Toggle theme** 按钮，原生会发出 `acme.app.configChanged`，页面收到后更新显示的主题。以下属性仅用于模拟器测试，启用 Release 测试变体和本地测试签名。
 
 ```sh
 cd examples/native-android

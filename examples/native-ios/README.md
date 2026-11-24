@@ -34,15 +34,17 @@ let origin = URL(string: "https://app.example.com")!
 let configuration = WKWebViewConfiguration()
 let webView = WKWebView(frame: .zero, configuration: configuration)
 
+var currentTheme = "system"
 let getConfig = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
     guard params.isEmpty else { throw NativeIOSHost.BusinessMethodError.invalidParams }
-    return ["theme": "system"]
+    return ["theme": currentTheme]
 }
 attachment = try NativeIOSHost.attach(
     to: webView,
     allowing: origin,
     options: .init(deviceInfo: true),
-    methods: [getConfig]
+    methods: [getConfig],
+    events: ["acme.app.configChanged"]
 )
 webView.navigationDelegate = self
 webView.load(URLRequest(url: origin))
@@ -59,11 +61,20 @@ const config = await bridge.call('acme.app.getConfig')
 
 示例的 Release 构建使用 App 内嵌的本地页面，以 App 指定的 HTTPS origin 验证 JSON-RPC 通道并显示两个结果。实际 App 的 HTTPS 页面可以用上面的 Web SDK 写法，业务方法使用自己的公司前缀。
 
+示例的 `currentTheme` 由 App 持有。配置更新回调在主 actor 上修改状态，再发出已注册的事件。
+
+```swift
+currentTheme = "dark"
+attachment?.emit("acme.app.configChanged", payload: NSNull())
+```
+
+`emit` 接收任意符合协议的 JSON 值，使用 `NSNull()` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
+
 ## 宿主的关键代码
 
 - [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。Debug Demo 使用回环地址，App 接入入口使用精确的 HTTPS origin。
 - WebKit 通道私下携带每份文档生成的标记。Swift 在当前主文档校验标记后才分派。跨文档提交、文档标记切换或 Web 内容进程退出会清除旧会话，向尚未完成的旧请求返回空回执并释放应答数据。应答只使用原消息的 `replyHandler`，晚到或重复的完成回调会被丢弃。
-- [WireHost.swift](Sources/NativeIOSHost/WireHost.swift) 解析信封、建立会话、执行请求去重和限额、声明已启用的能力并维护订阅。从 App 注册表选择获准的业务方法。握手的可选特性列表为空。
+- [WireHost.swift](Sources/NativeIOSHost/WireHost.swift) 解析信封、建立会话、执行请求去重和限额、声明已启用的能力并维护订阅。从 App 注册表选择获准的业务方法。异步业务方法启用后，握手声明 `cancel`。
 - [DeviceModule.swift](Sources/NativeIOSHost/DeviceModule.swift) 读取系统版本。[NetworkModule.swift](Sources/NativeIOSHost/NetworkModule.swift) 归一化系统网络路径并保存最近一次观测结果。推送脚本在交付前核对当前页面的 origin 和文档标记。页面隐藏时丢弃待交付消息，并轮换标记以便恢复时重新握手。
 - 协议的来源、文档和会话规则适用于两种接入方式。[最小接入契约](../../docs/native-host.md)
 

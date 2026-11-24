@@ -15,8 +15,8 @@ final class WireHost {
         }
     }
 
-    private enum NetworkSubscription: Equatable {
-        case pending(String)
+    private enum EventSubscription: Equatable {
+        case pending(UUID)
         case subscribed
     }
 
@@ -35,33 +35,35 @@ final class WireHost {
     private let methods: [String: [String: [Int]]]
     private let businessMethods: [String: NativeIOSHost.BusinessMethod.Handler]
     private let events: [String]
+    private let businessEvents: Set<String>
     private let networkType: () -> NetworkConnection
-    private var networkSubscription: NetworkSubscription?
+    private var subscriptions: [String: EventSubscription] = [:]
     private(set) var sid: String?
     private var handshakeIDs = Set<Data>()
     private var requestIDs = Set<Data>()
 
     init(platform: String, options: NativeIOSHost.Options = .init(),
-         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], enableEcho: Bool = true,
-         networkType: @escaping () -> NetworkConnection = { .unknown }) {
+         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], businessEvents: [String] = [],
+         enableEcho: Bool = true, networkType: @escaping () -> NetworkConnection = { .unknown }) {
         self.platform = platform
         self.businessMethods = businessMethods
+        self.businessEvents = Set(businessEvents)
         self.networkType = networkType
         var methods = businessMethods.mapValues { _ in ["versions": [1]] }
         if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
         self.methods = methods
-        events = options.networkChanges ? [NetworkModule.event] : []
+        events = businessEvents + (options.networkChanges ? [NetworkModule.event] : [])
     }
 
     var watchesNetwork: Bool {
-        sid != nil && (methods[NetworkModule.method] != nil || networkSubscription == .subscribed)
+        sid != nil && (methods[NetworkModule.method] != nil || subscriptions[NetworkModule.event] == .subscribed)
     }
 
     func reset() {
         sid = nil
-        networkSubscription = nil
+        subscriptions.removeAll()
         handshakeIDs.removeAll()
         requestIDs.removeAll()
     }
@@ -158,20 +160,18 @@ final class WireHost {
         }
 
         let result: Any
-        var enablesNetworkChanges = false
-        var disablesNetworkChanges = false
+        var changedEvents = [String]()
         switch name {
         case Self.subscribe, Self.unsubscribe:
             guard let requested = Self.eventNames(params) else {
                 return failure(-32602, "Invalid events", id: id, meta: responseMeta)
             }
             if name == Self.subscribe {
-                let subscribed = requested.filter(events.contains)
-                result = ["subscribed": subscribed, "denied": requested.filter { !events.contains($0) }]
-                enablesNetworkChanges = subscribed.contains(NetworkModule.event)
+                changedEvents = requested.filter(events.contains)
+                result = ["subscribed": changedEvents, "denied": requested.filter { !events.contains($0) }]
             } else {
+                changedEvents = requested
                 result = ["unsubscribed": requested]
-                disablesNetworkChanges = requested.contains(NetworkModule.event)
             }
         case DeviceModule.method, NetworkModule.method:
             guard params == nil || params?.count == 0 else {
@@ -189,18 +189,35 @@ final class WireHost {
             // An oversized request trace is unnecessary for correlating this bounded error.
             return failure(-32006, "Payload too large", id: id, meta: ["sid": sid])
         }
-        if enablesNetworkChanges {
-            if networkSubscription == nil { networkSubscription = .pending(id) }
-            if case let .pending(subscriptionID) = networkSubscription {
-                afterReply { [weak self] in
-                    guard let self, self.sid == sid, self.networkSubscription == .pending(subscriptionID) else { return }
-                    self.networkSubscription = .subscribed
-                }
-            }
-        } else if disablesNetworkChanges {
-            networkSubscription = nil
+        if name == Self.subscribe {
+            subscribe(changedEvents, for: sid, afterReply: afterReply)
+        } else if name == Self.unsubscribe {
+            for event in changedEvents { subscriptions.removeValue(forKey: event) }
         }
         return reply
+    }
+
+    private func subscribe(_ names: [String], for sid: String, afterReply: (@escaping () -> Void) -> Void) {
+        var awaitingAcknowledgement: [String: UUID] = [:]
+        for name in names {
+            switch subscriptions[name] {
+            case .subscribed:
+                continue
+            case .pending(let token):
+                awaitingAcknowledgement[name] = token
+            case nil:
+                let token = UUID()
+                subscriptions[name] = .pending(token)
+                awaitingAcknowledgement[name] = token
+            }
+        }
+        guard !awaitingAcknowledgement.isEmpty else { return }
+        afterReply { [weak self] in
+            guard let self, self.sid == sid else { return }
+            for (name, token) in awaitingAcknowledgement where self.subscriptions[name] == .pending(token) {
+                self.subscriptions[name] = .subscribed
+            }
+        }
     }
 
     func finishBusinessCall(_ call: BusinessCall, result: Result<Any, Error>) -> String? {
@@ -228,13 +245,24 @@ final class WireHost {
         return failure(-32002, "Call cancelled", id: call.id, meta: call.meta)
     }
 
+    func businessEvent(_ name: String, payload: Any, for sid: String) -> String? {
+        guard businessEvents.contains(name) else { return nil }
+        return event(name, payload: payload, for: sid)
+    }
+
     func networkEvent(_ type: NetworkConnection, for sid: String) -> String? {
-        guard self.sid == sid, networkSubscription == .subscribed else { return nil }
-        return serialize(rpc: [
-            "jsonrpc": "2.0",
-            "method": "bridge.event",
-            "params": ["name": NetworkModule.event, "payload": type.payload]
-        ], meta: ["sid": sid])
+        event(NetworkModule.event, payload: type.payload, for: sid)
+    }
+
+    private func event(_ name: String, payload: Any, for sid: String) -> String? {
+        guard self.sid == sid, subscriptions[name] == .subscribed,
+              JSONSerialization.isValidJSONObject([payload]), Self.isPortableJSON(payload),
+              let raw = serialize(rpc: [
+                "jsonrpc": "2.0",
+                "method": "bridge.event",
+                "params": ["name": name, "payload": payload]
+              ], meta: ["sid": sid]), raw.utf8.count <= Self.maxMessageBytes else { return nil }
+        return raw
     }
 
     static func isQualifiedBaseName(_ name: String) -> Bool {

@@ -15,9 +15,11 @@ internal class DocumentTransport(
     private val modules: BridgeModules = BridgeModules(),
     private val businessMethods: List<BusinessMethod> = emptyList(),
     private val runBusiness: ((RpcSession.BusinessCall, (Result<JsonElement>) -> Unit) -> (() -> Unit))? = null,
+    events: List<String> = emptyList(),
     private val scheduleReply: (() -> Unit) -> Unit = { reply -> reply() },
 ) {
     val originRule = requireNotNull(exactOrigin(allowedOrigin)) { "An exact HTTP(S) origin is required" }
+    private val registeredEvents = events.indexBusinessEvents()
 
     private data class ParkedFrame(val bytes: Int, val action: () -> Unit)
 
@@ -33,6 +35,11 @@ internal class DocumentTransport(
 
     private var pendingChallenge: String? = null
     private var document: Document? = null
+
+    fun emit(name: String, payload: JsonElement): Boolean {
+        if (pendingChallenge != null) return false
+        return document?.session?.emit(name, payload) ?: false
+    }
 
     fun invalidate() {
         pendingChallenge = null
@@ -63,7 +70,8 @@ internal class DocumentTransport(
                 previous
             } else {
                 retireDocument()
-                val session = RpcSession(enableEcho, modules, businessMethods, supportsCancellation = runBusiness != null)
+                val session = RpcSession(enableEcho, modules, businessMethods,
+                    supportsCancellation = runBusiness != null, businessEvents = registeredEvents)
                 Document(token, proxy, session, challenge).also { document = it }
             }
             current.challenge = challenge
@@ -82,8 +90,20 @@ internal class DocumentTransport(
         val prefix = "rpc:${current.token}:"
         if (raw == "push:${current.challenge}:${current.token}") {
             if (pendingChallenge == null) {
+                val confirmedChallenge = current.challenge
                 current.session.confirmEventReceiver { event ->
-                    if (document === current && pendingChallenge == null) postReply(prefix + event)
+                    // Same-document reconfirmation keeps the session, but the old push
+                    // route is paused until a matching push confirms the new challenge.
+                    if (document !== current || pendingChallenge != null || current.challenge != confirmedChallenge) {
+                        false
+                    } else {
+                        try {
+                            postReply(prefix + event)
+                            true
+                        } catch (_: RuntimeException) {
+                            false // Best-effort delivery: the WebView route can disappear.
+                        }
+                    }
                 }
             }
             return
