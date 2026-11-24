@@ -142,6 +142,67 @@ final class WireHostTests: XCTestCase {
         }
     }
 
+    func testBusinessEventsRequireCurrentAcknowledgedSubscription() throws {
+        let config = "acme.app.configChanged"
+        let account = "acme.app.accountChanged"
+        let unknown = "acme.app.unknown"
+        let host = WireHost(platform: "ios", options: .init(networkChanges: true), businessEvents: [config, account])
+        let result = try XCTUnwrap(unpack(host.receive(hello(id: "hello"))).rpc["result"] as? [String: Any])
+        let sid = try XCTUnwrap(result["sid"] as? String)
+        let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any])
+        XCTAssertEqual(Set(capabilities["events"] as? [String] ?? []), [config, account, NetworkModule.event])
+
+        let payload: [Any] = [true, "system", NSNull()]
+        XCTAssertNil(host.businessEvent(config, payload: payload, for: sid))
+        var acknowledgements = [() -> Void]()
+        let params = #"{"events":["\#(config)","\#(account)","\#(unknown)","network.changed"]}"#
+        let subscribe = try unpack(host.receive(echo(id: "initial", sid: sid, params: params, method: "bridge.subscribe"),
+                                                afterReply: { acknowledgements.append($0) }))
+        XCTAssertEqual(subscribe.rpc["result"] as? [String: [String]], [
+            "subscribed": [config, account, NetworkModule.event], "denied": [unknown]
+        ])
+        XCTAssertNil(host.businessEvent(config, payload: payload, for: sid))
+        XCTAssertFalse(host.watchesNetwork)
+
+        let configOnly = #"{"events":["\#(config)"]}"#
+        _ = host.receive(echo(id: "off", sid: sid, params: configOnly, method: "bridge.unsubscribe"))
+        _ = host.receive(echo(id: "again", sid: sid, params: configOnly, method: "bridge.subscribe"),
+                         afterReply: { acknowledgements.append($0) })
+        XCTAssertEqual(acknowledgements.count, 2)
+        for callback in acknowledgements.prefix(1) { callback() }
+        XCTAssertNil(host.businessEvent(config, payload: payload, for: sid))
+        XCTAssertNotNil(host.businessEvent(account, payload: NSNull(), for: sid))
+        XCTAssertTrue(host.watchesNetwork)
+        XCTAssertNotNil(host.networkEvent(.wifi, for: sid))
+
+        let newAck = try XCTUnwrap(acknowledgements.last)
+        newAck()
+        let event = try unpack(host.businessEvent(config, payload: payload, for: sid))
+        XCTAssertEqual(event.meta?["sid"] as? String, sid)
+        XCTAssertNil(event.rpc["id"])
+        XCTAssertEqual(event.rpc["method"] as? String, "bridge.event")
+        let eventParams = try XCTUnwrap(event.rpc["params"] as? [String: Any])
+        XCTAssertEqual(eventParams["name"] as? String, config)
+        XCTAssertEqual(eventParams["payload"] as? NSArray, payload as NSArray)
+        XCTAssertNil(host.businessEvent(config, payload: payload, for: "old"))
+        XCTAssertNil(host.businessEvent(unknown, payload: payload, for: sid))
+        XCTAssertNil(host.businessEvent(NetworkModule.event, payload: payload, for: sid))
+        for invalid: Any in [Date(), Double.nan, 9_007_199_254_740_992, String(repeating: "x", count: WireHost.maxMessageBytes)] {
+            XCTAssertNil(host.businessEvent(config, payload: invalid, for: sid))
+        }
+
+        _ = host.receive(echo(id: "off-again", sid: sid, params: configOnly, method: "bridge.unsubscribe"))
+        XCTAssertNil(host.businessEvent(config, payload: payload, for: sid))
+        XCTAssertNotNil(host.businessEvent(account, payload: 42, for: sid))
+        host.reset()
+        let currentSID = try session(host)
+        newAck()
+        XCTAssertNotEqual(sid, currentSID)
+        XCTAssertNil(host.businessEvent(account, payload: 42, for: sid))
+        XCTAssertNil(host.businessEvent(account, payload: 42, for: currentSID))
+        XCTAssertFalse(host.watchesNetwork)
+    }
+
     func testProfilesAdvertiseAndDispatchOnlyConfiguredCapabilities() throws {
         let methods = ["conformance.echo": ["versions": [1]], "device.getInfo": ["versions": [1]]]
         let device = WireHost(platform: "ios", options: .init(deviceInfo: true))

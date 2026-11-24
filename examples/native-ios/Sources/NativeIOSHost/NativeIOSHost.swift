@@ -24,6 +24,11 @@ public enum NativeIOSHost {
         case alreadyAttached
     }
 
+    public enum BusinessEventError: Error, Equatable {
+        case invalidName(String)
+        case duplicateName(String)
+    }
+
     @MainActor
     public final class Attachment {
         private var host: WebKitHost?
@@ -44,6 +49,13 @@ public enum NativeIOSHost {
             host?.webContentProcessDidTerminate()
         }
 
+        /// Queues a JSON event for the current verified document after its subscription is acknowledged.
+        /// A successful return indicates that the event was handed to the document route.
+        @discardableResult
+        public func emit(_ name: String, payload: Any) -> Bool {
+            host?.emit(name, payload: payload) ?? false
+        }
+
         /// Cancels outstanding work and removes the bridge's script message handler.
         public func detach() {
             guard let host else { return }
@@ -59,7 +71,8 @@ public enum NativeIOSHost {
     /// Retain the attachment and forward lifecycle callbacks from the app's navigation delegate.
     @MainActor
     public static func attach(to webView: WKWebView, allowing originURL: URL,
-                              options: Options = .init(), methods: [BusinessMethod] = []) throws -> Attachment {
+                              options: Options = .init(), methods: [BusinessMethod] = [],
+                              events: [String] = []) throws -> Attachment {
         guard let origin = AllowedOrigin(originURL) else { throw AttachmentError.invalidOrigin }
         let controller = webView.configuration.userContentController
         let previous = attachments.object(forKey: controller)
@@ -74,10 +87,15 @@ public enum NativeIOSHost {
                 throw BusinessMethodError.duplicateName(method.name)
             }
         }
+        var eventNames = Set<String>()
+        for event in events {
+            guard BusinessMethod.isAllowedName(event) else { throw BusinessEventError.invalidName(event) }
+            guard eventNames.insert(event).inserted else { throw BusinessEventError.duplicateName(event) }
+        }
         if let previous { detach(previous, from: controller) }
 
         let handlerName = "ojsb_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let host = WebKitHost(origin: origin, options: options, businessMethods: handlers,
+        let host = WebKitHost(origin: origin, options: options, businessMethods: handlers, businessEvents: events,
                               enableEcho: false, handlerName: handlerName, watchNetwork: nil) { _, complete in
             _ = complete()
         }
@@ -275,7 +293,8 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     weak var webView: WKWebView?
 
     init(origin: AllowedOrigin, options: NativeIOSHost.Options,
-         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler], enableEcho: Bool, handlerName: String,
+         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler], businessEvents: [String] = [],
+         enableEcho: Bool, handlerName: String,
          watchNetwork: NetworkModule.Watch?,
          scheduleReply: @escaping NativeIOSHost.ReplyScheduler) {
         self.origin = origin
@@ -284,8 +303,8 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         let network = options.networkStatus || options.networkChanges
             ? NetworkModule(watch: watchNetwork ?? NetworkModule.watchSystemPath) : nil
         self.network = network
-        wire = WireHost(platform: "ios", options: options, businessMethods: businessMethods, enableEcho: enableEcho,
-                        networkType: { network?.type ?? .unknown })
+        wire = WireHost(platform: "ios", options: options, businessMethods: businessMethods,
+                        businessEvents: businessEvents, enableEcho: enableEcho, networkType: { network?.type ?? .unknown })
     }
 
     func install(in controller: WKUserContentController) {
@@ -471,14 +490,26 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             return
         }
         network.start { [weak self] type in
-            guard let self, self.activeDocument == document, let webView = self.webView,
-                  let raw = self.wire.networkEvent(type, for: sid) else { return }
-            // Keep identity validation and delivery in the same WebKit evaluation.
-            webView.callAsyncJavaScript(
-                "return window.location.origin === allowed && window.__OJSB_DELIVER__?.(candidate, raw) === true;",
-                arguments: ["allowed": self.origin.serialized, "candidate": document, "raw": raw], in: nil, in: .page
-            )
+            guard let self, let raw = self.wire.networkEvent(type, for: sid) else { return }
+            self.deliverEvent(raw, to: document)
         }
+    }
+
+    func emit(_ name: String, payload: Any) -> Bool {
+        guard let document = activeDocument, let sid = wire.sid,
+              let raw = wire.businessEvent(name, payload: payload, for: sid) else { return false }
+        return deliverEvent(raw, to: document)
+    }
+
+    @discardableResult
+    private func deliverEvent(_ raw: String, to document: String) -> Bool {
+        guard activeDocument == document, let webView else { return false }
+        // Keep identity validation and delivery in the same WebKit evaluation.
+        webView.callAsyncJavaScript(
+            "return window.location.origin === allowed && window.__OJSB_DELIVER__?.(candidate, raw) === true;",
+            arguments: ["allowed": origin.serialized, "candidate": document, "raw": raw], in: nil, in: .page
+        )
+        return true
     }
 
     private var shim: String {

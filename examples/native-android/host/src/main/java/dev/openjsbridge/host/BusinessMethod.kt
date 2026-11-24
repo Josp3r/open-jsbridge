@@ -13,15 +13,9 @@ class BusinessMethod(
     internal val handler: suspend (JsonObject) -> JsonElement,
 ) {
     init {
-        require(name.substringBefore('.') !in RESERVED_NAMESPACES && isQualifiedBaseName(name)) {
+        require(isQualifiedBusinessName(name)) {
             "Expected an unversioned qualified business method name outside reserved namespaces"
         }
-    }
-
-    private companion object {
-        val RESERVED_NAMESPACES = setOf(
-            "bridge", "conformance", "ojsb", "rpc", "device", "app", "ui", "storage", "network", "media",
-        )
     }
 }
 
@@ -32,6 +26,20 @@ internal fun List<BusinessMethod>.indexBusinessMethods(): Map<String, BusinessMe
     associateBy(BusinessMethod::name).also {
         require(it.size == size) { "Duplicate business method names" }
     }
+
+internal fun List<String>.indexBusinessEvents(): Set<String> = toSet().also { names ->
+    require(names.size == size) { "Duplicate business event names" }
+    require(names.all(::isQualifiedBusinessName)) {
+        "Expected unversioned qualified business event names outside reserved namespaces"
+    }
+}
+
+private val RESERVED_NAMESPACES = setOf(
+    "bridge", "conformance", "ojsb", "rpc", "device", "app", "ui", "storage", "network", "media",
+)
+
+private fun isQualifiedBusinessName(name: String): Boolean =
+    name.substringBefore('.') !in RESERVED_NAMESPACES && isQualifiedBaseName(name)
 
 private val METHOD_SEGMENT = Regex("[a-z][a-zA-Z0-9]*")
 

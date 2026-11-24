@@ -21,6 +21,7 @@ internal class RpcSession(
     modules: BridgeModules = BridgeModules(),
     businessMethods: List<BusinessMethod> = emptyList(),
     supportsCancellation: Boolean = false,
+    private val businessEvents: Set<String> = emptySet(),
 ) {
     internal data class BusinessCall(
         val handler: suspend (JsonObject) -> JsonElement,
@@ -29,7 +30,7 @@ internal class RpcSession(
         val sid: String,
     )
 
-    private class NetworkSubscription {
+    private class EventSubscription {
         var acknowledged = false
         var stop: (() -> Unit)? = null
     }
@@ -45,17 +46,37 @@ internal class RpcSession(
     private val businessMethods = businessMethods.indexBusinessMethods()
     private val canCancel = supportsCancellation && this.businessMethods.isNotEmpty()
     private val networkEvents = modules.networkEvents
-    private var eventReceiver: ((String) -> Unit)? = null
-    private var networkSubscription: NetworkSubscription? = null
+    private val enabledEvents = if (networkEvents == null) businessEvents else businessEvents + NETWORK_CHANGED
+    private var eventReceiver: ((String) -> Boolean)? = null
+    private val subscriptions = mutableMapOf<String, EventSubscription>()
 
-    fun confirmEventReceiver(post: (String) -> Unit) {
-        if (networkEvents != null) eventReceiver = post
+    fun confirmEventReceiver(post: (String) -> Boolean) {
+        if (enabledEvents.isNotEmpty()) eventReceiver = post
+    }
+
+    fun emit(name: String, payload: JsonElement): Boolean = name in businessEvents && emitEvent(name, payload)
+
+    private fun availableEvents(): Set<String> = if (eventReceiver == null) emptySet() else enabledEvents
+
+    private fun emitEvent(name: String, payload: JsonElement): Boolean {
+        val activeSid = sid ?: return false
+        val post = eventReceiver ?: return false
+        val subscription = subscriptions[name]?.takeIf { it.acknowledged } ?: return false
+        val raw = try {
+            validateOutboundValue(payload, depth = 3) // envelope, RPC, and params
+            eventNotification(activeSid, name, payload)
+        } catch (_: RuntimeException) {
+            return false
+        }
+        return !exceedsMessageLimit(raw) && subscriptions[name] === subscription && post(raw)
     }
 
     fun close() {
         sid = null
         eventReceiver = null
-        unsubscribeNetwork()
+        val stop = subscriptions[NETWORK_CHANGED]?.stop
+        subscriptions.clear()
+        stop?.invoke()
     }
 
     fun receive(
@@ -162,7 +183,7 @@ internal class RpcSession(
         if (error is InvalidBusinessParamsException) return failure(call.id, call.sid, -32602, "Invalid params")
         return try {
             val value = result.getOrNull() ?: return failure(call.id, call.sid, -32603, "Internal error")
-            validateBusinessResult(value)
+            validateOutboundValue(value, depth = 2) // envelope and RPC
             val reply = success(call.id, call.sid, value)
             if (exceedsMessageLimit(reply)) failure(call.id, call.sid, -32006, "Payload too large") else reply
         } catch (_: ReplyTooLargeException) {
@@ -182,50 +203,44 @@ internal class RpcSession(
         if (method == UNSUBSCRIBE) {
             val reply = success(id, sid, JsonObject().apply { add("unsubscribed", strings(events)) })
             if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
-            if (NETWORK_CHANGED in events) unsubscribeNetwork()
+            for (name in events) subscriptions.remove(name)?.stop?.invoke()
             return reply
         }
 
-        if (NETWORK_CHANGED in events && eventReceiver != null) {
-            val reply = success(id, sid, JsonObject().apply {
-                add("subscribed", strings(listOf(NETWORK_CHANGED)))
-                add("denied", strings(events.filterNot { it == NETWORK_CHANGED }))
-            })
-            // Confirm we can send the acceptance before starting an observer.
-            if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
-            if (subscribeNetwork(sid, afterResponse)) return reply
-        }
-        val reply = success(id, sid, JsonObject().apply {
-            add("subscribed", JsonArray())
-            add("denied", strings(events))
+        fun subscriptionReply(accepted: Set<String>) = success(id, sid, JsonObject().apply {
+            add("subscribed", strings(accepted))
+            add("denied", strings(events.filterNot(accepted::contains)))
         })
-        return if (exceedsMessageLimit(reply)) failure(id, sid, -32006, "Payload too large") else reply
-    }
-
-    private fun subscribeNetwork(sid: String, afterResponse: (() -> Unit) -> Unit): Boolean {
-        val events = networkEvents ?: return false
-        val subscription = networkSubscription ?: NetworkSubscription().also { current ->
-            networkSubscription = current
-            current.stop = events.observe { type ->
-                if (networkSubscription === current && current.acknowledged) {
-                    eventReceiver?.invoke(networkNotification(sid, type))
+        val available = availableEvents()
+        val accepted = events.filterTo(linkedSetOf(), available::contains)
+        var reply = subscriptionReply(accepted)
+        // Check the acknowledgement size before creating any subscription or observer.
+        if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
+        if (NETWORK_CHANGED in accepted && !subscribeNetwork()) {
+            accepted.remove(NETWORK_CHANGED)
+            reply = subscriptionReply(accepted)
+            if (exceedsMessageLimit(reply)) return failure(id, sid, -32006, "Payload too large")
+        }
+        if (accepted.isNotEmpty()) {
+            val pending = accepted.associateWith { name -> subscriptions.getOrPut(name, ::EventSubscription) }
+            afterResponse {
+                // A delayed response can only acknowledge the exact subscription it created or reused.
+                for ((name, subscription) in pending) {
+                    if (subscriptions[name] === subscription) subscription.acknowledged = true
                 }
             }
         }
-        if (subscription.stop == null) {
-            networkSubscription = null
-            return false
-        }
-        afterResponse {
-            if (networkSubscription === subscription) subscription.acknowledged = true
-        }
-        return true
+        return reply
     }
 
-    private fun unsubscribeNetwork() {
-        val previous = networkSubscription
-        networkSubscription = null
-        previous?.stop?.invoke()
+    private fun subscribeNetwork(): Boolean {
+        if (NETWORK_CHANGED in subscriptions) return true
+        val subscription = EventSubscription()
+        subscription.stop = networkEvents?.observe { type ->
+            if (subscriptions[NETWORK_CHANGED] === subscription) emitEvent(NETWORK_CHANGED, type.snapshot())
+        } ?: return false
+        subscriptions[NETWORK_CHANGED] = subscription
+        return true
     }
 
     private fun negotiate(id: String, params: JsonObject?): String {
@@ -261,7 +276,7 @@ internal class RpcSession(
                         add(method, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
                     }
                 })
-                add("events", JsonArray().apply { if (eventReceiver != null) add(NETWORK_CHANGED) })
+                add("events", strings(availableEvents()))
                 add("features", JsonArray().apply { if (canCancel) add("cancel") })
             })
             add("limits", JsonObject().apply {
@@ -357,7 +372,7 @@ internal class RpcSession(
 
         private class ReplyTooLargeException : RuntimeException()
 
-        private fun validateBusinessResult(root: JsonElement) {
+        private fun validateOutboundValue(root: JsonElement, depth: Int) {
             // Count a lower bound before serializing mutable Gson trees supplied by the app.
             var remainingChars = MAX_MESSAGE_BYTES
             fun consume(chars: Int) {
@@ -390,7 +405,7 @@ internal class RpcSession(
                     else -> throw IllegalArgumentException()
                 }
             }
-            visit(root, depth = 2) // The response envelope and RPC object already occupy two levels.
+            visit(root, depth)
         }
 
         private fun response(id: String, sid: String?, key: String, value: JsonElement): String =
@@ -406,17 +421,17 @@ internal class RpcSession(
 
         private fun success(id: String, sid: String, result: JsonElement) = response(id, sid, "result", result)
 
-        private fun strings(values: List<String>) = JsonArray().apply { values.forEach { add(it) } }
+        private fun strings(values: Iterable<String>) = JsonArray().apply { values.forEach { add(it) } }
 
-        private fun networkNotification(sid: String, type: NetworkType) = JsonObject().apply {
+        private fun eventNotification(sid: String, name: String, payload: JsonElement) = JsonObject().apply {
             addProperty("jsb", "1.0")
             add("meta", JsonObject().apply { addProperty("sid", sid) })
             add("rpc", JsonObject().apply {
                 addProperty("jsonrpc", "2.0")
                 addProperty("method", "bridge.event")
                 add("params", JsonObject().apply {
-                    addProperty("name", NETWORK_CHANGED)
-                    add("payload", type.snapshot())
+                    addProperty("name", name)
+                    add("payload", payload)
                 })
             })
         }.toString()

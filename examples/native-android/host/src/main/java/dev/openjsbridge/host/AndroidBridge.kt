@@ -8,6 +8,7 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.google.gson.JsonElement
 import com.google.gson.JsonPrimitive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +34,17 @@ class AndroidBridge private constructor(
         val networkStatus: Boolean = false,
         val networkChanges: Boolean = false,
     )
+
+    /**
+     * Submit a registered business event to the current acknowledged subscription, if any.
+     * `true` means the notification was submitted to the confirmed route, not that Web received it.
+     * Inactive routes, invalid payloads and oversized frames are dropped rather than buffered.
+     */
+    @MainThread
+    fun emit(name: String, payload: JsonElement): Boolean {
+        requireUiThread()
+        return webView != null && transport.emit(name, payload)
+    }
 
     /** Forward the main-frame commit callback from the app's WebViewClient. */
     @MainThread
@@ -91,6 +103,7 @@ class AndroidBridge private constructor(
          * Attach before the first navigation, and forward lifecycle callbacks from the app's WebViewClient.
          * Returns `null` when the installed WebView lacks the required message or script support.
          * The app is responsible for enabling JavaScript and loading content from the allowed HTTPS origin.
+         * [events] opts in to unique, unversioned business event names, outside reserved namespaces.
          */
         @MainThread
         fun attach(
@@ -98,6 +111,7 @@ class AndroidBridge private constructor(
             allowedOrigin: String,
             options: Options = Options(),
             methods: List<BusinessMethod> = emptyList(),
+            events: List<String> = emptyList(),
         ): AndroidBridge? {
             requireUiThread()
             val origin = requireNotNull(DocumentTransport.exactOrigin(allowedOrigin)) {
@@ -106,7 +120,9 @@ class AndroidBridge private constructor(
             require(origin.startsWith("https://")) { "An exact HTTPS origin is required" }
             val registeredMethods = methods.toList()
             registeredMethods.indexBusinessMethods()
-            return install(webView, origin, modulesFor(webView, options), registeredMethods)
+            val registeredEvents = events.toList()
+            registeredEvents.indexBusinessEvents()
+            return install(webView, origin, modulesFor(webView, options), registeredMethods, events = registeredEvents)
         }
 
         internal fun modulesFor(webView: WebView, options: Options): BridgeModules {
@@ -125,6 +141,7 @@ class AndroidBridge private constructor(
             modules: BridgeModules = BridgeModules(),
             methods: List<BusinessMethod> = emptyList(),
             enableEcho: Boolean = false,
+            events: List<String> = emptyList(),
             scheduleReply: (() -> Unit) -> Unit = { it() },
         ): AndroidBridge? {
             requireUiThread()
@@ -154,6 +171,7 @@ class AndroidBridge private constructor(
                     }
                     ({ job.cancel() })
                 },
+                events = events,
                 scheduleReply = { reply ->
                     scheduleReply {
                         requireUiThread()

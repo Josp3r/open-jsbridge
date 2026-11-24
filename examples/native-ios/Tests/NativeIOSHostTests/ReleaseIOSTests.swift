@@ -25,6 +25,93 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
+    func testReleaseAppPublishesOnlySubscribedBusinessEventsForCurrentDocument() async throws {
+        let name = "acme.app.configChanged"
+        let unknown = "acme.app.unknown"
+        let (webView, delegate) = makeWebView()
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: origin, events: [name])
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+        XCTAssertFalse(attachment.emit(name, payload: "before navigation"))
+
+        await loadPage(in: webView, with: delegate, at: origin)
+        let helloResult = try await request("bridge.hello", id: "hello", in: webView)
+        let hello = try XCTUnwrap(helloResult as? [String: Any])
+        let sid = try XCTUnwrap(hello["sid"] as? String)
+        let capabilities = try XCTUnwrap(hello["capabilities"] as? [String: Any])
+        XCTAssertEqual(capabilities["events"] as? [String], [name])
+        try await captureFirstEvent(in: webView)
+        XCTAssertFalse(attachment.emit(name, payload: "before subscription"))
+        let sub = try await request("bridge.subscribe", id: "subscribe", sid: sid,
+                                    params: ["events": [name, unknown]], in: webView)
+        XCTAssertEqual(sub as? [String: [String]], ["subscribed": [name], "denied": [unknown]])
+        XCTAssertFalse(attachment.emit(unknown, payload: "unregistered"))
+        XCTAssertFalse(attachment.emit(name, payload: ["invalid": Date()]))
+        XCTAssertTrue(attachment.emit(name, payload: ["theme": "first"]))
+        let first = try await nextEvent(in: webView)
+        XCTAssertEqual(first["sid"] as? String, sid)
+        XCTAssertEqual(first["name"] as? String, name)
+        XCTAssertEqual(first["payload"] as? [String: String], ["theme": "first"])
+
+        let off = try await request("bridge.unsubscribe", id: "off", sid: sid, params: ["events": [name]], in: webView)
+        XCTAssertEqual(off as? [String: [String]], ["unsubscribed": [name]])
+        XCTAssertFalse(attachment.emit(name, payload: "after unsubscribe"))
+        _ = try await request("bridge.subscribe", id: "resubscribe", sid: sid, params: ["events": [name]], in: webView)
+
+        await loadPage(in: webView, with: delegate, at: origin.appendingPathComponent("next-events"))
+        XCTAssertFalse(attachment.emit(name, payload: "after navigation"))
+        let currentSID = try await self.hello(in: webView)
+        XCTAssertNotEqual(currentSID, sid)
+        try await captureFirstEvent(in: webView)
+        let stale = try await request("bridge.subscribe", id: "stale", sid: sid, params: ["events": [name]], in: webView)
+        XCTAssertTrue(stale is NSNull)
+        XCTAssertFalse(attachment.emit(name, payload: "stale subscription"))
+        let current = try await request("bridge.subscribe", id: "subscribe", sid: currentSID,
+                                        params: ["events": [name]], in: webView)
+        XCTAssertEqual(current as? [String: [String]], ["subscribed": [name], "denied": []])
+        XCTAssertTrue(attachment.emit(name, payload: ["theme": "current"]))
+        let currentEvent = try await nextEvent(in: webView)
+        XCTAssertEqual(currentEvent["sid"] as? String, currentSID)
+        XCTAssertEqual(currentEvent["name"] as? String, name)
+        XCTAssertEqual(currentEvent["payload"] as? [String: String], ["theme": "current"])
+        attachment.detach()
+        XCTAssertFalse(attachment.emit(name, payload: "after detach"))
+    }
+
+    @MainActor
+    func testAttachmentRejectsInvalidOrDuplicateBusinessEventNames() throws {
+        let (webView, _) = makeWebView()
+        for name in ["configChanged", "bridge.configChanged", "network.changed", "acme.app.configChanged@1"] {
+            XCTAssertThrowsError(try NativeIOSHost.attach(to: webView, allowing: origin, events: [name]))
+        }
+        let name = "acme.app.configChanged"
+        XCTAssertThrowsError(try NativeIOSHost.attach(to: webView, allowing: origin, events: [name, name]))
+        try NativeIOSHost.attach(to: webView, allowing: origin, events: [name]).detach()
+    }
+
+    @MainActor
+    private func captureFirstEvent(in webView: WKWebView) async throws {
+        _ = try await webView.callAsyncJavaScript("""
+            window.firstAppEvent = new Promise(resolve => {
+                window.__OJSB_RECEIVE__ = raw => {
+                    const {meta, rpc} = JSON.parse(raw);
+                    resolve({sid: meta.sid, ...rpc.params});
+                };
+            });
+            return true;
+            """, arguments: [:], in: nil, contentWorld: .page)
+    }
+
+    @MainActor
+    private func nextEvent(in webView: WKWebView) async throws -> [String: Any] {
+        let value = try await webView.callAsyncJavaScript("""
+            return await Promise.race([window.firstAppEvent,
+                new Promise(resolve => setTimeout(() => resolve(null), 3000))]);
+            """, arguments: [:], in: nil, contentWorld: .page)
+        return try XCTUnwrap(value as? [String: Any])
+    }
+
+    @MainActor
     func testDifferentHTTPSPortCannotUseBridge() async throws {
         let (webView, delegate) = makeWebView()
         let attachment = try NativeIOSHost.attach(to: webView, allowing: origin)
@@ -298,16 +385,18 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
-    private func request(_ method: String, id: String, sid: String? = nil, in webView: WKWebView) async throws -> Any? {
+    private func request(_ method: String, id: String, sid: String? = nil,
+                         params: [String: Any]? = nil, in webView: WKWebView) async throws -> Any? {
         try await webView.callAsyncJavaScript("""
-            const rpc = {jsonrpc: '2.0', id, method, params: sid ? {} : {protocols: [1]}};
+            const rpc = {jsonrpc: '2.0', id, method, params: params ?? (sid ? {} : {protocols: [1]})};
             const frame = {jsb: '1.0', rpc};
             if (sid) frame.meta = {sid};
             const pending = window.__OJSB_TRANSPORT__?.postMessage(JSON.stringify(frame));
             const raw = await Promise.race([pending, new Promise((_, reject) =>
                 setTimeout(() => reject(new Error(`Timed out waiting for ${method}`)), 3000))]);
             return raw == null ? null : JSON.parse(raw).rpc.result;
-            """, arguments: ["method": method, "id": id, "sid": (sid as Any?) ?? NSNull()], in: nil, contentWorld: .page)
+            """, arguments: ["method": method, "id": id, "sid": (sid as Any?) ?? NSNull(),
+                               "params": (params as Any?) ?? NSNull()], in: nil, contentWorld: .page)
     }
 
     @MainActor

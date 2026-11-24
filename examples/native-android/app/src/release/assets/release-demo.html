@@ -10,17 +10,36 @@
 </style>
 <h1>OpenJSBridge Android Release Demo</h1>
 <pre id="bridge-results" aria-live="polite">Connecting to the native bridge…</pre>
+<p id="config-event">Use the native Toggle theme button to send a config update.</p>
 <script>
   async function showResults() {
     const output = document.querySelector('#bridge-results');
+    const eventOutput = document.querySelector('#config-event');
+    const eventName = 'acme.app.configChanged';
     const transport = window.__OJSB_TRANSPORT__;
     const replies = new Map();
+    let sid;
+    let device;
+    let config;
+
+    function render() {
+      output.textContent = JSON.stringify({ device, config }, null, 2);
+    }
+
     window.__OJSB_RECEIVE__ = raw => {
-      const { rpc } = JSON.parse(raw);
+      const { meta, rpc } = JSON.parse(raw);
+      if (rpc.method === 'bridge.event') {
+        if (sid && meta?.sid === sid && rpc.params?.name === eventName) {
+          config = rpc.params.payload;
+          render();
+          eventOutput.textContent = `${eventName}: ${config.theme}`;
+        }
+        return;
+      }
       replies.get(rpc.id)?.(rpc);
     };
 
-    async function request(id, method, params, sid) {
+    async function request(id, method, params) {
       const frame = { jsb: '1.0', rpc: { jsonrpc: '2.0', id, method, params } };
       if (sid) frame.meta = { sid };
       let timeout;
@@ -40,10 +59,14 @@
 
     try {
       if (!transport) throw new Error('The native transport is unavailable.');
-      const { sid } = await request('hello', 'bridge.hello', { protocols: [1] });
-      const device = await request('device', 'device.getInfo@1', {}, sid);
-      const config = await request('config', 'acme.app.getConfig@1', {}, sid);
-      output.textContent = JSON.stringify({ device, config }, null, 2);
+      ({ sid } = await request('hello', 'bridge.hello', { protocols: [1] }));
+      device = await request('device', 'device.getInfo@1', {});
+      const { subscribed } = await request('subscribe', 'bridge.subscribe@1', { events: [eventName] });
+      if (!subscribed.includes(eventName)) throw new Error(`Could not subscribe to ${eventName}.`);
+      const initialConfig = await request('config', 'acme.app.getConfig@1', {});
+      // A notification can update the config while the initial read is in flight.
+      config ??= initialConfig;
+      render();
       output.dataset.state = 'ready';
     } catch (error) {
       output.textContent = error.message;
