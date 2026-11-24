@@ -46,3 +46,178 @@ jobs:
           java-version: '17'
           cache: gradle
       - run: ./examples/native-android/gradlew -p examples/native-android --no-daemon :host:testDebugUnitTest :app:assembleRelease
+
+  ios-release:
+    name: iOS Release WebView
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run ReleaseIOSTests on an iPhone simulator
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          project=examples/native-ios/NativeIOSDemo.xcodeproj
+          scheme=NativeIOSDemo
+          report="$RUNNER_TEMP/ios-release"
+          result_bundle="$report/ReleaseIOSTests.xcresult"
+          mkdir -p "$report"
+          xcodebuild -project "$project" -scheme "$scheme" -showdestinations 2>&1 |
+            tee "$report/destinations.log"
+          device_id=$(awk -F ', ' '
+            /platform:iOS Simulator,/ && /, name:iPhone/ && !/, error:/ {
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^id:[[:xdigit:]-]+$/) {
+                  sub(/^id:/, "", $i)
+                  print $i
+                  exit
+                }
+              }
+            }
+          ' "$report/destinations.log")
+          if [[ -z "$device_id" ]]; then
+            echo "No compatible iPhone simulator found for $scheme." >&2
+            exit 1
+          fi
+
+          xcodebuild -project "$project" -scheme "$scheme" \
+            -configuration Release \
+            -destination "platform=iOS Simulator,id=$device_id" \
+            -derivedDataPath "$RUNNER_TEMP/ios-release-derived-data" \
+            -resultBundlePath "$result_bundle" \
+            -parallel-testing-enabled NO \
+            -only-testing:NativeIOSDemoTests/ReleaseIOSTests \
+            CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$report/xcodebuild.log"
+
+          xcrun xcresulttool get test-results tests --path "$result_bundle" > "$report/tests.json"
+          jq -er '
+            [.testNodes[]? | recurse(.children[]?)
+              | select(.nodeType == "Test Suite" and .name == "ReleaseIOSTests")
+              | recurse(.children[]?) | select(.nodeType == "Test Case")] as $tests
+            | if ($tests | length) == 0 then
+                error("ReleaseIOSTests did not run any tests")
+              elif any($tests[]; .result != "Passed") then
+                error("ReleaseIOSTests contains a skipped or failed test")
+              else
+                "\($tests | length) ReleaseIOSTests passed"
+              end
+          ' "$report/tests.json"
+      - name: Upload iOS Release test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-release-webview-report
+          path: ${{ runner.temp }}/ios-release/
+
+  android-release:
+    name: Android Release WebView
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANDROID_SERIAL: emulator-5554
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Install Android emulator and create AVD
+        timeout-minutes: 10
+        run: |
+          log_dir="$RUNNER_TEMP/android-release-webview"
+          sdk_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          image='system-images;android-35;google_apis;x86_64'
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$log_dir" "$ANDROID_AVD_HOME"
+          printf 'ANDROID_USER_HOME=%s\nANDROID_AVD_HOME=%s\n' \
+            "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          "$sdk_tools/sdkmanager" --install emulator "$image" </dev/null 2>&1 | tee "$log_dir/sdk-install.log"
+          "$sdk_tools/avdmanager" create avd --name ojsb-release --package "$image" \
+            --device pixel_2 <<< no 2>&1 | tee "$log_dir/avd-create.log"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx ojsb-release
+      - name: Boot Android emulator
+        timeout-minutes: 6
+        run: |
+          log_dir="$RUNNER_TEMP/android-release-webview"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          emulator="$ANDROID_HOME/emulator/emulator"
+
+          if [[ ! -c /dev/kvm ]]; then
+            echo "::error::The Ubuntu runner did not provide /dev/kvm"
+            exit 1
+          fi
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          "$emulator" -accel-check 2>&1 | tee "$log_dir/acceleration.log"
+          "$adb" start-server
+          "$emulator" -avd ojsb-release -port 5554 -accel on -gpu swiftshader \
+            -no-window -no-audio -no-boot-anim -no-snapshot </dev/null > "$log_dir/emulator.log" 2>&1 &
+          emulator_pid=$!
+
+          deadline=$((SECONDS + 300))
+          while [[ "$(timeout 5s "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != 1 ]]; do
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              echo "::error::The Android emulator exited during boot"
+              exit 1
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::The Android emulator did not boot within five minutes"
+              exit 1
+            fi
+            sleep 2
+          done
+          timeout 15s "$adb" shell wm dismiss-keyguard
+      - name: Run Release WebView instrumentation
+        run: |
+          timeout --kill-after=30s 12m ./examples/native-android/gradlew -p examples/native-android \
+            --no-daemon --stacktrace -PojsbTestBuildType=release :app:connectedReleaseAndroidTest \
+            2>&1 | tee "$RUNNER_TEMP/android-release-webview/gradle.log"
+
+          test -s examples/native-android/app/build/reports/androidTests/connected/release/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          results = Path("examples/native-android/app/build/outputs/androidTest-results/connected/release")
+          suites = [ET.parse(report).getroot() for report in results.glob("TEST-*.xml")]
+          cases = [case for suite in suites for case in suite.iter("testcase")]
+          release_class = "dev.openjsbridge.example.ReleaseActivityTest"
+          if not any(case.get("classname") == release_class for case in cases):
+              raise SystemExit("ReleaseActivityTest did not produce any test results")
+          suite_failed = any(int(suite.get(outcome, "0")) for suite in suites
+                             for outcome in ("errors", "failures", "skipped"))
+          case_failed = any(case.find(outcome) is not None for case in cases
+                            for outcome in ("error", "failure", "skipped"))
+          if suite_failed or case_failed:
+              raise SystemExit("Release instrumentation reported errors, failures, or skipped tests")
+          print(f"Verified {len(cases)} Android Release instrumentation test results")
+          PY
+      - name: Collect Android emulator diagnostics
+        if: failure()
+        run: |
+          log_dir="$RUNNER_TEMP/android-release-webview"
+          mkdir -p "$log_dir"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          timeout 10s "$adb" devices -l > "$log_dir/adb-devices.txt" 2>&1 || true
+          timeout 15s "$adb" logcat -d -t 2000 > "$log_dir/logcat.txt" 2>&1 || true
+          if [[ -f "$log_dir/emulator.log" ]]; then
+            tail -n 60 "$log_dir/emulator.log"
+          fi
+      - name: Upload Android Release WebView failure reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-release-webview-report
+          path: |
+            ${{ runner.temp }}/android-release-webview/
+            examples/native-android/app/build/outputs/androidTest-results/connected/release/
+            examples/native-android/app/build/reports/androidTests/connected/release/

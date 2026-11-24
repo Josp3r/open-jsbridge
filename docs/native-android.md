@@ -271,4 +271,4 @@ WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，�
 | 一致性 | conformance runner | 同 iOS，在 instrumentation 中加载 runner 页面，产出 JUnit XML |
 | 兼容矩阵 | Firebase Test Lab / 自建设备池 | 覆盖不同 System WebView 版本，验证所需 feature 缺失时通道不可用 |
 
-CI 运行 `:host:testDebugUnitTest` 并构建 Release App。真实 WebView 的 Debug 与 Release 测试命令见 [Kotlin 示例](../examples/native-android/README.md#在模拟器验证)。
+CI 运行 `:host:testDebugUnitTest`，并用模拟器执行 Release WebView 测试。失败报告见 [Release WebView 回归](conformance.md#32-原生-release-webview-回归)，本地测试命令见 [Kotlin 示例](../examples/native-android/README.md#在模拟器验证)。

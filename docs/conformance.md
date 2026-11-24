@@ -142,7 +142,15 @@ swift test --package-path examples/native-ios --filter 'WireHostTests|RawHostCon
 ./examples/native-android/gradlew -p examples/native-android :host:testDebugUnitTest
 ```
 
-### 3.2 完整场景（计划）
+### 3.2 原生 Release WebView 回归
+
+Conformance 工作流在 iPhone 模拟器和 Android Emulator 上启动各自的 Release 示例 App，并执行现有的 `ReleaseIOSTests` 和 `ReleaseActivityTest`。用例验证 App 自己的 WebView 能调用 `device.getInfo` 和自定义业务方法，也验证 HTTPS 端口隔离和换页后的任务取消。两端加载 App 内嵌的页面，无需启动 Web Demo。
+
+出现失败时，在 GitHub Actions 运行详情页的 Artifacts 下载 `ios-release-webview-report` 或 `android-release-webview-report`。iOS 产物包含 `.xcresult` 和 `xcodebuild` 日志。Android 产物包含测试报告、Gradle 日志和模拟器诊断。若流程在测试开始前失败，查看产物中已经生成的启动和构建日志。
+
+本地运行方式见 [iOS Release 测试](../examples/native-ios/README.md#测试) 和 [Android Release 测试](../examples/native-android/README.md#在模拟器验证)。
+
+### 3.3 完整场景（计划）
 
 更完整的宿主行为场景计划放在 `conformance-tests/cases/*.yaml`：
 
