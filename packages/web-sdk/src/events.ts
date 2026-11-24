@@ -21,10 +21,16 @@ interface Subscription {
   phase: 'idle' | 'subscribing' | 'subscribed' | 'unsubscribing';
 }
 
+export interface EventControl {
+  onReply: (result: JsonValue) => void;
+  onDispatch?: () => void;
+  waitForSlot?: boolean;
+}
+
 type Request = (
   method: 'bridge.subscribe' | 'bridge.unsubscribe',
   params: JsonObject,
-  onReply: (result: JsonValue) => void,
+  control: EventControl,
 ) => Promise<unknown>;
 
 const eventNamePattern = /^(?!rpc\.)[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
@@ -184,13 +190,18 @@ export class EventSubscriptions {
       // An ambiguous outcome may have installed the remote subscription.
       if (cleanup) this.unsubscribe(name, subscription, session);
     };
-    void this.request('bridge.subscribe', { events: [name] }, (result) => {
-      if (this.session !== session) return;
-      const error = subscribeError(result, name);
-      if (error) { fail(error, error.code === ErrorCode.InvalidRequest); return; }
-      subscription.phase = 'subscribed';
-      this.reconcile(name, subscription);
-    }).catch((error: BridgeError) => fail(error, error.code === ErrorCode.Timeout));
+    let dispatched = false;
+    void this.request('bridge.subscribe', { events: [name] }, {
+      waitForSlot: [...listeners.values()].some((registration) => registration.acknowledged),
+      onDispatch: () => { dispatched = true; },
+      onReply: (result) => {
+        if (this.session !== session) return;
+        const error = subscribeError(result, name);
+        if (error) { fail(error, error.code === ErrorCode.InvalidRequest); return; }
+        subscription.phase = 'subscribed';
+        this.reconcile(name, subscription);
+      },
+    }).catch((error: BridgeError) => fail(error, dispatched && error.code === ErrorCode.Timeout));
   }
 
   private unsubscribe(name: string, subscription: Subscription, session: Session): void {
@@ -208,12 +219,15 @@ export class EventSubscriptions {
         this.reconcile(name, subscription);
       }
     };
-    void this.request('bridge.unsubscribe', { events: [name] }, (result) => {
-      const names = isObject(result) ? result.unsubscribed : undefined;
-      if (Array.isArray(names) && names.length === 1 && names[0] === name) finish();
-      else finish(new BridgeError(ErrorCode.InvalidRequest, 'Invalid event unsubscription acknowledgement', {
-        method: 'bridge.unsubscribe', data: { event: name },
-      }));
+    void this.request('bridge.unsubscribe', { events: [name] }, {
+      waitForSlot: true,
+      onReply: (result) => {
+        const names = isObject(result) ? result.unsubscribed : undefined;
+        if (Array.isArray(names) && names.length === 1 && names[0] === name) finish();
+        else finish(new BridgeError(ErrorCode.InvalidRequest, 'Invalid event unsubscription acknowledgement', {
+          method: 'bridge.unsubscribe', data: { event: name },
+        }));
+      },
     }).catch(finish);
   }
 }
