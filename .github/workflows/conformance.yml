@@ -45,4 +45,4 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - run: ./examples/native-android/gradlew -p examples/native-android --no-daemon :app:testDebugUnitTest
+      - run: ./examples/native-android/gradlew -p examples/native-android --no-daemon :host:testDebugUnitTest :app:assembleRelease

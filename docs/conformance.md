@@ -139,7 +139,7 @@ M1 原生宿主可从 [最小接入验收](native-host.md#验收) 开始。浏�
 ```sh
 npm test
 swift test --package-path examples/native-ios --filter 'WireHostTests|RawHostConformanceTests'
-./examples/native-android/gradlew -p examples/native-android :app:testDebugUnitTest
+./examples/native-android/gradlew -p examples/native-android :host:testDebugUnitTest
 ```
 
 ### 3.2 完整场景（计划）

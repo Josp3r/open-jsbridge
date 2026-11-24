@@ -1,10 +1,10 @@
 # Android 实现层（WebView）
 
-> AAR：`dev.openjsbridge:openjsbridge`。依赖 `androidx.webkit:webkit`、`kotlinx-coroutines`、`kotlinx-serialization-json`。
-> minSdk 建议 21；首选通道依赖设备上 **Android System WebView 的版本**（而非 Android 系统版本），必须运行时用 `WebViewFeature.isFeatureSupported(...)` 检测。
+> 仓库内的 `:host` 模块可构建 `host-release.aar`。参考实现使用 `androidx.webkit:webkit`、Kotlin Coroutines 和 Gson。
+> Kotlin 参考宿主的 minSdk 为 24。首选通道取决于设备上的 **Android System WebView 版本**，宿主在运行时用 `WebViewFeature.isFeatureSupported(...)` 检测所需能力。
 > 文中 androidx.webkit API 请在接入时以所用版本的官方文档复核。
 
-要运行握手与 echo，参见 [Kotlin 示例](../examples/native-android/README.md)。最小宿主的接入和验收条件见 [Native Host 最小接入](native-host.md)。
+Kotlin 参考宿主提供 `:host` Android 库。Release App 可以在自己的 `WebView` 上调用 `AndroidBridge.attach`，启用 `device.getInfo` 并注册异步业务方法。接入代码和模拟器验收步骤见 [Kotlin 示例](../examples/native-android/README.md)，协议要求见 [Native Host 最小接入](native-host.md)。
 
 ## 1. 通道选择
 
@@ -252,7 +252,7 @@ WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，�
 
 参考宿主通过文档确认时取得的 reply proxy 投递 `network.changed`。在投递前检查当前会话与订阅，shim 校验同一个文档标记。Android Emulator 中的 WebView 测试覆盖退订、会话失效和同源文档替换。开放其他通知或反向请求时，沿用文档定向并验证对应的生命周期。
 
-[参考宿主](../examples/native-android/app/src/main/java/dev/openjsbridge/example/DocumentTransport.kt) · [原生基础能力](native-profiles.md)
+[参考宿主](../examples/native-android/host/src/main/java/dev/openjsbridge/host/DocumentTransport.kt) · [原生基础能力](native-profiles.md)
 
 ## 8. 大数据
 
@@ -265,10 +265,10 @@ WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，�
 
 | 层 | 工具 | 内容 |
 |----|------|------|
-| JVM 单测 | JUnit5 + kotlinx-coroutines-test | JSON-RPC 信封、ACL 匹配反例、SecurityChain、HandlerRegistry（`-32602`）、取消传播、限流；BridgeCore 通过 `FakeTransport` 测试重复请求、通知和会话状态 |
+| JVM 单测 | JUnit 4 | JSON-RPC 信封与共享一致性用例、业务方法注册、限流、文档替换和待处理调用清理 |
 | Robolectric（可选） | Robolectric | 仅测与 Android 类耦合但不依赖真实 WebView 渲染的部分；**不要**用它测通道行为（Robolectric 不运行真实 WebView） |
 | 仪器测试 | androidx.test + 真实 WebView | WML 主 frame 握手、陌生 origin 与子 frame 拒绝、reload 后无旧消息交给新 document、render process gone（设备支持时） |
 | 一致性 | conformance runner | 同 iOS，在 instrumentation 中加载 runner 页面，产出 JUnit XML |
 | 兼容矩阵 | Firebase Test Lab / 自建设备池 | 覆盖不同 System WebView 版本，验证所需 feature 缺失时通道不可用 |
 
-CI：`./gradlew :openjsbridge:test :openjsbridge-test:connectedAndroidTest`。
+CI 运行 `:host:testDebugUnitTest` 并构建 Release App。真实 WebView 的 Debug 与 Release 测试命令见 [Kotlin 示例](../examples/native-android/README.md#在模拟器验证)。

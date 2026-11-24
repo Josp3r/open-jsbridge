@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = await readFile(new URL('../app/src/main/assets/android-transport.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../host/src/main/assets/open-jsbridge/android-transport.js', import.meta.url), 'utf8');
 
 function install({ mainFrame = true, injected = true } = {}) {
   const window = new EventTarget();
