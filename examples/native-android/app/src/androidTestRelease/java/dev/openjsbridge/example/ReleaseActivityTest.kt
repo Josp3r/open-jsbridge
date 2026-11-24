@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.gson.JsonObject
 import dev.openjsbridge.host.AndroidBridge
 import dev.openjsbridge.host.BusinessMethod
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import org.junit.Assert.assertEquals
@@ -98,17 +99,8 @@ class ReleaseActivityTest {
             lateinit var attachment: AndroidBridge
             var resumed = false
             scenario.onActivity { activity ->
-                testView = WebView(activity).apply {
-                    id = R.id.demo_webview
-                    settings.javaScriptEnabled = true
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageCommitVisible(view: WebView, url: String) {
-                            attachment.onPageCommitVisible(url)
-                        }
-                    }
-                }
-                attachment = checkNotNull(AndroidBridge.attach(testView, ORIGIN, methods = listOf(config)))
-                activity.setContentView(testView)
+                attachment = attachProbe(activity, config)
+                testView = findWebView(activity)
                 loadPage(testView, "$ORIGIN/first")
             }
             try {
@@ -138,13 +130,84 @@ class ReleaseActivityTest {
         }
     }
 
+    @Test
+    @SuppressLint("SetJavaScriptEnabled")
+    fun cancelNotificationReleasesTheOnlySlotInTheReleaseWebView() {
+        val started = CompletableFuture<Unit>()
+        val cancelled = CompletableFuture<Unit>()
+        val config = BusinessMethod("acme.app.getConfig") {
+            try {
+                started.complete(Unit)
+                awaitCancellation()
+            } finally {
+                if (!currentCoroutineContext().isActive) cancelled.complete(Unit)
+            }
+        }
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            lateinit var testView: WebView
+            lateinit var attachment: AndroidBridge
+            scenario.onActivity { activity ->
+                attachment = attachProbe(activity, config, AndroidBridge.Options(deviceInfo = true))
+                testView = findWebView(activity)
+                loadPage(testView, "$ORIGIN/cancel")
+            }
+            try {
+                hello(scenario, "/cancel")
+                assertEquals("true", evaluate(scenario, """
+                    nativeReplies['probe-hello'].result.capabilities.features.includes('cancel') &&
+                      nativeReplies['probe-hello'].result.limits.maxInflight === 1
+                """.trimIndent()))
+                evaluate(scenario, "window.sendNative('held', 'acme.app.getConfig', {})")
+                started.get(5, TimeUnit.SECONDS)
+                evaluate(scenario, """
+                    window.sendNative(undefined, 'bridge.cancel', {requestId: 'held', reason: 'abort'});
+                    window.sendNative('next', 'device.getInfo', {});
+                """.trimIndent())
+                cancelled.get(5, TimeUnit.SECONDS)
+                awaitScript(scenario, "!!nativeReplies.held && !!nativeReplies.next")
+                assertEquals("-32002", evaluate(scenario, "nativeReplies.held.error.code"))
+                assertEquals("\"android\"", evaluate(scenario, "nativeReplies.next.result.os"))
+                assertEquals("true", evaluate(scenario, "nativeReplyIds.slice(1).sort().join() === 'held,next'"))
+            } finally {
+                scenario.onActivity {
+                    attachment.detach()
+                    (testView.parent as? ViewGroup)?.removeView(testView)
+                    testView.destroy()
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun attachProbe(
+        activity: MainActivity,
+        config: BusinessMethod,
+        options: AndroidBridge.Options = AndroidBridge.Options(),
+    ): AndroidBridge {
+        lateinit var attachment: AndroidBridge
+        val webView = WebView(activity).apply {
+            id = R.id.demo_webview
+            settings.javaScriptEnabled = true
+            webViewClient = object : WebViewClient() {
+                override fun onPageCommitVisible(view: WebView, url: String) {
+                    attachment.onPageCommitVisible(url)
+                }
+            }
+        }
+        attachment = checkNotNull(AndroidBridge.attach(webView, ORIGIN, options, methods = listOf(config)))
+        activity.setContentView(webView)
+        return attachment
+    }
+
     private fun hello(scenario: ActivityScenario<MainActivity>, path: String): String {
         awaitScript(scenario, "location.pathname === '$path' && !!window.__OJSB_TRANSPORT__")
         evaluate(scenario, """
             window.nativeReplies = {};
+            window.nativeReplyIds = [];
             window.__OJSB_RECEIVE__ = raw => {
                 const { rpc } = JSON.parse(raw);
                 nativeReplies[rpc.id] = rpc;
+                nativeReplyIds.push(rpc.id);
             };
             window.sendNative = (id, method, params) => {
                 const sid = nativeReplies['probe-hello']?.result.sid;

@@ -21,7 +21,7 @@ internal class DocumentTransport(
 
     private data class ParkedFrame(val bytes: Int, val action: () -> Unit)
 
-    private class BusinessWork {
+    private class BusinessWork(val call: RpcSession.BusinessCall, val reply: (String) -> Unit) {
         var cancel: (() -> Unit)? = null
     }
 
@@ -63,8 +63,8 @@ internal class DocumentTransport(
                 previous
             } else {
                 retireDocument()
-                Document(token, proxy, RpcSession(enableEcho, modules, businessMethods), challenge)
-                    .also { document = it }
+                val session = RpcSession(enableEcho, modules, businessMethods, supportsCancellation = runBusiness != null)
+                Document(token, proxy, session, challenge).also { document = it }
             }
             current.challenge = challenge
             pendingChallenge = null
@@ -97,6 +97,7 @@ internal class DocumentTransport(
                 payload,
                 businessBusy = current.businessWork != null,
                 onBusinessCall = runBusiness?.let { { call -> businessCall = call } },
+                onCancellation = { id -> cancelBusiness(current, id) },
                 afterResponse = { acknowledge = it },
             )
             if (response != null) {
@@ -114,17 +115,24 @@ internal class DocumentTransport(
         postReply: (String) -> Unit,
     ) {
         val runner = checkNotNull(runBusiness)
-        val work = BusinessWork()
+        val work = BusinessWork(call) { response -> reply(current, response, prefix, postReply) }
         current.businessWork = work
         work.cancel = runner(call) { result ->
             if (current.businessWork === work) {
                 current.businessWork = null
-                current.session.finishBusinessCall(call, result)?.let { response ->
-                    reply(current, response, prefix, postReply)
-                }
+                current.session.finishBusinessCall(call, result)?.let(work.reply)
             }
         }
         if (document !== current) work.cancel?.invoke()
+    }
+
+    private fun cancelBusiness(current: Document, requestId: String) {
+        val work = current.businessWork ?: return
+        if (work.call.id != requestId) return
+        val response = current.session.businessCancellationResponse(work.call) ?: return
+        current.businessWork = null
+        work.cancel?.invoke()
+        work.reply(response)
     }
 
     private fun reply(

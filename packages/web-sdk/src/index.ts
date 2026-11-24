@@ -86,6 +86,7 @@ class WebBridge implements Bridge {
   private session: Session | undefined;
   private hello: HelloAttempt | undefined;
   private readonly pending = new Map<string, PendingCall>();
+  private readonly cancelReceipts = new Set<() => void>();
   private draining = false;
   private readonly events = new EventSubscriptions(
     (method, params, control) => this.request(method, params, {}, control),
@@ -172,7 +173,8 @@ class WebBridge implements Bridge {
       if (error) return Promise.reject(error);
     }
     // Event maintenance must eventually run even when the waiting queue is full.
-    if (!waitForSlot && this.pending.size - (session?.maxInflight ?? 0) >= this.queueLimit) {
+    const capacity = (session?.maxInflight ?? 0) - this.cancelReceipts.size;
+    if (!waitForSlot && this.pending.size - capacity >= this.queueLimit) {
       return Promise.reject(new BridgeError(ErrorCode.NotReady, 'Pending call queue is full', context));
     }
 
@@ -238,6 +240,7 @@ class WebBridge implements Bridge {
   }
 
   private detach(): void {
+    for (const release of this.cancelReceipts) release();
     const unlisten = this.unlisten;
     this.unlisten = undefined;
     this.adapter = undefined;
@@ -376,16 +379,43 @@ class WebBridge implements Bridge {
     pending.stopTimer = atDeadline(deadline, () => this.fail(pending.request.id, ErrorCode.Timeout, 'Call timed out', true));
   }
 
-  private post(raw: string, id?: string, onFailure: () => void = () => {}): void {
+  private post(raw: string, id?: string, onFailure: () => void = () => {}): void | Promise<string | null> {
     const signal = this.lifetime?.signal;
     try {
       const response = this.adapter?.send(raw);
       if (response) void response.then((reply) => {
         if (!signal?.aborted && reply !== null && id !== undefined) this.receive(reply, id);
       }, onFailure);
+      return response;
     } catch {
       onFailure();
     }
+  }
+
+  private postCancel(id: string, session: Session): void {
+    const raw = encodeEnvelope({
+      jsb: '1.0', meta: { sid: session.sid },
+      rpc: { jsonrpc: '2.0', method: 'bridge.cancel', params: { requestId: id } },
+    });
+    let stopTimer: (() => void) | undefined;
+    const release = () => {
+      if (!this.cancelReceipts.delete(release)) return;
+      stopTimer?.();
+      session.inflight--;
+      this.drain();
+    };
+
+    // Hold the slot while a WithReply transport has a cancel receipt outstanding.
+    const deadline = performance.now() + session.defaultTimeout;
+    this.cancelReceipts.add(release);
+    session.inflight++;
+    const receipt = this.post(raw);
+    if (!receipt) {
+      release();
+      return;
+    }
+    if (this.cancelReceipts.has(release)) stopTimer = atDeadline(deadline, release);
+    void receipt.then(release, release);
   }
 
   private receive(raw: string, replyId?: string): void {
@@ -447,10 +477,7 @@ class WebBridge implements Bridge {
     call.reject(new BridgeError(code, message, { method: call.request.method, traceId: call.traceId }));
     const session = call.session;
     if (cancel && session === this.session && session?.features.includes('cancel')) {
-      this.post(encodeEnvelope({
-        jsb: '1.0', meta: { sid: session.sid },
-        rpc: { jsonrpc: '2.0', method: 'bridge.cancel', params: { requestId: id } },
-      }));
+      this.postCancel(id, session);
     }
     this.drain();
   }

@@ -20,6 +20,7 @@ internal class RpcSession(
     enableEcho: Boolean,
     modules: BridgeModules = BridgeModules(),
     businessMethods: List<BusinessMethod> = emptyList(),
+    supportsCancellation: Boolean = false,
 ) {
     internal data class BusinessCall(
         val handler: suspend (JsonObject) -> JsonElement,
@@ -42,6 +43,7 @@ internal class RpcSession(
         modules.network?.let { network -> put(NETWORK_STATUS) { network.status().snapshot() } }
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
+    private val canCancel = supportsCancellation && this.businessMethods.isNotEmpty()
     private val networkEvents = modules.networkEvents
     private var eventReceiver: ((String) -> Unit)? = null
     private var networkSubscription: NetworkSubscription? = null
@@ -60,13 +62,17 @@ internal class RpcSession(
         raw: String,
         businessBusy: Boolean = false,
         onBusinessCall: ((BusinessCall) -> Unit)? = null,
+        onCancellation: ((String) -> Unit)? = null,
         afterResponse: (() -> Unit) -> Unit = {},
     ): String? {
         if (exceedsMessageLimit(raw)) return null
         val envelope = parseObject(raw) ?: return null
         val rpc = envelope.get("rpc") as? JsonObject ?: return null
 
-        // There are no incoming notifications or responses in this host.
+        if (!rpc.has("id")) {
+            if (onCancellation != null) cancellationRequestId(envelope, rpc)?.let(onCancellation)
+            return null
+        }
         val id = rpc.get("id").asStringOrNull() ?: return null
         if (id.codePointCount(0, id.length) !in 1..128 || !rpc.has("method") ||
             rpc.has("result") || rpc.has("error")
@@ -132,6 +138,23 @@ internal class RpcSession(
         }
         return failure(id, requestSid, -32601, "Method not found")
     }
+
+    private fun cancellationRequestId(envelope: JsonObject, rpc: JsonObject): String? {
+        if (!canCancel || rpc.get("method").asStringOrNull() !in CANCEL_METHODS) return null
+        val activeSid = sid ?: return null
+        val meta = envelope.get("meta") as? JsonObject ?: return null
+        val params = rpc.get("params") as? JsonObject ?: return null
+        if (meta.get("sid").asStringOrNull() != activeSid || !validMeta(meta) ||
+            envelope.get("jsb").asStringOrNull() != "1.0" || rpc.get("jsonrpc").asStringOrNull() != "2.0" ||
+            !rpc.keySet().all { it in NOTIFICATION_KEYS } ||
+            (params.has("reason") && params.get("reason").asStringOrNull() == null) ||
+            !validJsonNumbers(envelope)
+        ) return null
+        return params.get("requestId").asStringOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    fun businessCancellationResponse(call: BusinessCall): String? =
+        if (sid == call.sid) failure(call.id, call.sid, -32002, "Cancelled") else null
 
     fun finishBusinessCall(call: BusinessCall, result: Result<JsonElement>): String? {
         if (sid != call.sid) return null
@@ -239,7 +262,7 @@ internal class RpcSession(
                     }
                 })
                 add("events", JsonArray().apply { if (eventReceiver != null) add(NETWORK_CHANGED) })
-                add("features", JsonArray())
+                add("features", JsonArray().apply { if (canCancel) add("cancel") })
             })
             add("limits", JsonObject().apply {
                 addProperty("maxMessageBytes", MAX_MESSAGE_BYTES)
@@ -266,8 +289,10 @@ internal class RpcSession(
         private const val UNSUBSCRIBE = "bridge.unsubscribe"
         private const val NETWORK_CHANGED = "network.changed"
         private val METHOD_VERSION = Regex("[1-9][0-9]*")
-        private val REQUEST_KEYS = setOf("jsonrpc", "id", "method", "params")
-        private val NOTIFICATION_ONLY = setOf("bridge.cancel", "bridge.event", "bridge.progress")
+        private val NOTIFICATION_KEYS = setOf("jsonrpc", "method", "params")
+        private val REQUEST_KEYS = NOTIFICATION_KEYS + "id"
+        private val CANCEL_METHODS = setOf("bridge.cancel", "bridge.cancel@1")
+        private val NOTIFICATION_ONLY = CANCEL_METHODS + setOf("bridge.event", "bridge.progress")
 
         private fun exceedsMessageLimit(raw: String) =
             raw.length > MAX_MESSAGE_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES
