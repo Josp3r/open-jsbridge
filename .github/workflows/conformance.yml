@@ -58,6 +58,9 @@ jobs:
       - name: Run ReleaseIOSTests on an iPhone simulator
         shell: bash
         timeout-minutes: 15
+        env:
+          # Use the toolchain paired with the runner's iOS 26.2 simulator runtime.
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: |
           set -euo pipefail
           project=examples/native-ios/NativeIOSDemo.xcodeproj
@@ -65,6 +68,11 @@ jobs:
           report="$RUNNER_TEMP/ios-release"
           result_bundle="$report/ReleaseIOSTests.xcresult"
           mkdir -p "$report"
+          {
+            xcodebuild -version
+            xcrun simctl list runtimes
+            xcrun simctl list devices available
+          } 2>&1 | tee "$report/simulators.log"
           xcodebuild -project "$project" -scheme "$scheme" -showdestinations 2>&1 |
             tee "$report/destinations.log"
           device_id=$(awk -F ', ' '
