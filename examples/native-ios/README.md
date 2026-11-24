@@ -1,6 +1,6 @@
 # Swift / WKWebView 示例
 
-示例在 iOS 模拟器中加载仓库的 Web Demo。Swift 通过 WebKit 的 Promise 通道应答 JSON-RPC 请求，并向已订阅的文档推送网络状态变化。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
+示例 App 提供两种运行方式。Debug 加载仓库的 Web Demo。Release 由 App 自己创建和管理 `WKWebView`，通过同一条 WebKit 通道调用设备查询和 App 注册的业务方法。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
 
 ## 在模拟器运行
 
@@ -10,7 +10,7 @@
 
 ## 启用设备和网络能力
 
-默认的 `makeWebView(allowing:)` 只声明 `conformance.echo`。示例 App 在 Debug 构建中独立开启以下三个选项。
+Debug Demo 的 `makeWebView(allowing:)` 默认声明 `conformance.echo`。示例 App 在 Debug 构建中独立开启以下三个选项。
 
 ```swift
 let webView = NativeIOSHost.makeWebView(
@@ -25,17 +25,59 @@ let webView = NativeIOSHost.makeWebView(
 
 三个能力的参数、返回值和网络类型定义见 [设备和网络 Profiles](../../docs/native-profiles.md)。
 
+## 接入 App 自己的 WKWebView
+
+App 可以使用 Swift Package 的 `NativeIOSHost` 产品，把 bridge 装到自己创建的 `WKWebView` 上。先安装再导航。传入精确的 HTTPS origin，包括自定义端口。App 持有返回的 `Attachment`，继续用自己的 `WKNavigationDelegate` 决定导航策略。
+
+```swift
+let origin = URL(string: "https://app.example.com")!
+let configuration = WKWebViewConfiguration()
+let webView = WKWebView(frame: .zero, configuration: configuration)
+
+let getConfig = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+    guard params.isEmpty else { throw NativeIOSHost.BusinessMethodError.invalidParams }
+    return ["theme": "system"]
+}
+attachment = try NativeIOSHost.attach(
+    to: webView,
+    allowing: origin,
+    options: .init(deviceInfo: true),
+    methods: [getConfig]
+)
+webView.navigationDelegate = self
+webView.load(URLRequest(url: origin))
+```
+
+在 App 的主 frame `didCommit` 回调调用 `attachment?.didCommitNavigation()`，在 `webViewWebContentProcessDidTerminate` 回调调用 `attachment?.webContentProcessDidTerminate()`。在销毁或替换 WebView 前调用 `attachment?.detach()`。每个正在接入的 WebView 使用自己的 `WKUserContentController`。附件拆卸时清理它自己的 handler 和注入脚本，App 的脚本保留原有顺序。
+
+Web 可以从同一个 SDK 实例调用两个方法。业务方法注册时使用完整基础名称，支持按 v1 调用。业务 handler 在主 actor 上以异步函数执行，接收 JSON 对象参数，返回 JSON 值。耗时工作由 App 切换到适当的执行环境，并配合 Swift 任务取消。文档会话失效会取消旧任务，晚到结果不会进入新文档。
+
+```ts
+const device = await bridge.call('device.getInfo')
+const config = await bridge.call('acme.app.getConfig')
+```
+
+示例的 Release 构建使用 App 内嵌的本地页面，以 App 指定的 HTTPS origin 验证 JSON-RPC 通道并显示两个结果。实际 App 的 HTTPS 页面可以用上面的 Web SDK 写法，业务方法使用自己的公司前缀。
+
 ## 宿主的关键代码
 
-- [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 创建专用 WebView，在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。示例 App 精确允许 `http://127.0.0.1:4173`，并在 Debug 配置中为回环地址声明 ATS 例外。
+- [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。Debug Demo 使用回环地址，App 接入入口使用精确的 HTTPS origin。
 - WebKit 通道私下携带每份文档生成的标记。Swift 在当前主文档校验标记后才分派。跨文档提交、文档标记切换或 Web 内容进程退出会清除旧会话，向尚未完成的旧请求返回空回执并释放应答数据。应答只使用原消息的 `replyHandler`，晚到或重复的完成回调会被丢弃。
-- [WireHost.swift](Sources/NativeIOSHost/WireHost.swift) 解析信封、建立会话、执行请求去重和限额、声明已启用的能力并维护订阅。宿主通道仅在 Debug 构建注入，握手的可选特性列表为空。
+- [WireHost.swift](Sources/NativeIOSHost/WireHost.swift) 解析信封、建立会话、执行请求去重和限额、声明已启用的能力并维护订阅。从 App 注册表选择获准的业务方法。握手的可选特性列表为空。
 - [DeviceModule.swift](Sources/NativeIOSHost/DeviceModule.swift) 读取系统版本。[NetworkModule.swift](Sources/NativeIOSHost/NetworkModule.swift) 归一化系统网络路径并保存最近一次观测结果。推送脚本在交付前核对当前页面的 origin 和文档标记。页面隐藏时丢弃待交付消息，并轮换标记以便恢复时重新握手。
-- 将适配器移植到已有 App 时，把脚本安装和导航失效钩子接到自己的 WebView 生命周期，并为实际页面使用精确的 HTTPS origin。[最小接入契约](../../docs/native-host.md)
+- 协议的来源、文档和会话规则适用于两种接入方式。[最小接入契约](../../docs/native-host.md)
 
 ## 测试
 
-在 Xcode 以 iPhone 模拟器为目标运行 `Product → Test`，Web Demo 服务需保持运行。WebKit 测试涵盖原生握手和 echo、系统提供的设备与网络快照、网络订阅确认、推送缓冲与退订、文档隐藏和切换时的隔离、并发限制及非白名单页面和子 frame 的隔离。
+在 Xcode 以 iPhone 模拟器为目标运行 Debug 测试，保持 Web Demo 服务运行。WebKit 测试涵盖原生握手和 echo、系统提供的设备与网络快照、网络订阅确认、推送缓冲与退订、文档隐藏和切换时的隔离、并发限制及来源和 frame 校验。Release 接入测试使用 App 内嵌的 HTTPS 页面，可单独运行。
+
+```sh
+xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme NativeIOSDemo \
+  -configuration Release -destination 'platform=iOS Simulator,name=iPhone 17e' \
+  -only-testing:NativeIOSDemoTests/ReleaseIOSTests CODE_SIGNING_ALLOWED=NO test
+```
+
+将设备名称换成本机已安装的模拟器。Release 测试可直接读取示例的内嵌页面，无需启动 Web Demo。
 
 在 macOS 上可离线测试 Swift 协议处理。
 

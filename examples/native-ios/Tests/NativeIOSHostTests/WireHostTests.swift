@@ -145,6 +145,155 @@ final class WireHostTests: XCTestCase {
         }
     }
 
+    func testBusinessNamesRequireAQualifiedBaseOutsideReservedNamespaces() throws {
+        for name in ["acme.getConfig", "acme.app.getConfig", "com.acme.getConfig", "bridgeApps.getConfig"] {
+            let method = try NativeIOSHost.BusinessMethod(name) { _ in NSNull() }
+            XCTAssertEqual(method.name, name)
+        }
+
+        for name in ["", "getConfig", "Acme.getConfig", "acme.GetConfig", "acme..getConfig",
+                     "acme.getConfig@1", "acme.getConfig\n", "acme.get_config", "acme.功能",
+                     "bridge.other", "conformance.echo", "ojsb.test", "rpc.test", "device.other",
+                     "app.other", "ui.other", "storage.other", "network.other", "media.other"] {
+            XCTAssertThrowsError(try NativeIOSHost.BusinessMethod(name) { _ in NSNull() }) { error in
+                guard let error = error as? NativeIOSHost.BusinessMethodError,
+                      case let .invalidName(actual) = error else { return XCTFail("Unexpected error: \(error)") }
+                XCTAssertEqual(actual, name)
+            }
+        }
+    }
+
+    func testHelloAdvertisesBusinessMethodsWithoutEchoWhenDisabled() throws {
+        let name = "acme.app.getConfig"
+        let host = WireHost(platform: "ios", options: .init(deviceInfo: true),
+                            businessMethods: [name: { _ in NSNull() }], enableEcho: false)
+        let reply = try unpack(host.receive(hello(id: "hello")))
+        let result = try XCTUnwrap(reply.rpc["result"] as? [String: Any])
+        let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any])
+        XCTAssertEqual(capabilities["methods"] as? [String: [String: [Int]]], [
+            "device.getInfo": ["versions": [1]], "acme.app.getConfig": ["versions": [1]]
+        ])
+        let sid = try XCTUnwrap(result["sid"] as? String)
+        for method in ["conformance.echo", "acme.app.other"] {
+            let reply = try unpack(host.receive(echo(id: method, sid: sid, method: method)))
+            XCTAssertEqual(reply.error?["code"] as? Int, -32601)
+        }
+    }
+
+    func testHelloKeepsOversizedCapabilityAdvertisementWithinTheWireLimit() throws {
+        let name = "acme." + String(repeating: "a", count: WireHost.maxMessageBytes)
+        let host = WireHost(platform: "ios", businessMethods: [name: { _ in NSNull() }], enableEcho: false)
+        let raw = try XCTUnwrap(host.receive(hello(id: "hello")))
+        let reply = try unpack(raw)
+        XCTAssertLessThanOrEqual(raw.utf8.count, WireHost.maxMessageBytes)
+        XCTAssertEqual(reply.rpc["id"] as? String, "hello")
+        XCTAssertEqual(reply.error?["code"] as? Int, -32006)
+        XCTAssertNil(host.sid)
+    }
+
+    @MainActor
+    func testBusinessV1RequestsDeferAndDecodeObjectParams() async throws {
+        let method = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+            ["input": params, "extra": [true, NSNull(), 1.5]]
+        }
+        let host = WireHost(platform: "ios", businessMethods: [method.name: method.handler])
+        let sid = try session(host)
+        let requests = [
+            #"{"jsb":"1.0","meta":{"sid":"\#(sid)","traceId":"trace"},"rpc":{"jsonrpc":"2.0","id":"base","method":"acme.app.getConfig"}}"#,
+            echo(id: "v1", sid: sid, params: #"{"locale":"中文"}"#, method: "acme.app.getConfig@1")
+        ]
+        for (index, request) in requests.enumerated() {
+            var call: WireHost.BusinessCall?
+            XCTAssertNil(host.receive(request, onBusinessCall: { call = $0 }))
+            let deferred = try XCTUnwrap(call)
+            let result = try await deferred.handler(deferred.params)
+            let reply = try unpack(host.finishBusinessCall(deferred, result: .success(result)))
+            XCTAssertEqual(reply.rpc["id"] as? String, index == 0 ? "base" : "v1")
+            XCTAssertEqual(reply.meta?["sid"] as? String, sid)
+            XCTAssertEqual(reply.meta?["traceId"] as? String, "trace")
+            XCTAssertEqual(reply.rpc["result"] as? NSDictionary, [
+                "input": index == 0 ? [:] : ["locale": "中文"], "extra": [true, NSNull(), 1.5]
+            ] as NSDictionary)
+        }
+    }
+
+    func testBusinessDispatchRespectsVersionAndRequestAdmission() throws {
+        let method = "acme.getConfig"
+        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        var dispatched = 0
+        let receive: (WireHost.BusinessCall) -> Void = { _ in dispatched += 1 }
+        let early = echo(id: "early", sid: "wrong", method: method)
+        XCTAssertNil(host.receive(early, onBusinessCall: receive))
+        let sid = try session(host)
+        XCTAssertNil(host.receive(early, onBusinessCall: receive))
+
+        let request = echo(id: "id", sid: sid, method: method)
+        XCTAssertNil(host.receive(request, onBusinessCall: receive))
+        XCTAssertNil(host.receive(request, onBusinessCall: receive))
+        let cases = [
+            (echo(id: "version", sid: sid, method: "\(method)@2"), false, -32601),
+            (echo(id: "limit", sid: sid, method: method), true, -32008),
+            (echo(id: "params", sid: sid, params: "[]", method: method), false, -32600),
+            (#"{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"no-sid","method":"\#(method)"}}"#, false, -32009),
+            (#"{"jsb":"1.0","meta":{"sid":"\#(sid)","timeout":0},"rpc":{"jsonrpc":"2.0","id":"timeout","method":"\#(method)"}}"#, false, -32602)
+        ]
+        for (raw, atLimit, code) in cases {
+            let reply = try unpack(host.receive(raw, exceedsInflightLimit: atLimit, onBusinessCall: receive))
+            XCTAssertEqual(reply.error?["code"] as? Int, code)
+        }
+        XCTAssertEqual(dispatched, 1)
+    }
+
+    func testBusinessFailuresReturnBoundedCorrelatedErrors() throws {
+        struct AppFailure: LocalizedError {
+            var errorDescription: String? { "private app data" }
+        }
+
+        let method = "acme.getConfig"
+        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        let sid = try session(host)
+        let cases: [(Result<Any, Error>, Int, String)] = [
+            (.failure(NativeIOSHost.BusinessMethodError.invalidParams), -32602, "Invalid params"),
+            (.failure(AppFailure()), -32603, "Internal error"),
+            (.success(Date(timeIntervalSince1970: 0)), -32603, "Internal error"),
+            (.success(["value": Double.nan]), -32603, "Internal error"),
+            (.success([9_007_199_254_740_992 as Int64]), -32603, "Internal error"),
+            (.success(String(repeating: "界", count: WireHost.maxMessageBytes / 2)), -32006, "Payload too large")
+        ]
+        for (index, entry) in cases.enumerated() {
+            let id = "failure-\(index)"
+            var call: WireHost.BusinessCall?
+            XCTAssertNil(host.receive(echo(id: id, sid: sid, method: method), onBusinessCall: { call = $0 }))
+            let raw = try XCTUnwrap(host.finishBusinessCall(XCTUnwrap(call), result: entry.0))
+            let reply = try unpack(raw)
+            XCTAssertLessThanOrEqual(raw.utf8.count, WireHost.maxMessageBytes)
+            XCTAssertEqual(reply.rpc["id"] as? String, id)
+            XCTAssertEqual(reply.meta?["sid"] as? String, sid)
+            XCTAssertEqual(reply.error?["code"] as? Int, entry.1)
+            XCTAssertEqual(reply.error?["message"] as? String, entry.2)
+            XCTAssertNil(reply.error?["data"])
+        }
+    }
+
+    func testBusinessCompletionIsDiscardedAfterItsSessionResets() throws {
+        let method = "acme.getConfig"
+        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        let oldSID = try session(host)
+        var oldCall: WireHost.BusinessCall?
+        XCTAssertNil(host.receive(echo(id: "config", sid: oldSID, method: method), onBusinessCall: { oldCall = $0 }))
+        let old = try XCTUnwrap(oldCall)
+        host.reset()
+        XCTAssertNil(host.finishBusinessCall(old, result: .success("stale")))
+
+        let sid = try session(host)
+        var currentCall: WireHost.BusinessCall?
+        XCTAssertNil(host.receive(echo(id: "config", sid: sid, method: method), onBusinessCall: { currentCall = $0 }))
+        XCTAssertNil(host.finishBusinessCall(old, result: .success("still stale")))
+        let reply = try unpack(host.finishBusinessCall(XCTUnwrap(currentCall), result: .success(NSNull())))
+        XCTAssertEqual(reply.meta?["sid"] as? String, sid)
+        XCTAssertTrue(reply.rpc["result"] is NSNull)
+    }
+
     func testNetworkPushWaitsForAcknowledgementAndIsScopedToSession() throws {
         let host = WireHost(platform: "ios", options: .init(networkChanges: true))
         let hello = try unpack(host.receive(hello(id: "push")))
@@ -158,9 +307,10 @@ final class WireHostTests: XCTestCase {
 
         let events = #"{"events":["network.changed","app.didBecomeActive"]}"#
         var firstAcknowledgement: (() -> Void)?
-        let subscription = try unpack(host.receive(echo(id: "subscribe", sid: sid, params: events, method: "bridge.subscribe")) {
-            firstAcknowledgement = $0
-        })
+        let subscription = try unpack(host.receive(
+            echo(id: "subscribe", sid: sid, params: events, method: "bridge.subscribe"),
+            afterReply: { firstAcknowledgement = $0 }
+        ))
         XCTAssertEqual(subscription.rpc["result"] as? [String: [String]], [
             "subscribed": ["network.changed"], "denied": ["app.didBecomeActive"]
         ])
@@ -168,9 +318,10 @@ final class WireHostTests: XCTestCase {
 
         _ = host.receive(echo(id: "unsubscribe", sid: sid, params: events, method: "bridge.unsubscribe@1"))
         var secondAcknowledgement: (() -> Void)?
-        _ = host.receive(echo(id: "subscribe-again", sid: sid, params: events, method: "bridge.subscribe@1")) {
-            secondAcknowledgement = $0
-        }
+        _ = host.receive(
+            echo(id: "subscribe-again", sid: sid, params: events, method: "bridge.subscribe@1"),
+            afterReply: { secondAcknowledgement = $0 }
+        )
         try XCTUnwrap(firstAcknowledgement)()
         XCTAssertNil(host.networkEvent(.wifi, for: sid))
         try XCTUnwrap(secondAcknowledgement)()

@@ -1,8 +1,16 @@
 import CoreFoundation
 import Foundation
 
-/// The reference host has synchronous methods and one active session per WebView document.
+/// The reference host manages one active session per WebView document.
 final class WireHost {
+    struct BusinessCall {
+        let handler: NativeIOSHost.BusinessMethod.Handler
+        let params: [String: Any]
+        fileprivate let id: String
+        fileprivate let sid: String
+        fileprivate let meta: [String: String]
+    }
+
     private enum NetworkSubscription: Equatable {
         case pending(String)
         case subscribed
@@ -12,7 +20,7 @@ final class WireHost {
     static let maxInflight = 64
     private static let qualifiedName = #"\A(?!rpc\.)[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+"#
     private static let methodPattern = qualifiedName + #"(@[1-9][0-9]*)?\z"#
-    private static let eventPattern = qualifiedName + #"\z"#
+    private static let baseNamePattern = qualifiedName + #"\z"#
     private static let requestKeys: Set<String> = ["jsonrpc", "method", "id", "params"]
     private static let echo = "conformance.echo"
     private static let subscribe = "bridge.subscribe"
@@ -20,6 +28,7 @@ final class WireHost {
 
     private let platform: String
     private let methods: [String: [String: [Int]]]
+    private let businessMethods: [String: NativeIOSHost.BusinessMethod.Handler]
     private let events: [String]
     private let networkType: () -> NetworkConnection
     private var networkSubscription: NetworkSubscription?
@@ -27,10 +36,14 @@ final class WireHost {
     private var handshakeIDs = Set<Data>()
     private var requestIDs = Set<Data>()
 
-    init(platform: String, options: NativeIOSHost.Options = .init(), networkType: @escaping () -> NetworkConnection = { .unknown }) {
+    init(platform: String, options: NativeIOSHost.Options = .init(),
+         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], enableEcho: Bool = true,
+         networkType: @escaping () -> NetworkConnection = { .unknown }) {
         self.platform = platform
+        self.businessMethods = businessMethods
         self.networkType = networkType
-        var methods = [Self.echo: ["versions": [1]]]
+        var methods = businessMethods.mapValues { _ in ["versions": [1]] }
+        if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
         self.methods = methods
@@ -49,8 +62,9 @@ final class WireHost {
     }
 
     /// Called only after the adapter has authorized the current document.
-    /// The adapter runs the registered callback once it has sent the acknowledgement.
+    /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
+                 onBusinessCall: ((BusinessCall) -> Void)? = nil,
                  afterReply: (@escaping () -> Void) -> Void = { $0() }) -> String? {
         guard raw.utf8.count <= Self.maxMessageBytes else { return nil }
         let bytes = Data(raw.utf8)
@@ -115,6 +129,13 @@ final class WireHost {
         }
         if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
 
+        if let handler = businessMethods[name] {
+            guard let onBusinessCall else { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
+            onBusinessCall(BusinessCall(handler: handler, params: params as? [String: Any] ?? [:],
+                                        id: id, sid: sid, meta: responseMeta))
+            return nil
+        }
+
         let result: Any
         var enablesNetworkChanges = false
         var disablesNetworkChanges = false
@@ -161,6 +182,26 @@ final class WireHost {
         return reply
     }
 
+    func finishBusinessCall(_ call: BusinessCall, result: Result<Any, Error>) -> String? {
+        guard sid == call.sid else { return nil }
+        switch result {
+        case .success(let value):
+            guard JSONSerialization.isValidJSONObject([value]), Self.isPortableJSON(value),
+                  let reply = response(id: call.id, meta: call.meta, fields: ["result": value]) else {
+                return failure(-32603, "Internal error", id: call.id, meta: call.meta)
+            }
+            guard reply.utf8.count <= Self.maxMessageBytes else {
+                return failure(-32006, "Payload too large", id: call.id, meta: ["sid": call.sid])
+            }
+            return reply
+        case .failure(let error):
+            if let error = error as? NativeIOSHost.BusinessMethodError, case .invalidParams = error {
+                return failure(-32602, "Invalid params", id: call.id, meta: call.meta)
+            }
+            return failure(-32603, "Internal error", id: call.id, meta: call.meta)
+        }
+    }
+
     func networkEvent(_ type: NetworkConnection, for sid: String) -> String? {
         guard self.sid == sid, networkSubscription == .subscribed else { return nil }
         return serialize(rpc: [
@@ -170,9 +211,13 @@ final class WireHost {
         ], meta: ["sid": sid])
     }
 
+    static func isQualifiedBaseName(_ name: String) -> Bool {
+        name.range(of: baseNamePattern, options: .regularExpression) != nil
+    }
+
     private static func eventNames(_ params: NSDictionary?) -> [String]? {
         guard let events = params?["events"] as? [String], !events.isEmpty, Set(events).count == events.count,
-              events.allSatisfy({ $0.range(of: eventPattern, options: .regularExpression) != nil }) else { return nil }
+              events.allSatisfy(isQualifiedBaseName) else { return nil }
         return events
     }
 
@@ -257,7 +302,6 @@ final class WireHost {
         }
 
         let sid = self.sid ?? UUID().uuidString.lowercased()
-        self.sid = sid
         let result: [String: Any] = [
             "jsb": "1.0",
             "sid": sid,
@@ -271,11 +315,15 @@ final class WireHost {
         ]
         var meta = responseMeta
         meta["sid"] = sid
-        if let reply = response(id: id, meta: meta, fields: ["result": result]),
-           reply.utf8.count <= Self.maxMessageBytes {
-            return reply
+        var reply = response(id: id, meta: meta, fields: ["result": result])
+        if meta["traceId"] != nil, reply.map({ $0.utf8.count > Self.maxMessageBytes }) == true {
+            reply = response(id: id, meta: ["sid": sid], fields: ["result": result])
         }
-        return response(id: id, meta: ["sid": sid], fields: ["result": result])
+        guard let reply, reply.utf8.count <= Self.maxMessageBytes else {
+            return failure(-32006, "Payload too large", id: id, meta: responseMeta)
+        }
+        self.sid = sid
+        return reply
     }
 
     private func failure(_ code: Int, _ message: String, id: String?, meta: [String: String], data: [String: Any]? = nil) -> String? {

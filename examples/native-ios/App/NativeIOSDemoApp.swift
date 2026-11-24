@@ -9,7 +9,7 @@ struct NativeIOSDemoApp: App {
             #if DEBUG
             WebDemo()
             #else
-            Text("Run the Debug configuration to load the local Web demo.")
+            ReleaseWebDemo()
             #endif
         }
     }
@@ -30,5 +30,63 @@ private struct WebDemo: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
+}
+#else
+private struct ReleaseWebDemo: UIViewRepresentable {
+    private let origin = URL(string: "https://app.example.test/")!
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+
+        do {
+            guard let resource = Bundle.main.url(forResource: "ReleaseDemo", withExtension: "html") else {
+                webView.loadHTMLString("<p>The bridge demo page is unavailable.</p>", baseURL: nil)
+                return webView
+            }
+            let html = try String(contentsOf: resource, encoding: .utf8)
+            let appConfiguration = AppConfiguration()
+            let getConfig = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+                guard params.isEmpty else { throw NativeIOSHost.BusinessMethodError.invalidParams }
+                return await appConfiguration.read()
+            }
+            context.coordinator.attachment = try NativeIOSHost.attach(
+                to: webView, allowing: origin, options: .init(deviceInfo: true), methods: [getConfig]
+            )
+            // Only the app's bundled HTML is loaded with this base URL.
+            webView.loadHTMLString(html, baseURL: origin)
+        } catch {
+            webView.loadHTMLString("<p>The bridge demo could not start.</p>", baseURL: nil)
+        }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.attachment?.detach()
+        coordinator.attachment = nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var attachment: NativeIOSHost.Attachment?
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            attachment?.didCommitNavigation()
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            attachment?.webContentProcessDidTerminate()
+        }
+    }
+}
+
+private actor AppConfiguration {
+    func read() -> [String: String] { ["theme": "system"] }
 }
 #endif
