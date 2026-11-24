@@ -73,21 +73,25 @@ jobs:
             xcrun simctl list runtimes
             xcrun simctl list devices available
           } 2>&1 | tee "$report/simulators.log"
+          sdk_version=$(xcrun --sdk iphonesimulator --show-sdk-version)
           xcodebuild -project "$project" -scheme "$scheme" -showdestinations 2>&1 |
             tee "$report/destinations.log"
-          device_id=$(awk -F ', ' '
+          device_id=$(awk -F ', ' -v sdk="$sdk_version" '
             /platform:iOS Simulator,/ && /, name:iPhone/ && !/, error:/ {
+              id = ""
+              compatible = 0
               for (i = 1; i <= NF; i++) {
-                if ($i ~ /^id:[[:xdigit:]-]+$/) {
-                  sub(/^id:/, "", $i)
-                  print $i
-                  exit
-                }
+                if ($i ~ /^id:[[:xdigit:]-]+$/) id = substr($i, 4)
+                if ($i == "OS:" sdk || index($i, "OS:" sdk ".") == 1) compatible = 1
+              }
+              if (id != "" && compatible) {
+                print id
+                exit
               }
             }
           ' "$report/destinations.log")
           if [[ -z "$device_id" ]]; then
-            echo "No compatible iPhone simulator found for $scheme." >&2
+            echo "No iPhone simulator matching iOS SDK $sdk_version found for $scheme." >&2
             exit 1
           fi
 
