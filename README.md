@@ -63,9 +63,9 @@ open-jsbridge/
 │   │   └── conformance/           # 一致性测试专用 method（echo/delay/emit...）
 │   └── profiles/                  # 可选标准库 profile（device/ui/storage...）
 ├── packages/
-│   ├── web-sdk/                   # @open-jsbridge/web（核心 SDK）
-│   ├── web-mock/                  # @open-jsbridge/mock（浏览器/单测 mock 宿主）
-│   ├── host-core/                 # @open-jsbridge/host-core：TS 参考 Host 状态机（mock 与 RN 共用）
+│   ├── web-sdk/                   # open-jsbridge（核心 SDK）
+│   ├── web-mock/                  # open-jsbridge/mock（浏览器/单测 mock 宿主）
+│   ├── host-core/                 # host-core：TS 参考 Host 状态机（mock 与 RN 共用）
 │   ├── devtools/                  # 调试面板 / 日志 overlay
 │   └── codegen/                   # schema → TS / Swift / Kotlin / Dart
 ├── ios/
@@ -80,7 +80,7 @@ open-jsbridge/
 │   ├── lib/src/transports/        # inappwebview / webview_flutter 适配
 │   ├── lib/src/native_forwarder/  # 可选：Pigeon 转发到原生 handler
 │   └── integration_test/
-├── react-native/                  # @open-jsbridge/react-native
+├── react-native/                  # open-jsbridge-react-native
 │   ├── src/                       # OJSBWebView 组件 + createHostBridge（基于 host-core）
 │   └── native/                    # 可选方案 B：TurboModule / Fabric 组件（M3+）
 ├── conformance-tests/
@@ -124,6 +124,10 @@ console.log(await bridge.call('conformance.echo', { text: '你好' }));
 JS
 ```
 
+### Web SDK 本地 npm 包
+
+在仓库根目录运行 `npm run pack:web`，生成 `dist/open-jsbridge-0.1.0.tgz`。在独立项目安装该 tarball 后，从 `open-jsbridge` 导入 SDK。浏览器联调时可以通过 `open-jsbridge/mock` 显式安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
+
 ## 5. 版本策略
 
 存在**三条相互独立的版本线**，不要混用：
@@ -141,7 +145,7 @@ JS
 | **M0 规范冻结（Draft）** | 冻结可校验的 JSON-RPC wire 格式 | `docs/protocol.md`、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json`、`spec/methods/bridge/hello.json`、`conformance-tests/fixtures/wire.json` | 规范评审通过，wire 正反例通过 Schema 校验 |
 | **M1 最小闭环** | 先跑通 TypeScript Web SDK 与 Mock 宿主的 echo，再分别接入 iOS 和 Android 主 frame | Web SDK core、Mock 宿主、echo demo。单独交付 iOS WithReply 与 Android WebMessageListener 接入 | TypeScript 闭环通过握手、调用、错误、超时核心用例。各原生接入独立通过其核心用例 |
 | **M2 完整协议** | 事件、取消、流式回调、安全 ACL、生命周期 | blob 大数据通道、devtools。多 frame 和旧通道按平台隔离能力评估 | 参考三端通过所有适用的 conformance 用例。声明 iframe 或旧通道能力前，须验证跨 origin、frame 导航和迟到消息隔离 |
-| **M2.5 跨端框架宿主** | Flutter / RN 方案 A | `@open-jsbridge/host-core`、`@open-jsbridge/react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
+| **M2.5 跨端框架宿主** | Flutter / RN 方案 A | 共享 TS 宿主核心、`open-jsbridge-react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
 | **M3 生态与 1.0** | 可被外部采用 | codegen（TS/Swift/Kotlin/Dart）、`device/ui/storage` profile、Flutter Pigeon 原生 handler 转发、RN 方案 B（TurboModule/Fabric）预研、文档站、性能基准、1.0 发布 | 至少一个真实 App 接入；协议 `1.0` 正式冻结；兼容性承诺生效 |
 
 ## 7. 文档索引

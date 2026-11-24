@@ -69,7 +69,7 @@ RN 宿主直接复用 TS 产物（`MethodMap` 同时约束 Web 调用方与 RN `
 ```mermaid
 flowchart TB
   subgraph Runner["conformance-tests/runner-web（被测宿主加载的 H5 页面）"]
-    R[Case Runner] --> SDK["@open-jsbridge/web（被测 SDK）"]
+    R[Case Runner] --> SDK["open-jsbridge（被测 SDK）"]
     R --> RAW[Raw Probe<br/>直接用 __OJSB_TRANSPORT__ 发畸形/伪造消息]
   end
   subgraph Host["被测宿主（iOS / Android / Flutter / RN / Mock）"]
@@ -235,9 +235,9 @@ runner 页面通过本地静态服务或宿主内置资源加载；需要多 ori
 
 ## 6. 参考 Host 状态机
 
-`@open-jsbridge/host-core`（TS）是协议 Host 侧的**可执行参考实现**，同时被三处使用：
+`host-core`（TS）是协议 Host 侧的**可执行参考实现**，同时被三处使用：
 
-1. `@open-jsbridge/mock`（浏览器 / 单测）；
+1. `open-jsbridge/mock`（浏览器 / 单测）；
 2. React Native 方案 A 宿主；
 3. 消息级"差分测试"：同一组输入消息序列分别喂给 host-core 与各平台 Core（通过 Fake transport），比较输出消息序列（忽略时间戳等非确定字段），用于快速发现 iOS/Android/Dart 实现与参考实现的偏差，不必每次都跑真机。
 

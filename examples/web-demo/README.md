@@ -1,5 +1,38 @@
 # Web SDK 快速上手
 
+## 在独立 Web 项目安装
+
+在 Open JSBridge 仓库根目录构建本地 tarball。
+
+```sh
+npm ci
+npm run pack:web
+```
+
+在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
+
+```sh
+npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
+```
+
+业务代码从主入口导入单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
+
+```ts
+import { bridge } from 'open-jsbridge'
+
+const device = await bridge.call<{ os: string; osVersion: string }>('device.getInfo')
+```
+
+普通浏览器联调时，可以在开发入口安装 Mock 通道，再用同一份单例调用 Mock 宿主的 echo。
+
+```ts
+import { bridge } from 'open-jsbridge'
+import { installMockTransport } from 'open-jsbridge/mock'
+
+installMockTransport()
+const result = await bridge.call<{ text: string }>('conformance.echo', { text: '你好' })
+```
+
 ## 在浏览器体验
 
 在仓库根目录运行以下命令。

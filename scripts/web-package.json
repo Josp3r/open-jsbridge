@@ -1,0 +1,23 @@
+{
+  "name": "open-jsbridge",
+  "version": "0.1.0",
+  "description": "Web SDK for Open JSBridge hosts",
+  "type": "module",
+  "types": "./packages/web-sdk/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./packages/web-sdk/src/index.d.ts",
+      "import": "./packages/web-sdk/src/index.js"
+    },
+    "./mock": {
+      "types": "./packages/web-mock/src/index.d.ts",
+      "import": "./packages/web-mock/src/index.js"
+    }
+  },
+  "files": [
+    "packages/protocol/src",
+    "packages/web-mock/src",
+    "packages/web-sdk/src"
+  ],
+  "repository": "https://github.com/Josp3r/open-jsbridge"
+}

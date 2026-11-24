@@ -302,7 +302,7 @@ class WebBridge implements Bridge {
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: '@open-jsbridge/web', version: '0.1.0' }, wants: ['cancel', 'events'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events'],
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
