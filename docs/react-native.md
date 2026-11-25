@@ -85,7 +85,7 @@ const host = createHostBridge({
   handlers: {
     'device.getInfo': deviceGetInfo,
     'ui.toast.show': async ({ text }) => { Toast.show(text); },
-    'media.chooseImage': async ({ count }, ctx) => {
+    'acme.photos.prepare': async ({ count }, ctx) => {
       await ctx.callback({ selected: 0 });                 // 发送 bridge.progress 通知
       if (ctx.signal.aborted) throw new BridgeError(-32002, 'Cancelled');
       const picked = await pickImages(count, { signal: ctx.signal });

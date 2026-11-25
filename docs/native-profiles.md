@@ -1,6 +1,6 @@
 # 原生基础能力
 
-参考宿主提供 `device`、`network` 和 Toast 可选模块。App 为指定 WebView 和受信来源启用需要的能力。第三方宿主可按同一份 Schema 实现，Web 使用相同的方法名。
+参考宿主提供 `device`、`network`、Toast 和相册选择能力。App 为指定 WebView 和受信来源启用需要的能力。第三方宿主可按同一份 Schema 实现，Web 使用相同的方法名。
 
 其他系统能力的归属与候选范围见 [原生能力目录提案](native-capability-catalog.md)。
 
@@ -25,6 +25,35 @@
 [`ui.toast.show` v1](../spec/methods/ui/toast/show.json) 接收 `{ text }`，文本长度为 1 至 120 个 Unicode 码点。宿主接受展示请求后返回 `{}`。Toast 的显示时长与样式由宿主决定。无法接受展示请求时返回 `-32603`。
 
 App 挂载宿主时显式设置 `toast = true`，页面即可在握手后通过 `bridge.has('ui.toast.show', 1)` 检测。浏览器联调时，用 `installMockTransport({ showToast: (text) => console.log(text) })` 模拟宿主接收。
+
+## Media
+
+[`media.chooseMedia` v1](../spec/methods/media/chooseMedia.json) 打开系统照片选择器，允许从相册选择一张图片。宿主显式启用该模块，同一 WebView 同时只处理一次选择。可以省略参数，也可以传入 `{ mediaType: ['image'], sourceType: ['album'], count: 1 }`。参考实现使用 iOS 14+ 的 PHPicker 和 Android 13+ 的系统 Photo Picker。宿主通过系统选择器获得选中图片的访问权，无需申请整个相册的读取权限。
+
+用户关闭选择器时返回 `{ status: 'cancelled', files: [] }`。成功时返回 `{ status: 'selected', files: [{ type: 'image', blobRef, mime, size, expiresAt }] }`。引用绑定当前文档会话，有效期为 5 分钟。单张图片或会话暂存总量超过 20 MiB 时返回 `-32006`。Web SDK 默认等待 120 秒，也接受 `AbortSignal`。调用方取消 RPC 时返回 `-32002`，由宿主停止交付该次结果。[分片读取协议](protocol.md#102-分片读取与释放)
+
+当前源码中的 Web SDK 提供 `media.chooseMedia()`、`blob.read(file)` 和 `blob.release(file.blobRef)`。示例可从源码构建安装包，已发布的 `@open-jsbridge/web@0.1.0` 尚无这些导出。
+
+```ts
+import { blob, bridge, media } from '@open-jsbridge/web'
+
+export async function chooseImage(): Promise<Blob | undefined> {
+  await bridge.ready()
+  if (!bridge.has('media.chooseMedia', 1)) return
+
+  const result = await media.chooseMedia()
+  if (result.status === 'cancelled') return
+  const [file] = result.files
+
+  try {
+    return await blob.read(file)
+  } finally {
+    await blob.release(file.blobRef).catch(() => {})
+  }
+}
+```
+
+`blob.read()` 将系统选择器交付的图片字节还原为浏览器 `Blob`。读取使用顺序分片，`timeout` 按单个分片计算，传入同一个 `AbortSignal` 可以中止整个读取。页面可以直接上传或用 `URL.createObjectURL()` 预览，预览结束调用 `URL.revokeObjectURL()`。文档换页、宿主分离或有效期结束时，宿主会回收引用。
 
 ## Web 接入
 

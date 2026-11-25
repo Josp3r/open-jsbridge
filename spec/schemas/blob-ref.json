@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:schema/blob.ref",
+  "description": "由 128 位密码学安全随机值编码的当前文档会话内不透明引用。",
+  "type": "string",
+  "minLength": 32,
+  "maxLength": 32,
+  "pattern": "^[0-9a-f]{32}$"
+}

@@ -6,6 +6,7 @@ final class WireHost {
     struct BusinessCall {
         let handler: NativeIOSHost.BusinessMethod.Handler
         let params: [String: Any]
+        let isMedia: Bool
         fileprivate let id: String
         fileprivate let sid: String
         fileprivate let meta: [String: String]
@@ -37,6 +38,7 @@ final class WireHost {
     private let events: [String]
     private let businessEvents: Set<String>
     private let networkType: () -> NetworkConnection
+    private let media: MediaBlobStore?
     private var subscriptions: [String: EventSubscription] = [:]
     private(set) var sid: String?
     private var handshakeIDs = Set<Data>()
@@ -44,16 +46,24 @@ final class WireHost {
 
     init(platform: String, options: NativeIOSHost.Options = .init(),
          businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], businessEvents: [String] = [],
-         enableEcho: Bool = true, networkType: @escaping () -> NetworkConnection = { .unknown }) {
+         enableEcho: Bool = true, supportsMedia: Bool = true,
+         networkType: @escaping () -> NetworkConnection = { .unknown }) {
         self.platform = platform
         self.businessMethods = businessMethods
         self.businessEvents = Set(businessEvents)
         self.networkType = networkType
+        let mediaEnabled = options.media && supportsMedia
+        media = mediaEnabled ? MediaBlobStore() : nil
         var methods = businessMethods.mapValues { _ in ["versions": [1]] }
         if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
         if options.toast { methods[ToastModule.method] = ["versions": [1]] }
+        if mediaEnabled {
+            for method in [MediaBlobStore.chooseMethod, MediaBlobStore.readMethod, MediaBlobStore.releaseMethod] {
+                methods[method] = ["versions": [1]]
+            }
+        }
         self.methods = methods
         events = businessEvents + (options.networkChanges ? [NetworkModule.event] : [])
     }
@@ -63,6 +73,7 @@ final class WireHost {
     }
 
     func reset() {
+        media?.reset()
         sid = nil
         subscriptions.removeAll()
         handshakeIDs.removeAll()
@@ -73,6 +84,8 @@ final class WireHost {
     /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
                  presentToast: (String) -> Bool = { _ in false },
+                 chooseMedia: NativeIOSHost.BusinessMethod.Handler? = nil,
+                 mediaBusy: Bool = false,
                  onBusinessCall: ((BusinessCall) -> Void)? = nil,
                  onCancelRequest: ((String) -> Void)? = nil,
                  afterReply: (@escaping () -> Void) -> Void = { $0() }) -> String? {
@@ -154,10 +167,18 @@ final class WireHost {
         }
         if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
 
-        if let handler = businessMethods[name] {
+        let isMedia = name == MediaBlobStore.chooseMethod
+        if isMedia {
+            guard Self.validMediaParams(params) else {
+                return failure(-32602, "Invalid params", id: id, meta: responseMeta)
+            }
+            if mediaBusy { return failure(-32010, "Busy", id: id, meta: responseMeta) }
+            if chooseMedia == nil { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
+        }
+        if let handler = isMedia ? chooseMedia : businessMethods[name] {
             guard let onBusinessCall else { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
             onBusinessCall(BusinessCall(handler: handler, params: params as? [String: Any] ?? [:],
-                                        id: id, sid: sid, meta: responseMeta))
+                                        isMedia: isMedia, id: id, sid: sid, meta: responseMeta))
             return nil
         }
 
@@ -189,6 +210,26 @@ final class WireHost {
                 return failure(-32603, "Internal error", id: id, meta: responseMeta)
             }
             result = NSDictionary()
+        case MediaBlobStore.readMethod, MediaBlobStore.releaseMethod:
+            let read = name == MediaBlobStore.readMethod
+            guard let media, params?.count == (read ? 2 : 1),
+                  let ref = params?["blobRef"] as? String, MediaBlobStore.isRef(ref) else {
+                return failure(-32602, "Invalid params", id: id, meta: responseMeta)
+            }
+            if read {
+                guard let index = params?["index"].flatMap(Self.safeInteger),
+                      (0..<MediaBlobStore.maxChunks).contains(index) else {
+                    return failure(-32602, "Invalid params", id: id, meta: responseMeta)
+                }
+                do {
+                    result = try media.read(ref, index: index)
+                } catch {
+                    return handlerFailure(error, id: id, meta: responseMeta)
+                }
+            } else {
+                media.release(ref)
+                result = NSDictionary()
+            }
         default:
             result = params ?? NSDictionary()
         }
@@ -235,19 +276,54 @@ final class WireHost {
         guard sid == call.sid else { return nil }
         switch result {
         case .success(let value):
-            guard JSONSerialization.isValidJSONObject([value]), Self.isPortableJSON(value),
-                  let reply = response(id: call.id, meta: call.meta, fields: ["result": value]) else {
+            var insertedRef: String?
+            let result: Any
+            if call.isMedia {
+                guard let media, let selection = value as? MediaSelection else {
+                    return failure(-32603, "Internal error", id: call.id, meta: call.meta)
+                }
+                switch selection {
+                case .cancelled:
+                    result = ["status": "cancelled", "files": []] as [String: Any]
+                case .selected(let image):
+                    do {
+                        let file = try media.insert(image)
+                        insertedRef = file["blobRef"] as? String
+                        result = ["status": "selected", "files": [file]] as [String: Any]
+                    } catch {
+                        return handlerFailure(error, id: call.id, meta: call.meta)
+                    }
+                }
+            } else {
+                result = value
+            }
+            guard JSONSerialization.isValidJSONObject([result]), Self.isPortableJSON(result),
+                  let reply = response(id: call.id, meta: call.meta, fields: ["result": result]) else {
+                if let insertedRef { media?.release(insertedRef) }
                 return failure(-32603, "Internal error", id: call.id, meta: call.meta)
             }
             guard reply.utf8.count <= Self.maxMessageBytes else {
+                if let insertedRef { media?.release(insertedRef) }
                 return failure(-32006, "Payload too large", id: call.id, meta: ["sid": call.sid])
             }
             return reply
         case .failure(let error):
-            if let error = error as? NativeIOSHost.BusinessMethodError, case .invalidParams = error {
-                return failure(-32602, "Invalid params", id: call.id, meta: call.meta)
-            }
-            return failure(-32603, "Internal error", id: call.id, meta: call.meta)
+            return handlerFailure(error, id: call.id, meta: call.meta)
+        }
+    }
+
+    private func handlerFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
+        switch error {
+        case NativeIOSHost.BusinessMethodError.invalidParams, MediaProfileError.invalidIndex:
+            return failure(-32602, "Invalid params", id: id, meta: meta)
+        case MediaProfileError.unknownReference:
+            return failure(-32003, "Permission denied", id: id, meta: meta)
+        case MediaProfileError.tooLarge:
+            return failure(-32006, "Payload too large", id: id, meta: meta)
+        case MediaProfileError.busy:
+            return failure(-32010, "Busy", id: id, meta: meta)
+        default:
+            return failure(-32603, "Internal error", id: id, meta: meta)
         }
     }
 
@@ -284,6 +360,18 @@ final class WireHost {
         guard let events = params?["events"] as? [String], !events.isEmpty, Set(events).count == events.count,
               events.allSatisfy(isQualifiedBaseName) else { return nil }
         return events
+    }
+
+    private static func validMediaParams(_ params: NSDictionary?) -> Bool {
+        guard let params else { return true }
+        return params.allKeys.allSatisfy { key in
+            switch key as? String {
+            case "mediaType": return params[key] as? [String] == ["image"]
+            case "sourceType": return params[key] as? [String] == ["album"]
+            case "count": return params[key].flatMap(safeInteger) == 1
+            default: return false
+            }
+        }
     }
 
     private func parseFailure() -> String? {
@@ -374,7 +462,7 @@ final class WireHost {
             "capabilities": [
                 "methods": methods,
                 "events": events,
-                "features": businessMethods.isEmpty ? [] : ["cancel"]
+                "features": media != nil ? ["blob", "cancel"] : businessMethods.isEmpty ? [] : ["cancel"]
             ],
             "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": 15_000]
         ]

@@ -10,9 +10,19 @@
 - **契约**定义调用方可依赖的行为。已定义的方法和事件可以在 `spec/methods/` 找到 Schema 和版本信息，语义见对应文档。一致性用例验证消息、权限、生命周期和边界行为。标准能力由宿主按需实现。[Schema 与一致性测试](conformance.md#1-单一事实来源single-source-of-truth)
 - **运行时能力**由宿主通过 `bridge.hello` 声明，按当前来源、frame 和宿主策略过滤。Web 用 `bridge.has(method, version)` 和 `bridge.hasEvent(event)` 检测。系统授权和用户选择仍由宿主在执行时处理。[能力协商](protocol.md#62-bridgehello)
 
-目前已有契约和两端参考实现的是 [`device.getInfo@1`](../spec/methods/device/getInfo.json)、[`network.getStatus@1`](../spec/methods/network/getStatus.json)、[`network.changed`](../spec/methods/network/changed.json) 和 [`ui.toast.show@1`](../spec/methods/ui/toast/show.json)。查询和事件分别声明，事件名称按现有订阅协议传输。[已实现的原生能力](native-profiles.md)
-
 为同一能力选一个主归属。后台执行、数据敏感性、用户手势、外部服务和限定设备属于这项能力的适用条件。判断一个领域的标准化程度时，区分跨端共性、平台或服务专属、以及依赖企业部署或系统角色的能力。目录覆盖这三类场景，宿主按实际条件选择实现范围。
+
+## 首批契约命名核对
+
+标准方法优先使用 `domain.action`。动作需要交代对象时使用 lowerCamelCase 的动宾结构。拥有独立契约和启用条件的内聚模块可以加一层子域。事件描述已发生的变化。[命名与版本规则](protocol.md#34-method-命名)
+
+- [`device.getInfo@1`](../spec/methods/device/getInfo.json) 使用 `getInfo` 表达查询设备信息。
+- [`network.getStatus@1`](../spec/methods/network/getStatus.json) 使用 `getStatus` 表达查询宿主网络路径状态。
+- [`network.changed`](../spec/methods/network/changed.json) 表达网络路径状态已发生变化，按事件名称单独声明和订阅。
+- [`ui.toast.show@1`](../spec/methods/ui/toast/show.json) 使用 `toast` 子域表示独立启用的原生反馈模块，`show` 表示展示请求。
+- [`media.chooseMedia@1`](../spec/methods/media/chooseMedia.json) 使用 `chooseMedia` 表达系统媒体选择。v1 的来源、类型与选择数量由媒体契约约束。
+
+这五个名称沿用现有契约。媒体字节通过协议层的 `bridge.blob.read@1` 和 `bridge.blob.release@1` 读取和释放。[原生能力接入](native-profiles.md) · [Blob 协议](protocol.md#102-分片读取与释放)
 
 ## 1. 宿主与运行环境
 
@@ -24,6 +34,7 @@
 
 - **`ui`** 负责用户看到和操作的原生容器。包括窗口与安全区、方向与全屏、画中画、主题、系统栏、键盘遮挡、导航栏与原生返回、对话框、操作菜单、轻提示、加载反馈、触感与无障碍状态。截屏通知、系统捕获状态和显示时遮蔽敏感内容也归本章。Web 页面内部的布局和交互优先由 DOM、CSS 与 Web API 处理。[Apple 屏幕共享期间的内容保护](https://developer.apple.com/documentation/swiftui/protecting-sensitive-content-when-screen-sharing)
 - 需要跨端定义含义时，用子域表达，例如将容器导航放在 `ui.navigation`、短提示放在 `ui.toast`。方法应明确目标窗口、系统状态变化和回执代表的阶段。原生系统相同的意图可以保留各平台的视觉和触感差异。
+- 小程序运行时的 `switchTab`、`setTabBar*` 和页面栈由各自的应用框架管理，排除在标准能力之外。`ui.navigation` 的范围限于宿主 WebView 容器。H5 的路由、标签和布局由应用管理。
 
 ## 3. 网络与传输
 
@@ -67,7 +78,7 @@
 
 ## 标准能力和业务扩展
 
-协议控制沿用 `bridge.*`，一致性测试沿用 `conformance.*`，其他保留名称遵循现有命名规则。标准能力根按具体领域分配。应用与厂商扩展可以使用一段公司前缀，如 `acme.getProfile` 或 `acme.profile.updateAvatar`，也可以使用反域名前缀，如 `com.acme.profile.updateAvatar`。完整方法名至少两段。扩展可以自带 Schema、版本和权限规则，复用同一套调用、事件、错误和会话机制。[命名与版本规则](protocol.md#34-method-命名)
+协议控制沿用 `bridge.*`，一致性测试沿用 `conformance.*`。应用与厂商扩展可以使用一段公司前缀，如 `acme.getProfile` 或 `acme.profile.updateAvatar`，也可以使用反域名前缀，如 `com.acme.profile.updateAvatar`。完整方法名至少两段。扩展可以自带 Schema、版本和权限规则，复用同一套调用、事件、错误和会话机制。[命名与版本规则](protocol.md#34-method-命名)
 
 一个主题进入标准契约前，应回答以下问题。
 
