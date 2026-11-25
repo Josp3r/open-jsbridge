@@ -1,11 +1,81 @@
 #if os(iOS) && !DEBUG && !SWIFT_PACKAGE
 import NativeIOSHost
+import PhotosUI
 import UIKit
 import WebKit
 import XCTest
 
 final class ReleaseIOSTests: XCTestCase {
     private let origin = URL(string: "https://app.example.test/")!
+
+    @MainActor
+    func testMediaDistinguishesAnUnavailablePresenterFromAnActiveSelection() async throws {
+        let appWebView = try await waitForAppWebView()
+        let appWindow = try XCTUnwrap(appWebView.window)
+        let scene = try XCTUnwrap(appWindow.windowScene)
+        let (webView, delegate) = makeWebView()
+        let presenter = UIViewController()
+        presenter.view = webView
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = presenter
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            appWindow.makeKeyAndVisible()
+        }
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: origin, options: .init(media: true))
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+        await loadPage(in: webView, with: delegate, at: origin)
+        let sid = try await hello(in: webView)
+
+        let modal = UIViewController()
+        presenter.present(modal, animated: false)
+        XCTAssertTrue(presenter.presentedViewController === modal)
+        let blocked = try await mediaErrorCode("blocked", sid: sid, in: webView)
+        XCTAssertEqual(blocked, -32003)
+        await withCheckedContinuation { continuation in
+            modal.dismiss(animated: false) { continuation.resume() }
+        }
+
+        _ = try await webView.callAsyncJavaScript("""
+            window.pendingMediaTest = window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid},
+                rpc: {jsonrpc: '2.0', id: 'active', method: 'media.chooseMedia@1'}
+            }));
+            return true;
+            """, arguments: ["sid": sid], in: nil, contentWorld: .page)
+        for _ in 0..<100 {
+            if presenter.presentedViewController != nil { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(presenter.presentedViewController is PHPickerViewController)
+        let busy = try await mediaErrorCode("busy", sid: sid, in: webView)
+        XCTAssertEqual(busy, -32010)
+
+        let aborted = try await webView.callAsyncJavaScript("""
+            void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid},
+                rpc: {jsonrpc: '2.0', method: 'bridge.cancel', params: {requestId: 'active'}}
+            }));
+            const raw = await Promise.race([window.pendingMediaTest, new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Timed out waiting for picker cancellation')), 3000))]);
+            return JSON.parse(raw).rpc.error?.code ?? null;
+            """, arguments: ["sid": sid], in: nil, contentWorld: .page) as? Int
+        XCTAssertEqual(aborted, -32002)
+    }
+
+    @MainActor
+    private func mediaErrorCode(_ id: String, sid: String, in webView: WKWebView) async throws -> Int? {
+        try await webView.callAsyncJavaScript("""
+            const pending = window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid}, rpc: {jsonrpc: '2.0', id, method: 'media.chooseMedia@1'}
+            }));
+            const raw = await Promise.race([pending, new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Timed out waiting for picker error')), 3000))]);
+            return JSON.parse(raw).rpc.error?.code ?? null;
+            """, arguments: ["id": id, "sid": sid], in: nil, contentWorld: .page) as? Int
+    }
 
     @MainActor
     func testReleaseAppDisplaysNativeDeviceAndBusinessResults() async throws {

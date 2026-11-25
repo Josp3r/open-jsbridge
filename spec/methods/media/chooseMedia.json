@@ -6,6 +6,8 @@
   "x-ojsb-kind": "method",
   "x-ojsb-version": 1,
   "x-ojsb-since": "1.0",
+  "x-ojsb-concurrency": "serial",
+  "x-ojsb-concurrency-policy": "reject",
   "params": {
     "type": "object",
     "properties": {

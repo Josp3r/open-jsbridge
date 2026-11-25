@@ -366,12 +366,59 @@ final class WireHostTests: XCTestCase {
     }
 
     @MainActor
-    func testMediaCancellationReturnsAnEmptySelection() async throws {
+    func testMediaPickerDismissalReturnsAnEmptySelection() async throws {
         let host = WireHost(platform: "ios", options: .init(media: true))
         let sid = try session(host)
         let result = try await completeMedia(.cancelled, id: "pick", sid: sid, in: host)
         XCTAssertEqual(result["status"] as? String, "cancelled")
         XCTAssertEqual((result["files"] as? [Any])?.count, 0)
+    }
+
+    @MainActor
+    func testMediaUnavailableWhenPickerOrDispatchIsMissing() throws {
+        let host = WireHost(platform: "ios", options: .init(media: true))
+        let sid = try session(host)
+        let missing = echo(id: "missing", sid: sid, method: "media.chooseMedia")
+        XCTAssertEqual(try unpack(host.receive(missing)).error?["code"] as? Int, -32003)
+
+        let cannotDispatch = echo(id: "dispatcher", sid: sid, method: "media.chooseMedia")
+        let reply = host.receive(cannotDispatch, chooseMedia: { _ in MediaSelection.cancelled })
+        XCTAssertEqual(try unpack(reply).error?["code"] as? Int, -32003)
+    }
+
+    @MainActor
+    func testMediaErrorsKeepSystemFailureBusyQuotaAndAbortDistinct() async throws {
+        let host = WireHost(platform: "ios", options: .init(media: true))
+        let sid = try session(host)
+        let cases: [(Int, NativeIOSHost.BusinessMethod.Handler)] = [
+            (-32003, { _ in throw MediaProfileError.unavailable }),
+            (-32003, { _ in throw CocoaError(.fileReadNoSuchFile) }),
+            (-32003, { _ in try MediaImage.prepare(data: Data([1, 2, 3]), mime: "image/png") }),
+            (-32010, { _ in throw MediaProfileError.busy }),
+            (-32006, { _ in throw MediaProfileError.tooLarge }),
+            (-32002, { _ in throw CancellationError() })
+        ]
+        for (i, item) in cases.enumerated() {
+            let (code, handle) = item
+            let request = echo(id: "failure-\(i)", sid: sid, method: "media.chooseMedia@1")
+            var call: WireHost.BusinessCall?
+            XCTAssertNil(host.receive(request, chooseMedia: handle, onBusinessCall: { call = $0 }))
+            let pending = try XCTUnwrap(call)
+            let failure: Error
+            do {
+                _ = try await pending.handler(pending.params)
+                XCTFail("Expected handler failure")
+                continue
+            } catch {
+                failure = error
+            }
+            let reply = try unpack(host.finishBusinessCall(pending, result: .failure(failure)))
+            XCTAssertEqual(reply.error?["code"] as? Int, code)
+            XCTAssertNil(reply.rpc["result"])
+            if code == -32002 {
+                XCTAssertEqual(try unpack(host.cancelBusinessCall(pending)).error?["code"] as? Int, code)
+            }
+        }
     }
 
     @MainActor
