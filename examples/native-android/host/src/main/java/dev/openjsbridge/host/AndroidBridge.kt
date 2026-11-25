@@ -28,11 +28,12 @@ class AndroidBridge private constructor(
 ) {
     private val originLiteral = JsonPrimitive(transport.originRule).toString()
 
-    /** Enable only the device and network capabilities the app intends to expose. */
+    /** Enable only the standard capabilities the app intends to expose. */
     data class Options(
         val deviceInfo: Boolean = false,
         val networkStatus: Boolean = false,
         val networkChanges: Boolean = false,
+        val toast: Boolean = false,
     )
 
     /**
@@ -131,6 +132,7 @@ class AndroidBridge private constructor(
                 device = if (options.deviceInfo) androidDeviceModule() else null,
                 network = if (options.networkStatus) network else null,
                 networkEvents = if (options.networkChanges) network?.events else null,
+                toast = if (options.toast) androidToastModule(webView.context) else null,
             )
         }
 

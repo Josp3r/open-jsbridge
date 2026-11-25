@@ -5,6 +5,7 @@ import {
 
 const helloMethod = 'bridge.hello';
 const echoMethod = 'conformance.echo';
+const toastMethod = 'ui.toast.show';
 const subscribeMethod = 'bridge.subscribe';
 const unsubscribeMethod = 'bridge.unsubscribe';
 const eventNamePattern = /^(?!rpc\.)[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
@@ -76,6 +77,7 @@ export interface MockAdapterOptions {
   deniedEvents?: readonly string[];
   deviceInfo?: { os: 'ios' | 'android'; osVersion: string };
   getNetworkStatus?: () => { type: typeof networkTypes[number] };
+  showToast?: (text: string) => void | Promise<void>;
 }
 
 /** A standalone Mock session with Promise responses and out-of-band event delivery. */
@@ -84,10 +86,10 @@ export function createMockAdapter(options?: MockAdapterOptions) {
   let receiver: ((raw: string) => void) | undefined;
   const helloIds = new Set<string>();
   const requestIds = new Set<string>();
-  const methods = new Map<string, (params?: JsonObject) => JsonValue>([
+  const methods = new Map<string, (params?: JsonObject) => JsonValue | Promise<JsonValue>>([
     [echoMethod, (params) => params ?? {}],
   ]);
-  const { deviceInfo, getNetworkStatus } = options ?? {};
+  const { deviceInfo, getNetworkStatus, showToast } = options ?? {};
   if (deviceInfo) {
     const { os, osVersion } = deviceInfo;
     if ((os === 'ios' || os === 'android') && typeof osVersion === 'string' && osVersion.length > 0) {
@@ -98,6 +100,12 @@ export function createMockAdapter(options?: MockAdapterOptions) {
     methods.set('network.getStatus', () => {
       const { type } = getNetworkStatus();
       return { type: networkTypes.includes(type) ? type : 'unknown' };
+    });
+  }
+  if (showToast) {
+    methods.set(toastMethod, async (params) => {
+      await showToast(params?.text as string);
+      return {};
     });
   }
   const allowedEvents = new Set(options?.events?.filter(isEventName));
@@ -190,17 +198,27 @@ export function createMockAdapter(options?: MockAdapterOptions) {
     if (!control && !handle) return failure(rpc.id, ErrorCode.MethodNotFound, 'Method not found', undefined, sid);
     if (meta.timeout === 0) return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, sid);
     if (control) return controlSubscription(method, rpc, sid);
-    if (method !== echoMethod && Object.keys(rpc.params ?? {}).length > 0) {
+    if (method === toastMethod) {
+      const text = rpc.params?.text;
+      if (typeof text !== 'string' || text.length === 0 || [...text].length > 120 ||
+          Object.keys(rpc.params ?? {}).length !== 1) {
+        return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid toast params', undefined, sid);
+      }
+    } else if (method !== echoMethod && Object.keys(rpc.params ?? {}).length > 0) {
       return failure(rpc.id, ErrorCode.InvalidParams, 'Expected empty params', undefined, sid);
     }
+    const replySid = sid;
     try {
-      const response = success(rpc.id, handle!(rpc.params), sid);
+      const result = handle!(rpc.params);
+      const value = result instanceof Promise ? await result : result;
+      if (sid !== replySid) return null;
+      const response = success(rpc.id, value, replySid);
       if (exceedsMessageLimit(response)) {
         return failure(rpc.id, ErrorCode.PayloadTooLarge, 'Payload too large', undefined, sid);
       }
       return response;
     } catch {
-      return failure(rpc.id, ErrorCode.InternalError, 'Internal error', undefined, sid);
+      return sid === replySid ? failure(rpc.id, ErrorCode.InternalError, 'Internal error', undefined, replySid) : null;
     }
   }
 

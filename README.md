@@ -126,13 +126,19 @@ JS
 
 ### 安装 Web SDK
 
+当前可从本地 tarball 安装。在仓库根目录运行 `npm run pack:web`，然后到 H5 项目中安装生成的文件。
+
 ```sh
-npm install open-jsbridge
+npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
 ```
 
 在 App WebView 中从 `open-jsbridge` 导入 `bridge` 单例。浏览器联调时，从同一个包的 `open-jsbridge/mock` 入口安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
 
-验证仓库里的改动时，可运行 `npm run pack:web` 并安装生成的本地 tarball。 [本地打包与安装](examples/web-demo/README.md#从源码打包安装)
+### 原生宿主 SDK 和 npm 包
+
+iOS 通过 SwiftPM 安装 `NativeIOSHost`。Android 可将 Release AAR 发布到本地 Maven 仓库，通过 `io.github.josp3r:open-jsbridge-android:0.1.0` 安装。App 挂载宿主后，可以按需启用设备、网络和 Toast 能力。 [两个 Release App 的独立接入和验收](examples/sdk-consumer/README.md)
+
+npm 首发规划只发布一个 H5 包 `@open-jsbridge/web`。Mock 作为同包的 `@open-jsbridge/web/mock` 子路径。React Native 宿主实现就绪后再发布 `@open-jsbridge/react-native`。当前本地 Web tarball 使用 `open-jsbridge` 包名。
 
 ## 5. 版本策略
 

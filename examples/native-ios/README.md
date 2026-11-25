@@ -1,6 +1,10 @@
 # Swift / WKWebView 示例
 
-示例 App 提供两种运行方式。Debug 加载仓库的 Web Demo。Release 由 App 自己创建和管理 `WKWebView`，通过同一条 WebKit 通道调用设备查询和 App 注册的业务方法。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
+`NativeIOSDemo` 的 Debug 构建加载仓库的 Web Demo，Release 构建演示设备查询和 App 注册的业务方法。`IOSSDKConsumer` 使用 Swift Package 中的 `NativeIOSHost` 产品，在独立的 Release App 中运行 iOS 和 Android 共用的 H5，验证设备查询和原生 toast。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
+
+## 安装 Swift Package
+
+在 Xcode 的 **File → Add Package Dependencies…** 输入 `https://github.com/Josp3r/open-jsbridge.git`，选择包含仓库根 [Package.swift](../../Package.swift) 的版本或 revision，再将 `NativeIOSHost` 产品添加到 App target。Swift 源码使用 `import NativeIOSHost`。在本仓库运行示例时，Xcode 项目直接以本地 Package 引用同一份根 Manifest。
 
 ## 在模拟器运行
 
@@ -70,6 +74,12 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 
 `emit` 接收任意符合协议的 JSON 值，使用 `NSNull()` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
 
+## 运行 Release SDK Consumer
+
+在仓库根目录执行 `npm ci` 和 `npm run build:sdk-consumer`。该命令将通过 npm 安装 SDK 的共用 H5 生成到 `dist/sdk-consumer/ReleaseToast.html`，Xcode 将它打包为 App 资源。打开 [NativeIOSDemo.xcodeproj](NativeIOSDemo.xcodeproj)，选择 `IOSSDKConsumer` scheme，运行到 iPhone 模拟器后点击页面按钮。App 查询 iOS 版本并在 WebView 底部显示原生 toast。
+
+在自有 App 中调用 `NativeIOSHost.attach` 时，使用 `options: .init(deviceInfo: true, toast: true)` 开启对应能力。`toast` 默认关闭。Web SDK 可以调用 `bridge.call('ui.toast.show', { text: '保存成功' })`。文本长度为 1–120 个 Unicode 码点，宿主接收展示请求后返回 `{}`。当前 WebView 须位于前台窗口。toast 支持 VoiceOver 公告，自动消失，并随文档会话失效清除。
+
 ## 宿主的关键代码
 
 - [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。Debug Demo 使用回环地址，App 接入入口使用精确的 HTTPS origin。
@@ -90,16 +100,24 @@ xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme NativeIO
 
 将设备名称换成本机已安装的模拟器。Release 测试可直接读取示例的内嵌页面，无需启动 Web Demo。
 
+生成共用 H5 后，可以运行独立的 Release SDK Consumer 测试。测试从 WebView 执行 H5 调用，并检查原生 toast 的内容、位置、无障碍属性及自动消失。
+
+```sh
+xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme IOSSDKConsumer \
+  -configuration Release -destination 'platform=iOS Simulator,name=iPhone 17e' \
+  CODE_SIGNING_ALLOWED=NO test
+```
+
 在 macOS 上可离线测试 Swift 协议处理。
 
 ```sh
-swift test --package-path examples/native-ios
+swift test
 ```
 
 WebKit 集成测试也可以在启动 Web Demo 服务后通过 macOS WebKit 运行。
 
 ```sh
-OJSB_WEBKIT_E2E=1 swift test --package-path examples/native-ios
+OJSB_WEBKIT_E2E=1 swift test
 ```
 
 命令行默认使用 Command Line Tools 时，可以在命令前加 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 来选用 Xcode 工具链。

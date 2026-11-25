@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/ui.toast.show",
+  "title": "ui.toast.show",
+  "description": "请求宿主显示一条短文本提示。成功表示宿主接受展示请求。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "minLength": 1, "maxLength": 120 }
+    },
+    "required": ["text"],
+    "additionalProperties": false
+  },
+  "result": { "type": "object", "maxProperties": 0 }
+}

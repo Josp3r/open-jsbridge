@@ -241,6 +241,70 @@ final class WireHostTests: XCTestCase {
         }
     }
 
+    func testToastIsAdvertisedOnlyWhenEnabledAndUnknownVersionsStayUnavailable() throws {
+        let disabled = WireHost(platform: "ios", enableEcho: false)
+        let disabledHello = try XCTUnwrap(unpack(disabled.receive(hello(id: "off"))).rpc["result"] as? [String: Any])
+        let disabledSID = try XCTUnwrap(disabledHello["sid"] as? String)
+        let disabledCapabilities = try XCTUnwrap(disabledHello["capabilities"] as? [String: Any])
+        XCTAssertEqual(disabledCapabilities["methods"] as? [String: [String: [Int]]], [:])
+        let params = #"{"text":"Hello"}"#
+        for (index, method) in ["ui.toast.show", "ui.toast.show@1"].enumerated() {
+            let reply = try unpack(disabled.receive(echo(id: "off-\(index)", sid: disabledSID,
+                                                         params: params, method: method)))
+            XCTAssertEqual(reply.error?["code"] as? Int, -32601)
+        }
+
+        let enabled = WireHost(platform: "ios", options: .init(toast: true), enableEcho: false)
+        let enabledHello = try XCTUnwrap(unpack(enabled.receive(hello(id: "on"))).rpc["result"] as? [String: Any])
+        let enabledSID = try XCTUnwrap(enabledHello["sid"] as? String)
+        let enabledCapabilities = try XCTUnwrap(enabledHello["capabilities"] as? [String: Any])
+        XCTAssertEqual(enabledCapabilities["methods"] as? [String: [String: [Int]]], [
+            "ui.toast.show": ["versions": [1]]
+        ])
+        for (index, method) in ["ui.toast.show@2", "ui.toast.cancel"].enumerated() {
+            let reply = try unpack(enabled.receive(echo(id: "unknown-\(index)", sid: enabledSID,
+                                                        params: params, method: method)))
+            XCTAssertEqual(reply.error?["code"] as? Int, -32601)
+        }
+        XCTAssertThrowsError(try NativeIOSHost.BusinessMethod("ui.toast.show") { _ in NSNull() })
+    }
+
+    func testToastValidatesCodePointBoundsAndOnlyAcceptsText() throws {
+        let host = WireHost(platform: "ios", options: .init(toast: true))
+        let sid = try session(host)
+        let composed60 = String(repeating: "e\u{0301}", count: 60)
+        let emoji120 = String(repeating: "🦉", count: 120)
+        let accepted = [("ui.toast.show", "x"), ("ui.toast.show@1", composed60), ("ui.toast.show", emoji120)]
+        var presented: [String] = []
+        func present(_ text: String) -> Bool {
+            presented.append(text)
+            return true
+        }
+        for (index, (method, text)) in accepted.enumerated() {
+            let request = echo(id: "accepted-\(index)", sid: sid, params: #"{"text":"\#(text)"}"#, method: method)
+            let result = try unpack(host.receive(request, presentToast: present))
+            XCTAssertEqual(result.rpc["result"] as? [String: String], [:])
+        }
+
+        let overLimit = composed60 + "e"
+        let invalid = ["{}", #"{"text":""}"#, #"{"text":42}"#, #"{"text":null}"#,
+                       #"{"text":"a","extra":true}"#, #"{"text":"\#(overLimit)"}"#]
+        for (index, params) in invalid.enumerated() {
+            let request = echo(id: "invalid-\(index)", sid: sid, params: params, method: "ui.toast.show")
+            XCTAssertEqual(try unpack(host.receive(request, presentToast: present)).error?["code"] as? Int, -32602)
+        }
+        let missingParams = #"{"jsb":"1.0","meta":{"sid":"\#(sid)"},"rpc":{"jsonrpc":"2.0","id":"missing","method":"ui.toast.show"}}"#
+        XCTAssertEqual(try unpack(host.receive(missingParams, presentToast: present)).error?["code"] as? Int, -32602)
+        XCTAssertEqual(presented, accepted.map { $0.1 })
+    }
+
+    func testToastReturnsInternalErrorWhenPresenterIsUnavailable() throws {
+        let host = WireHost(platform: "ios", options: .init(toast: true))
+        let sid = try session(host)
+        let request = echo(id: "unavailable", sid: sid, params: #"{"text":"Hello"}"#, method: "ui.toast.show")
+        XCTAssertEqual(try unpack(host.receive(request)).error?["code"] as? Int, -32603)
+    }
+
     func testBusinessNamesRequireAQualifiedBaseOutsideReservedNamespaces() throws {
         for name in ["acme.getConfig", "acme.app.getConfig", "com.acme.getConfig", "bridgeApps.getConfig"] {
             let method = try NativeIOSHost.BusinessMethod(name) { _ in NSNull() }

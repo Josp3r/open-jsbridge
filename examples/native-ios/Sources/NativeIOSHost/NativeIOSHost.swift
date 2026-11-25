@@ -7,11 +7,14 @@ public enum NativeIOSHost {
         public let deviceInfo: Bool
         public let networkStatus: Bool
         public let networkChanges: Bool
+        public let toast: Bool
 
-        public init(deviceInfo: Bool = false, networkStatus: Bool = false, networkChanges: Bool = false) {
+        public init(deviceInfo: Bool = false, networkStatus: Bool = false, networkChanges: Bool = false,
+                    toast: Bool = false) {
             self.deviceInfo = deviceInfo
             self.networkStatus = networkStatus
             self.networkChanges = networkChanges
+            self.toast = toast
         }
     }
 
@@ -282,6 +285,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     private let scheduleReply: NativeIOSHost.ReplyScheduler
     private let wire: WireHost
     private let network: NetworkModule?
+    private let toast: ToastModule?
     private var activeDocument: String?
     private var pending: [Delivery] = []
     private var businessWork: [UUID: BusinessWork] = [:]
@@ -303,6 +307,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         let network = options.networkStatus || options.networkChanges
             ? NetworkModule(watch: watchNetwork ?? NetworkModule.watchSystemPath) : nil
         self.network = network
+        toast = options.toast ? ToastModule() : nil
         wire = WireHost(platform: "ios", options: options, businessMethods: businessMethods,
                         businessEvents: businessEvents, enableEcho: enableEcho, networkType: { network?.type ?? .unknown })
     }
@@ -378,6 +383,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         activeDocument = nil
         wire.reset()
         network?.stop()
+        toast?.dismiss()
         deferredReplies.discard()
         let abandoned = businessWork.values
         businessWork.removeAll()
@@ -413,6 +419,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                     // Earlier verified cancellations can release work before this request is admitted.
                     let exceedsInflightLimit = delivery.exceedsBacklogLimit || self.businessWork.count >= WireHost.maxInflight
                     if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: exceedsInflightLimit,
+                                                        presentToast: { self.toast?.show($0, in: webView) ?? false },
                                                         onBusinessCall: { businessCall = $0 },
                                                         onCancelRequest: { self.cancel($0, document: delivery.document) },
                                                         afterReply: { acknowledge = $0 }) {
