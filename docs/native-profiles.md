@@ -29,7 +29,7 @@ App 挂载宿主时显式设置 `toast = true`，页面即可在握手后通过 
 ## Web 接入
 
 ```ts
-import { bridge, ui } from 'open-jsbridge'
+import { bridge, ui } from '@open-jsbridge/web'
 
 await bridge.ready()
 
