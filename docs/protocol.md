@@ -309,7 +309,8 @@ sequenceDiagram
 ### 6.3 SDK 侧握手超时
 
 - SDK 检测不到 `__OJSB_TRANSPORT__` 时，SHOULD 监听 `ojsb:transportready` 至多 `handshakeTimeout`（默认 3000 ms），之后判定为"不在宿主中"。
-- `bridge.hello` 本身超时（默认 3000 ms）MAY 用新请求 ID 重试一次。Web SDK 自动重试一次，两次都超时则 `ready()` 返回 `-32001`。格式有效但语义非法的成功响应立即以 `-32600` 结束本次握手，同一个 ID 的后续响应不再处理。
+- Web SDK 对首次超时的 `bridge.hello` 自动换 ID 重试一次。每次尝试有独立的 `handshakeTimeout`，默认共最多约 6 秒，注入通道发现另用最多 3 秒。两次超时返回 `-32001`。格式有效但语义非法的成功响应立即以 `-32600` 结束握手，同一 ID 的后续响应被丢弃。
+- `reconnect()` 在连接中共享当前 `ready()` Promise。文档处于 `pagehide` 挂起期间时返回 `-32000`，等待 `pageshow` 恢复。终态失败后调用可开始新的握手。
 
 ### 6.4 降级
 
