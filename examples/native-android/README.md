@@ -58,7 +58,7 @@ App 将上面的回调加到已有的 `WebViewClient`，由 App 继续管理导�
 页面可直接调用 Web SDK。
 
 ```ts
-import { bridge } from 'open-jsbridge'
+import { bridge } from '@open-jsbridge/web'
 
 const device = await bridge.call('device.getInfo')
 const config = await bridge.call('acme.app.getConfig')

@@ -1,8 +1,8 @@
-# React Native 宿主设计（`open-jsbridge-react-native`）
+# React Native 宿主设计（`@open-jsbridge/react-native`）
 
-> RN 在这里是 **WebView 宿主端**：RN App 用 `react-native-webview` 加载 H5，H5 使用**同一份** `open-jsbridge`，**Web SDK 不做任何修改**。RN 侧实现 Host 职责并注入满足 [Host Shim 契约](protocol.md#2-host-shim-契约transport-层) 的 shim。
+> RN 在这里是 **WebView 宿主端**：RN App 用 `react-native-webview` 加载 H5，H5 使用**同一份** `@open-jsbridge/web`，**Web SDK 不做任何修改**。RN 侧实现 Host 职责并注入满足 [Host Shim 契约](protocol.md#2-host-shim-契约transport-层) 的 shim。
 >
-> 方案 A 在 M2.5 实现。`react-native-webview` 的 API 以接入版本的官方文档为准，文中标注「需核实」的能力须在接入时通过 conformance 用例验证。
+> 方案 A 计划在 M2.5 实现；RN 宿主包尚未发布。`react-native-webview` 的 API 以接入版本的官方文档为准，文中标注「需核实」的能力须在接入时通过 conformance 用例验证。
 
 ## 1. 可用的 `react-native-webview` 能力
 
@@ -27,10 +27,10 @@ flowchart LR
     HC --> REG[TS HandlerRegistry]
   end
   C <-->|onMessage / injectJavaScript| WV[react-native-webview]
-  WV <--> H5["H5 + open-jsbridge（不变）"]
+  WV <--> H5["H5 + @open-jsbridge/web（不变）"]
 ```
 
-- Host 核心使用内部 TS 模块 `host-core`，**与 `open-jsbridge/mock` 共用同一个参考 Host 状态机**。它按 protocol §3 解码单条 `{jsb, meta?, rpc}` JSON-RPC 2.0 信封并拒绝批量数组。RN 平台通道须按 §6 单独验证。
+- Host 核心使用内部 TS 模块 `host-core`，**与 `@open-jsbridge/web/mock` 共用同一个参考 Host 状态机**。它按 protocol §3 解码单条 `{jsb, meta?, rpc}` JSON-RPC 2.0 信封并拒绝批量数组。RN 平台通道须按 §6 单独验证。
 - 优点：不改原生代码、可 OTA 更新 handler、与 `react-native-webview` 全部能力兼容、Expo 等托管工作流也能用。
 - 缺点：trust = degraded（拿不到可信 frame origin）；消息要经过原生 WebView → RN 事件 → JS 线程，JS 线程繁忙时 bridge 延迟会上升；大数据只能走 base64 / 分片，或额外借助原生模块提供本地 URL。
 
@@ -71,8 +71,8 @@ export const OJSB_RN_SHIM = `(function () {
 ## 4. TS API 与 handler 注册示例
 
 ```tsx
-import { OJSBWebView, createHostBridge, BridgeError, type HostHandler } from 'open-jsbridge-react-native';
-import type { MethodMap } from 'open-jsbridge';     // 复用 codegen 生成的同一份类型
+import { OJSBWebView, createHostBridge, BridgeError, type HostHandler } from '@open-jsbridge/react-native';
+import type { MethodMap } from '@open-jsbridge/web';     // 复用 codegen 生成的同一份类型
 
 const deviceGetInfo: HostHandler<'device.getInfo'> = async (params, ctx) => ({
   os: Platform.OS,

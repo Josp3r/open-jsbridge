@@ -1,6 +1,6 @@
 # Flutter 宿主实现（`open_jsbridge_flutter`）
 
-> Flutter 在这里是 **WebView 宿主端**：Flutter App 内嵌 WebView 加载 H5，H5 使用**同一份** `open-jsbridge`，**Web SDK 不做任何修改**。Flutter 侧只需实现 [protocol.md](protocol.md) 的 Host 职责并注入满足 [Host Shim 契约](protocol.md#2-host-shim-契约transport-层) 的 shim。
+> Flutter 在这里是 **WebView 宿主端**：Flutter App 内嵌 WebView 加载 H5，H5 使用**同一份** `@open-jsbridge/web`，**Web SDK 不做任何修改**。Flutter 侧只需实现 [protocol.md](protocol.md) 的 Host 职责并注入满足 [Host Shim 契约](protocol.md#2-host-shim-契约transport-层) 的 shim。
 >
 > 方案 A 在 M2.5 实现。`webview_flutter`、`flutter_inappwebview` 的 API 以接入版本的官方文档为准，文中标注「需核实」的能力须在接入时通过 conformance 用例验证。
 
@@ -25,7 +25,7 @@ flowchart LR
     CORE --> REG[Dart HandlerRegistry]
     REG -. 可选 .-> FWD[NativeHandlerForwarder<br/>Pigeon → iOS/Android 原生 handler]
   end
-  H5["H5 + open-jsbridge（不变）"] <--> T
+  H5["H5 + @open-jsbridge/web（不变）"] <--> T
 ```
 
 ## 2. 架构方案：纯 Dart 核心 vs 复用原生实现

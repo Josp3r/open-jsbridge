@@ -3,13 +3,15 @@
 ## 在独立 Web 项目安装
 
 ```sh
-npm install open-jsbridge
+npm install @open-jsbridge/web
 ```
+
+验证仓库版本时，可[从源码打包安装](#从源码打包安装)，并使用下面的导入方式。
 
 业务代码从主入口导入单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
 
 ```ts
-import { bridge } from 'open-jsbridge'
+import { bridge } from '@open-jsbridge/web'
 
 const device = await bridge.call<{ os: string; osVersion: string }>('device.getInfo')
 ```
@@ -17,8 +19,8 @@ const device = await bridge.call<{ os: string; osVersion: string }>('device.getI
 普通浏览器联调时，可以在开发入口安装 Mock 通道，再用同一份单例调用 Mock 宿主的 echo。
 
 ```ts
-import { bridge } from 'open-jsbridge'
-import { installMockTransport } from 'open-jsbridge/mock'
+import { bridge } from '@open-jsbridge/web'
+import { installMockTransport } from '@open-jsbridge/web/mock'
 
 installMockTransport()
 const result = await bridge.call<{ text: string }>('conformance.echo', { text: '你好' })
@@ -36,7 +38,7 @@ npm run pack:web
 在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
 
 ```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
+npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.1.0.tgz
 ```
 
 ## 在浏览器体验

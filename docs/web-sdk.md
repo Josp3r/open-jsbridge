@@ -1,4 +1,4 @@
-# Web SDK 设计（`open-jsbridge`）
+# Web SDK 设计（`@open-jsbridge/web`）
 
 > 目标：**一份 SDK 跑在所有宿主**（iOS / Android / Flutter / React Native / 浏览器 / mock）。SDK 只依赖 [protocol.md §2 Host Shim 契约](protocol.md#2-host-shim-契约transport-层)，不感知具体平台。
 
@@ -9,7 +9,7 @@
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
 ```ts
-import { bridge, BridgeError, ErrorCode } from 'open-jsbridge';
+import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
 await bridge.ready();                                   // 握手完成（或降级判定完成）
 
@@ -87,7 +87,7 @@ export const bridge: Bridge;                                     // 默认单例
 
 设计说明：
 
-- **为什么是 `call(method, params)` 而不是 `bridge.device.getInfo()` 代理对象**：字符串 method 便于 tree-shaking、日志与 codegen 对齐；强类型通过 `MethodMap` 获得。codegen MAY 额外生成 `api.device.getInfo()` 的薄封装（可选子路径导出 `open-jsbridge/typed`）。
+- **为什么是 `call(method, params)` 而不是 `bridge.device.getInfo()` 代理对象**：字符串 method 便于 tree-shaking、日志与 codegen 对齐；强类型通过 `MethodMap` 获得。codegen MAY 额外生成 `api.device.getInfo()` 的薄封装（可选子路径导出 `@open-jsbridge/web/typed`）。
 - `params` 必须是 object（协议约束），SDK 在开发模式下对非 object 直接抛错。
 - `BridgeError extends Error`，带 `code / data / method / traceId`，可 `instanceof` 判断。
 
@@ -103,7 +103,7 @@ flowchart TB
   CODEC --> AD{Adapter}
   AD --> A1[InjectedShimAdapter<br/>window.__OJSB_TRANSPORT__]
   AD --> A2[BrowserFallbackAdapter]
-  AD --> A3["MockAdapter（open-jsbridge/mock）"]
+  AD --> A3["MockAdapter（@open-jsbridge/web/mock）"]
   AD --> A4[PostMessageAdapter（可选：受控 iframe 宿主/测试）]
 ```
 
@@ -212,7 +212,7 @@ addEventListener('pageshow', (e) => { if (e.persisted) core.rehandshake(); });
 下例展示规划中的浏览器降级接口。
 
 ```ts
-import { createBridge, BrowserFallbackAdapter } from 'open-jsbridge';
+import { createBridge, BrowserFallbackAdapter } from '@open-jsbridge/web';
 
 const bridge = createBridge({
   fallback: new BrowserFallbackAdapter({
@@ -232,7 +232,7 @@ const bridge = createBridge({
 - 产物：`packages/web-sdk/src/generated/methods.d.ts`（标准 profile），业务方可在自己仓库对自定义 schema 运行 `ojsb-codegen --target ts` 并通过 **declaration merging** 扩展：
 
 ```ts
-declare module 'open-jsbridge' {
+declare module '@open-jsbridge/web' {
   interface MethodMap {
     'acme.pay.create': { params: { orderId: string }; result: { status: 'paid' | 'cancelled' } };
   }
@@ -243,10 +243,10 @@ declare module 'open-jsbridge' {
 
 ## 5. 构建与 npm 包
 
-`npm run build` 用 TypeScript 生成 ES2020 模块和声明文件。`npm run pack:web` 生成 `dist/open-jsbridge-0.1.0.tgz`，可以在独立项目里本地安装。
+`npm run build` 用 TypeScript 生成 ES2020 模块和声明文件。`npm run pack:web` 生成 `dist/open-jsbridge-web-0.1.0.tgz`，可以在独立项目里本地安装。
 
-- `open-jsbridge` 提供默认 `bridge`、`createBridge`、错误类型和相关 TypeScript 声明。
-- `open-jsbridge/mock` 提供 `installMockTransport`、`createMockAdapter` 和对应的类型声明。开发页显式调用 `installMockTransport()` 后开始联调。
+- `@open-jsbridge/web` 提供默认 `bridge`、`createBridge`、错误类型和相关 TypeScript 声明。
+- `@open-jsbridge/web/mock` 提供 `installMockTransport`、`createMockAdapter` 和对应的类型声明。开发页显式调用 `installMockTransport()` 后开始联调。
 - 包包含零运行时依赖的 ESM 模块。仓库的 `npm run demo:web` 仍直接使用本地编译产物。
 - 体积目标以 min+gzip 为准，核心 ≤ 4 KB，含事件、反向调用和回调的完整形态 ≤ 6 KB。
 
@@ -254,14 +254,14 @@ declare module 'open-jsbridge' {
 
 ## 6. Mock 与调试工具
 
-### 6.1 `open-jsbridge/mock`
+### 6.1 `@open-jsbridge/web/mock`
 
 M1 提供 `installMockTransport()`，开发环境可以在页面启动时调用一次，把 Mock 注册为 `window.__OJSB_TRANSPORT__`。业务代码使用同一个默认 `bridge`，首次调用走 SDK 的通道检测和自动握手。Node.js 或需要彼此隔离的测试也可以使用 `createMockAdapter()`。
 
 后续完整 Mock 宿主的配置和操作设计如下。
 
 ```ts
-import { installMockHost } from 'open-jsbridge/mock';
+import { installMockHost } from '@open-jsbridge/web/mock';
 
 const host = installMockHost({
   platform: 'ios',

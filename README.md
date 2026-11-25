@@ -63,8 +63,8 @@ open-jsbridge/
 │   │   └── conformance/           # 一致性测试专用 method（echo/delay/emit...）
 │   └── profiles/                  # 可选标准库 profile（device/ui/storage...）
 ├── packages/
-│   ├── web-sdk/                   # open-jsbridge（核心 SDK）
-│   ├── web-mock/                  # open-jsbridge/mock（浏览器/单测 mock 宿主）
+│   ├── web-sdk/                   # @open-jsbridge/web（核心 SDK）
+│   ├── web-mock/                  # @open-jsbridge/web/mock（浏览器/单测 mock 宿主）
 │   ├── host-core/                 # host-core：TS 参考 Host 状态机（mock 与 RN 共用）
 │   ├── devtools/                  # 调试面板 / 日志 overlay
 │   └── codegen/                   # schema → TS / Swift / Kotlin / Dart
@@ -80,7 +80,7 @@ open-jsbridge/
 │   ├── lib/src/transports/        # inappwebview / webview_flutter 适配
 │   ├── lib/src/native_forwarder/  # 可选：Pigeon 转发到原生 handler
 │   └── integration_test/
-├── react-native/                  # open-jsbridge-react-native
+├── react-native/                  # @open-jsbridge/react-native（规划中）
 │   ├── src/                       # OJSBWebView 组件 + createHostBridge（基于 host-core）
 │   └── native/                    # 可选方案 B：TurboModule / Fabric 组件（M3+）
 ├── conformance-tests/
@@ -126,19 +126,25 @@ JS
 
 ### 安装 Web SDK
 
-当前可从本地 tarball 安装。在仓库根目录运行 `npm run pack:web`，然后到 H5 项目中安装生成的文件。
+公开版本通过 npm 安装。
 
 ```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
+npm install @open-jsbridge/web
 ```
 
-在 App WebView 中从 `open-jsbridge` 导入 `bridge` 单例。浏览器联调时，从同一个包的 `open-jsbridge/mock` 入口安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
+验证仓库版本时，在仓库根目录运行 `npm run pack:web`，然后到 H5 项目中安装生成的文件。
+
+```sh
+npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.1.0.tgz
+```
+
+在 App WebView 中从 `@open-jsbridge/web` 导入 `bridge` 单例。浏览器联调时，从同一个包的 `@open-jsbridge/web/mock` 入口安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
 
 ### 原生宿主 SDK 和 npm 包
 
 iOS 通过 SwiftPM 安装 `NativeIOSHost`。Android 可将 Release AAR 发布到本地 Maven 仓库，通过 `io.github.josp3r:open-jsbridge-android:0.1.0` 安装。App 挂载宿主后，可以按需启用设备、网络和 Toast 能力。 [两个 Release App 的独立接入和验收](examples/sdk-consumer/README.md)
 
-npm 首发规划只发布一个 H5 包 `@open-jsbridge/web`。Mock 作为同包的 `@open-jsbridge/web/mock` 子路径。React Native 宿主实现就绪后再发布 `@open-jsbridge/react-native`。当前本地 Web tarball 使用 `open-jsbridge` 包名。
+npm 首发规划只发布一个 H5 包 `@open-jsbridge/web`。Mock 作为同包的 `@open-jsbridge/web/mock` 子路径。React Native 宿主实现就绪后再发布 `@open-jsbridge/react-native`。
 
 ## 5. 版本策略
 
@@ -157,7 +163,7 @@ npm 首发规划只发布一个 H5 包 `@open-jsbridge/web`。Mock 作为同包�
 | **M0 规范冻结（Draft）** | 冻结可校验的 JSON-RPC wire 格式 | `docs/protocol.md`、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json`、`spec/methods/bridge/hello.json`、`conformance-tests/fixtures/wire.json` | 规范评审通过，wire 正反例通过 Schema 校验 |
 | **M1 最小闭环** | 先跑通 TypeScript Web SDK 与 Mock 宿主的 echo，再分别接入 iOS 和 Android 主 frame | Web SDK core、Mock 宿主、echo demo。单独交付 iOS WithReply 与 Android WebMessageListener 接入 | TypeScript 闭环通过握手、调用、错误、超时核心用例。各原生接入独立通过其核心用例 |
 | **M2 完整协议** | 事件、取消、流式回调、安全 ACL、生命周期 | blob 大数据通道、devtools。多 frame 和旧通道按平台隔离能力评估 | 参考三端通过所有适用的 conformance 用例。声明 iframe 或旧通道能力前，须验证跨 origin、frame 导航和迟到消息隔离 |
-| **M2.5 跨端框架宿主** | Flutter / RN 方案 A | 共享 TS 宿主核心、`open-jsbridge-react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
+| **M2.5 跨端框架宿主** | Flutter / RN 方案 A | 共享 TS 宿主核心、`@open-jsbridge/react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
 | **M3 生态与 1.0** | 可被外部采用 | codegen（TS/Swift/Kotlin/Dart）、`device/ui/storage` profile、Flutter Pigeon 原生 handler 转发、RN 方案 B（TurboModule/Fabric）预研、文档站、性能基准、1.0 发布 | 至少一个真实 App 接入；协议 `1.0` 正式冻结；兼容性承诺生效 |
 
 ## 7. 文档索引
