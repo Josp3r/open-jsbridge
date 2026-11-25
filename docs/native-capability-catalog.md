@@ -10,7 +10,7 @@
 - **契约**定义调用方可依赖的行为。已定义的方法和事件可以在 `spec/methods/` 找到 Schema 和版本信息，语义见对应文档。一致性用例验证消息、权限、生命周期和边界行为。标准能力由宿主按需实现。[Schema 与一致性测试](conformance.md#1-单一事实来源single-source-of-truth)
 - **运行时能力**由宿主通过 `bridge.hello` 声明，按当前来源、frame 和宿主策略过滤。Web 用 `bridge.has(method, version)` 和 `bridge.hasEvent(event)` 检测。系统授权和用户选择仍由宿主在执行时处理。[能力协商](protocol.md#62-bridgehello)
 
-目前已有契约和两端参考实现的是 [`device.getInfo@1`](../spec/methods/device/getInfo.json)、[`network.getStatus@1`](../spec/methods/network/getStatus.json) 和 [`network.changed`](../spec/methods/network/changed.json)。查询和事件分别声明，事件名称按现有订阅协议传输。[已实现的原生能力](native-profiles.md)
+目前已有契约和两端参考实现的是 [`device.getInfo@1`](../spec/methods/device/getInfo.json)、[`network.getStatus@1`](../spec/methods/network/getStatus.json)、[`network.changed`](../spec/methods/network/changed.json) 和 [`ui.toast.show@1`](../spec/methods/ui/toast/show.json)。查询和事件分别声明，事件名称按现有订阅协议传输。[已实现的原生能力](native-profiles.md)
 
 为同一能力选一个主归属。后台执行、数据敏感性、用户手势、外部服务和限定设备属于这项能力的适用条件。判断一个领域的标准化程度时，区分跨端共性、平台或服务专属、以及依赖企业部署或系统角色的能力。目录覆盖这三类场景，宿主按实际条件选择实现范围。
 

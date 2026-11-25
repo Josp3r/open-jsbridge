@@ -43,6 +43,49 @@ class NativeModulesTest {
     }
 
     @Test
+    fun toastIsAdvertisedOnlyWhenEnabledAndDispatchesBothVersionOneNames() {
+        val disabled = Client(BridgeModules())
+        disabled.commit()
+        assertTrue(disabled.methods().isEmpty())
+        assertEquals(-32601, disabled.call("ui.toast.show", """{"text":"Hello"}""").errorCode())
+
+        val shown = mutableListOf<String>()
+        val enabled = Client(BridgeModules(device = DeviceModule("15"), toast = ToastModule { shown.add(it) }))
+        enabled.commit()
+        assertEquals(setOf("device.getInfo", "ui.toast.show"), enabled.methods())
+        assertEquals(obj("{}"), enabled.call("ui.toast.show", """{"text":"Hello"}""").result())
+        val limit = "😀".repeat(120)
+        assertEquals(obj("{}"), enabled.call("ui.toast.show@1", """{"text":"$limit"}""").result())
+        assertEquals(-32601, enabled.call("ui.toast.show@2", """{"text":"Hello"}""").errorCode())
+        assertEquals(listOf("Hello", limit), shown)
+    }
+
+    @Test
+    fun toastRejectsMissingTextInvalidTextAndAdditionalFieldsBeforePresenting() {
+        val shown = mutableListOf<String>()
+        val client = Client(BridgeModules(toast = ToastModule { shown.add(it) }))
+        client.commit()
+        client.hello()
+
+        val invalid = listOf(null, "{}", """{"text":null}""", """{"text":true}""", """{"text":7}""",
+            """{"text":""}""", """{"text":"${"😀".repeat(121)}"}""", """{"text":"Hello","duration":2}""")
+        for (params in invalid) {
+            assertEquals(params, -32602, client.call("ui.toast.show", params).errorCode())
+        }
+        assertEquals(-32600, client.call("ui.toast.show", "[]").errorCode())
+        assertTrue(shown.isEmpty())
+    }
+
+    @Test
+    fun toastReturnsAnInternalErrorWhenPresentationFails() {
+        val client = Client(BridgeModules(toast = ToastModule { throw IllegalStateException("No presenter") }))
+        client.commit()
+        client.hello()
+
+        assertEquals(-32603, client.call("ui.toast.show@1", """{"text":"Hello"}""").errorCode())
+    }
+
+    @Test
     fun eventAdvertisesOnlyWithAnOptedInObserverAndConfirmedDocument() {
         val network = FakeNetworkEvents()
         val client = Client(BridgeModules(networkEvents = network))

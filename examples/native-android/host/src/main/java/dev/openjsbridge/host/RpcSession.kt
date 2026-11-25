@@ -35,13 +35,25 @@ internal class RpcSession(
         var stop: (() -> Unit)? = null
     }
 
+    private class InvalidNativeParamsException(message: String) : RuntimeException(message)
+
     private var sid: String? = null
     private val helloIds = HashSet<String>()
     private val requestIds = HashSet<String>()
     private val methods = buildMap<String, (JsonObject?) -> JsonObject> {
         if (enableEcho) put(ECHO) { params -> params ?: JsonObject() }
-        modules.device?.let { device -> put(DEVICE_INFO) { device.info() } }
-        modules.network?.let { network -> put(NETWORK_STATUS) { network.status().snapshot() } }
+        modules.device?.let { device -> put(DEVICE_INFO, query(device::info)) }
+        modules.network?.let { network -> put(NETWORK_STATUS, query { network.status().snapshot() }) }
+        modules.toast?.let { toast ->
+            put(TOAST_SHOW) { params ->
+                val text = params?.get("text").asStringOrNull()
+                if (params?.size() != 1 || text == null || text.codePointCount(0, text.length) !in 1..120) {
+                    throw InvalidNativeParamsException("Invalid params")
+                }
+                toast.show(text)
+                JsonObject()
+            }
+        }
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
     private val canCancel = supportsCancellation && this.businessMethods.isNotEmpty()
@@ -145,10 +157,14 @@ internal class RpcSession(
             return updateSubscriptions(id, versionOne, requestSid, events, afterResponse)
         }
         if (handler != null) {
-            if (versionOne != ECHO && params != null && params.size() != 0) {
-                return failure(id, requestSid, -32602, "Expected an empty params object")
+            val value = try {
+                handler(params)
+            } catch (error: InvalidNativeParamsException) {
+                return failure(id, requestSid, -32602, checkNotNull(error.message))
+            } catch (_: RuntimeException) {
+                return failure(id, requestSid, -32603, "Internal error")
             }
-            val result = success(id, requestSid, handler(params))
+            val result = success(id, requestSid, value)
             if (exceedsMessageLimit(result)) return failure(id, requestSid, -32006, "Payload too large")
             return result
         }
@@ -300,6 +316,7 @@ internal class RpcSession(
         private const val ECHO = "conformance.echo"
         private const val DEVICE_INFO = "device.getInfo"
         private const val NETWORK_STATUS = "network.getStatus"
+        private const val TOAST_SHOW = "ui.toast.show"
         private const val SUBSCRIBE = "bridge.subscribe"
         private const val UNSUBSCRIBE = "bridge.unsubscribe"
         private const val NETWORK_CHANGED = "network.changed"
@@ -308,6 +325,13 @@ internal class RpcSession(
         private val REQUEST_KEYS = NOTIFICATION_KEYS + "id"
         private val CANCEL_METHODS = setOf("bridge.cancel", "bridge.cancel@1")
         private val NOTIFICATION_ONLY = CANCEL_METHODS + setOf("bridge.event", "bridge.progress")
+
+        private fun query(read: () -> JsonObject): (JsonObject?) -> JsonObject = { params ->
+            if (params != null && params.size() != 0) {
+                throw InvalidNativeParamsException("Expected an empty params object")
+            }
+            read()
+        }
 
         private fun exceedsMessageLimit(raw: String) =
             raw.length > MAX_MESSAGE_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES

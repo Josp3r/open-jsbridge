@@ -9,10 +9,19 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.widget.Toast
 
 internal fun androidDeviceModule(): DeviceModule = DeviceModule(
     Build.VERSION.RELEASE?.takeIf { it.isNotBlank() } ?: Build.VERSION.SDK_INT.toString(),
 )
+
+internal fun androidToastModule(context: Context): ToastModule {
+    val app = context.applicationContext
+    return ToastModule { text ->
+        check(Looper.myLooper() === Looper.getMainLooper()) { "Present the toast on the WebView UI thread" }
+        Toast.makeText(app, text, Toast.LENGTH_SHORT).show()
+    }
+}
 
 internal class AndroidNetwork(context: Context) : NetworkModule {
     private val app = context.applicationContext

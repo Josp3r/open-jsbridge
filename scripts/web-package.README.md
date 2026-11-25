@@ -19,6 +19,14 @@ const device = await bridge.call('device.getInfo')
 console.log(device)
 ```
 
+宿主启用 Toast 后，可以使用同一单例上的类型化入口。
+
+```ts
+import { ui } from 'open-jsbridge'
+
+await ui.toast.show({ text: '已保存' })
+```
+
 ## 浏览器本地联调
 
 从 `open-jsbridge/mock` 显式安装 Mock transport。应用代码仍使用同一个 SDK 单例。

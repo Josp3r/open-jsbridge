@@ -53,6 +53,7 @@ final class WireHost {
         if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
+        if options.toast { methods[ToastModule.method] = ["versions": [1]] }
         self.methods = methods
         events = businessEvents + (options.networkChanges ? [NetworkModule.event] : [])
     }
@@ -71,6 +72,7 @@ final class WireHost {
     /// Called only after the adapter has authorized the current document.
     /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
+                 presentToast: (String) -> Bool = { _ in false },
                  onBusinessCall: ((BusinessCall) -> Void)? = nil,
                  onCancelRequest: ((String) -> Void)? = nil,
                  afterReply: (@escaping () -> Void) -> Void = { $0() }) -> String? {
@@ -178,6 +180,15 @@ final class WireHost {
                 return failure(-32602, "Invalid params", id: id, meta: responseMeta)
             }
             result = name == DeviceModule.method ? DeviceModule.information() : networkType().payload
+        case ToastModule.method:
+            guard params?.count == 1, let text = params?["text"] as? String,
+                  (1...120).contains(text.unicodeScalars.count) else {
+                return failure(-32602, "Invalid params", id: id, meta: responseMeta)
+            }
+            guard presentToast(text) else {
+                return failure(-32603, "Internal error", id: id, meta: responseMeta)
+            }
+            result = NSDictionary()
         default:
             result = params ?? NSDictionary()
         }

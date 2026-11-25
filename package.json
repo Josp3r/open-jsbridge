@@ -5,11 +5,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "pack:web": "node scripts/pack-web.mjs",
+    "build:sdk-consumer": "node scripts/build-sdk-consumer.mjs",
     "test": "npm run build && node --test conformance-tests/*.test.mjs",
     "demo:web": "npm run build && node examples/web-demo/serve.mjs"
   },
   "devDependencies": {
     "ajv": "8.20.0",
+    "esbuild": "0.28.2",
     "typescript": "5.9.3"
   }
 }

@@ -493,3 +493,14 @@ export function createBridge(options: BridgeOptions = {}): Bridge {
 }
 
 export const bridge = createBridge();
+
+export const ui = {
+  toast: {
+    show(
+      params: { text: string },
+      options?: Omit<CallOptions, 'version'>,
+    ): Promise<Record<string, never>> {
+      return bridge.call('ui.toast.show@1', params, options);
+    },
+  },
+};
