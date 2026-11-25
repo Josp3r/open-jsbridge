@@ -2,17 +2,8 @@
 
 ## 在独立 Web 项目安装
 
-在 Open JSBridge 仓库根目录构建本地 tarball。
-
 ```sh
-npm ci
-npm run pack:web
-```
-
-在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
-
-```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
+npm install open-jsbridge
 ```
 
 业务代码从主入口导入单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
@@ -31,6 +22,21 @@ import { installMockTransport } from 'open-jsbridge/mock'
 
 installMockTransport()
 const result = await bridge.call<{ text: string }>('conformance.echo', { text: '你好' })
+```
+
+## 从源码打包安装
+
+在 Open JSBridge 仓库根目录构建本地 tarball。
+
+```sh
+npm ci
+npm run pack:web
+```
+
+在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
+
+```sh
+npm install /path/to/open-jsbridge/dist/open-jsbridge-0.1.0.tgz
 ```
 
 ## 在浏览器体验

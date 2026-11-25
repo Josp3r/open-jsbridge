@@ -20,6 +20,7 @@ try {
   await Promise.all([
     copyFile(new URL('scripts/web-package.json', root), join(staging, 'package.json')),
     copyFile(new URL('scripts/web-package.README.md', root), join(staging, 'README.md')),
+    copyFile(new URL('LICENSE', root), join(staging, 'LICENSE')),
   ]);
 
   const report = execFileSync(process.execPath, [
