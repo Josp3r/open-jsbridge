@@ -12,13 +12,24 @@
 
 ## Network
 
-[`network.getStatus` v1](../spec/methods/network/getStatus.json) 省略参数或传入 `{}`。它的结果和 [`network.changed` 事件](../spec/methods/network/changed.json) 使用同一个 [`{ type }` Schema](../spec/schemas/network-status.json)。
+[`network.getStatus` v1](../spec/methods/network/getStatus.json) 省略参数或传入 `{}`。它的结果和 [`network.statusChanged` 事件](../spec/methods/network/statusChanged.json) 使用同一个 [`{ type }` Schema](../spec/schemas/network-status.json)。
 
 - `wifi`、`cellular`、`ethernet` 表示系统为宿主 App 选择的网络类型。
 - `other` 表示已知存在默认路径，但类型属于其他类别或无法归为单一已列类型。
 - `none` 表示系统确认当前没有可用的默认路径。`unknown` 表示宿主尚未获取足够的信息。
 
 这个结果描述系统网络路径。业务请求的实际响应反映目标服务是否可达。查询和事件独立声明，宿主按可用能力公布 `capabilities.methods` 和 `capabilities.events`。事件只在标准化后的类型变化时发送。订阅确认代表宿主已完成订阅，可以另外调用查询获取初始状态。页面重新可见时也可重新查询。
+
+## App 生命周期
+
+宿主按需启用 [`app.foregrounded`](../spec/methods/app/foregrounded.json) 和 [`app.backgrounded`](../spec/methods/app/backgrounded.json)。两个事件的 v1 payload 均为 `null`，描述宿主进程已经发生的变化。订阅完成后接收后续变化，通过 `bridge.ready()` 等待握手。iOS 使用 UIApplication 的 `willEnterForeground` 和 `didEnterBackground`，Android 使用 ProcessLifecycleOwner 的 `onStart` 和 `onStop`。 [Apple 生命周期](https://developer.apple.com/documentation/uikit/uiapplication/willenterforegroundnotification) · [Android 进程生命周期](https://developer.android.com/reference/androidx/lifecycle/ProcessLifecycleOwner)
+
+```ts
+import { app } from '@open-jsbridge/web/app'
+
+const off = app.onForegrounded(() => refresh())
+await off.ready
+```
 
 ## Toast
 
@@ -70,8 +81,8 @@ if (bridge.has('ui.toast.show', 1)) {
   await ui.toast.show({ text: '已保存' })
 }
 
-if (bridge.hasEvent('network.changed')) {
-  const off = bridge.on<{ type: string }>('network.changed', ({ type }) => {
+if (bridge.hasEvent('network.statusChanged')) {
+  const off = bridge.on<{ type: string }>('network.statusChanged', ({ type }) => {
     console.log('网络变化', type)
   })
   try {

@@ -14,20 +14,20 @@ test('subscription schemas accept qualified event lists and require explicit ack
 
   for (const schema of [subscribe, unsubscribe]) {
     const params = ajv.compile(schema.params);
-    assert.equal(params({ events: ['network.changed', 'acme.pay.orderChanged'] }), true);
+    assert.equal(params({ events: ['network.statusChanged', 'acme.pay.orderChanged'] }), true);
     assert.equal(params({ events: [] }), false);
-    assert.equal(params({ events: ['network.changed', 'network.changed'] }), false);
+    assert.equal(params({ events: ['network.statusChanged', 'network.statusChanged'] }), false);
     assert.equal(params({ events: ['changed'] }), false);
-    assert.equal(params({ events: ['network.changed@1'] }), false);
+    assert.equal(params({ events: ['network.statusChanged@1'] }), false);
     assert.equal(params({ events: ['rpc.changed'] }), false);
   }
 
   const subscribed = ajv.compile(subscribe.result);
-  assert.equal(subscribed({ subscribed: ['network.changed'], denied: ['acme.pay.orderChanged'] }), true);
+  assert.equal(subscribed({ subscribed: ['network.statusChanged'], denied: ['acme.pay.orderChanged'] }), true);
   assert.equal(subscribed({ subscribed: [] }), false);
 
   const unsubscribed = ajv.compile(unsubscribe.result);
-  assert.equal(unsubscribed({ unsubscribed: ['network.changed'] }), true);
+  assert.equal(unsubscribed({ unsubscribed: ['network.statusChanged'] }), true);
   assert.equal(unsubscribed({}), false);
 });
 
@@ -43,7 +43,7 @@ test('the default bridge handshakes and follows subscriptions through an injecte
 
   const { bridge, ErrorCode } = await import('../dist/packages/web-sdk/src/index.js');
   const { installMockTransport } = await import('../dist/packages/web-mock/src/index.js');
-  const name = 'network.changed';
+  const name = 'network.statusChanged';
   const denied = 'demo.restricted';
   let reportUnsubscribe;
   const unsubscribed = new Promise((resolve) => { reportUnsubscribe = resolve; });
@@ -63,6 +63,10 @@ test('the default bridge handshakes and follows subscriptions through an injecte
   assert.equal(mock.emit(name, { type: 'early' }), false);
   await off.ready;
   assert.equal(bridge.hasEvent(name), true);
+  assert.equal(bridge.hasEvent('network.changed'), false);
+  const obsolete = bridge.on('network.changed', () => assert.fail('the retired event was delivered'));
+  await assert.rejects(obsolete.ready, { code: ErrorCode.MethodNotFound });
+  assert.equal(mock.emit('network.changed', { type: 'wifi' }), false);
   assert.equal(mock.emit(name, { type: 'wifi' }), true);
 
   const offDenied = bridge.on(denied, () => { assert.fail('a denied event reached Web'); });
@@ -74,4 +78,22 @@ test('the default bridge handshakes and follows subscriptions through an injecte
   assert.deepEqual(await unsubscribed, [name]);
   assert.equal(mock.emit(name, { type: 'cellular' }), false);
   assert.deepEqual(payloads, [{ type: 'wifi' }]);
+});
+
+test('the standard event schemas define two lifecycle events and the shared network status', () => {
+  const spec = (path) => JSON.parse(readFileSync(new URL(`../spec/${path}.json`, import.meta.url), 'utf8'));
+  const validator = new Ajv2020();
+  validator.addSchema(spec('schemas/network-status'));
+  const change = spec('methods/network/statusChanged');
+  assert.equal(change.title, 'network.statusChanged');
+  assert.deepEqual(change.payload, spec('methods/network/getStatus').result);
+  assert.equal(validator.compile(change.payload)({ type: 'wifi' }), true);
+  for (const name of ['foregrounded', 'backgrounded']) {
+    const event = spec(`methods/app/${name}`);
+    const validate = validator.compile(event.payload);
+    assert.equal(event.title, `app.${name}`);
+    assert.equal(validate(null), true);
+    assert.equal(validate({}), false);
+  }
+  assert.throws(() => spec('methods/network/changed'), { code: 'ENOENT' });
 });

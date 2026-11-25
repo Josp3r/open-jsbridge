@@ -34,6 +34,28 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testAllowlistRejectsEmptyAndMixedInvalidOrigins() throws {
+        let configuration = configuration()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let first = URL(string: "https://first.example.com")!
+        let second = URL(string: "https://second.example.com:8443/")!
+        let invalid = URL(string: "https://second.example.com/app")!
+        for origins in [[], [first, invalid]] {
+            XCTAssertThrowsError(try NativeIOSHost.attach(to: webView, allowing: origins)) { error in
+                XCTAssertEqual(error as? NativeIOSHost.AttachmentError, .invalidOrigin)
+            }
+        }
+        XCTAssertTrue(configuration.userContentController.userScripts.isEmpty)
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: [first, second])
+        let shim = try XCTUnwrap(configuration.userContentController.userScripts.last?.source)
+        for origin in ["https://first.example.com", "https://second.example.com:8443"] {
+            let encoded = String(decoding: try JSONEncoder().encode(origin), as: UTF8.self)
+            XCTAssertTrue(shim.contains(encoded))
+        }
+        attachment.detach()
+    }
+
+    @MainActor
     func testShimUsesCanonicalIPv6Origin() async throws {
         let configuration = configuration()
         let webView = WKWebView(frame: .zero, configuration: configuration)

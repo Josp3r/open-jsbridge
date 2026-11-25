@@ -19,7 +19,7 @@ class BusinessEventTest {
         for (name in listOf(
             "", "unqualified", "Acme.changed", "acme..changed", "acme.Changed", "acme.changed@1",
             "acme.changed\n", "bridge.changed", "conformance.echo", "ojsb.changed", "rpc.changed",
-            "device.changed", "app.changed", "ui.changed", "storage.changed", "network.changed", "media.changed",
+            "device.changed", "app.changed", "ui.changed", "storage.changed", "network.statusChanged", "network.changed", "media.changed",
         )) {
             assertThrows(name, IllegalArgumentException::class.java) { Client(listOf(name)) }
         }
@@ -49,9 +49,9 @@ class BusinessEventTest {
         }
         assertEquals("""{"subscribed":[],"denied":["$CONFIG"]}""", client.subscribe().toString())
         client.confirm()
-        assertEquals(setOf(CONFIG, "network.changed"), client.hello().toSet())
+        assertEquals(setOf(CONFIG, "network.statusChanged"), client.hello().toSet())
         assertFalse(client.emit()) // a previously denied subscribe is not retroactive
-        assertFalse(client.transport.emit("network.changed", JsonNull.INSTANCE)) // module-owned only
+        assertFalse(client.transport.emit("network.statusChanged", JsonNull.INSTANCE)) // module-owned only
     }
 
     @Test
@@ -59,8 +59,8 @@ class BusinessEventTest {
         val client = Client(listOf(CONFIG), network = NetworkEvents { null })
         client.start()
         assertEquals(
-            """{"subscribed":["$CONFIG"],"denied":["network.changed","acme.app.unregistered"]}""",
-            client.subscribe(listOf("network.changed", CONFIG, "acme.app.unregistered")).toString(),
+            """{"subscribed":["$CONFIG"],"denied":["network.statusChanged","acme.app.unregistered"]}""",
+            client.subscribe(listOf("network.statusChanged", CONFIG, "acme.app.unregistered")).toString(),
         )
         assertFalse(client.transport.emit("acme.app.unregistered", JsonNull.INSTANCE))
         assertTrue(client.emit())
@@ -177,7 +177,7 @@ class BusinessEventTest {
         network: NetworkEvents? = null,
         private val replies: ArrayDeque<() -> Unit>? = null,
     ) {
-        val transport = DocumentTransport(ORIGIN, enableEcho = false, modules = BridgeModules(networkEvents = network), events = events) {
+        val transport = DocumentTransport(listOf(ORIGIN), enableEcho = false, modules = BridgeModules(networkEvents = network), events = events) {
             if (replies == null) it() else replies.addLast(it)
         }
         val proxy = Any()
@@ -196,7 +196,7 @@ class BusinessEventTest {
         fun start() { commit(); confirm(); hello() }
         fun beginCommit(token: String = this.token) {
             this.token = token
-            challenge = checkNotNull(transport.onPageCommitVisible(ORIGIN))
+            challenge = checkNotNull(transport.onPageCommitVisible(ORIGIN)).nonce
         }
         fun completeCommit() {
             val messages = mutableListOf<String>()

@@ -140,7 +140,7 @@ final bridge = OJSBridge(
 OJSBWebView(bridge: bridge, initialUrl: Uri.parse('https://m.acme.com/home'));
 
 // Native(Dart) → Web
-bridge.emit('network.changed', {'type': 'wifi'});
+bridge.emit('network.statusChanged', {'type': 'wifi'});
 final share = await bridge.callWeb('page.getShareInfo', timeout: const Duration(seconds: 3));
 ```
 

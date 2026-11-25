@@ -589,6 +589,42 @@ test('two hello timeouts reject with Timeout and reconnect starts a new attempt'
   assert.equal(client.has(echo), true);
 });
 
+test('two hello attempts each have the full default timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const ready = client.ready();
+  const timeout = assert.rejects(ready, { code: ErrorCode.Timeout });
+  assert.equal(client.reconnect(), ready);
+  await setImmediate();
+  assert.equal(transport.sent.length, 1);
+  now = 3000;
+  t.mock.timers.tick(3000);
+  await setImmediate();
+  assert.equal(transport.sent.length, 2);
+  assert.notEqual(transport.sent[0].rpc.id, transport.sent[1].rpc.id);
+  now = 5999;
+  t.mock.timers.tick(2999);
+  assert.equal(client.state, 'connecting');
+  now = 6000;
+  t.mock.timers.tick(1);
+  await timeout;
+});
+
+test('reconnect does not send another hello while the document is suspended', async (t) => {
+  const { window } = shimWindow(t);
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const ready = assert.rejects(client.ready(), { code: ErrorCode.Cancelled });
+  await setImmediate();
+  window.dispatchEvent(new Event('pagehide'));
+  await ready;
+  await assert.rejects(client.reconnect(), { code: ErrorCode.Unavailable });
+  assert.equal(transport.sent.length, 1);
+});
+
 test('a missing browser shim is unavailable and can be discovered on reconnect', async (t) => {
   const { window } = shimWindow(t);
   const mock = createMockAdapter();

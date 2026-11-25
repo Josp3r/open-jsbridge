@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import { ErrorCode } from '../dist/packages/protocol/src/index.js';
 import { createMockAdapter, installMockTransport } from '../dist/packages/web-mock/src/index.js';
 
-const eventName = 'network.changed';
-const deniedName = 'app.didEnterBackground';
-const unknownName = 'app.didBecomeActive';
+const eventName = 'network.statusChanged';
+const deniedName = 'app.backgrounded';
+const unknownName = 'app.foregrounded';
 
 function request(id, method, params, sid) {
   return JSON.stringify({
@@ -25,7 +25,7 @@ test('Mock advertises the configured event names once and defaults to no events'
   assert.deepEqual(defaultHost.capabilities.events, []);
 
   const configuredHost = await hello(createMockAdapter({
-    events: [eventName, eventName, 'changed', 'network.changed@1', 'rpc.changed'],
+    events: [eventName, eventName, 'changed', 'network.statusChanged@1', 'rpc.changed'],
     deniedEvents: [deniedName],
   }).send);
   assert.deepEqual(configuredHost.capabilities.events, [eventName, deniedName]);
@@ -73,7 +73,7 @@ test('Mock validates the full control request before updating subscriptions', as
 
   for (const [index, params] of [{}, { events: [] }, { events: [eventName, true] },
       { events: [eventName, eventName] }, { events: [eventName, 'changed'] },
-      { events: [eventName, 'network.changed@1'] }].entries()) {
+      { events: [eventName, 'network.statusChanged@1'] }].entries()) {
     const reply = JSON.parse(await control(`invalid-${index}`, 'bridge.subscribe', params));
     assert.equal(reply.rpc.error.code, ErrorCode.InvalidParams);
     assert.equal(reply.meta.sid, sid);

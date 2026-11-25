@@ -8,7 +8,7 @@
 
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
-未发现注入通道时，`ready()` 返回 `-32000`。已发送的握手超时会换新 ID 自动重试一次，再次超时返回 `-32001`。非法握手结果返回 `-32600`。握手失败后可以调用 `bridge.reconnect()` 重新探测与握手，连接正常时返回当前宿主信息。
+未发现注入通道时，`ready()` 返回 `-32000`。已发送的握手超时会换新 ID 自动重试一次，再次超时返回 `-32001`。非法握手结果返回 `-32600`。握手失败后可以调用 `bridge.reconnect()` 重新探测与握手，连接正常时返回当前宿主信息。 等待通道发现和每次 hello 分别使用 `handshakeTimeout`，默认各 3 秒。连接中调用 `reconnect()` 分享当前握手 Promise。文档在 `pagehide` 后挂起期间返回 `-32000`，恢复后由 SDK 重新握手。
 
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
@@ -19,10 +19,10 @@ if (bridge.has('device.getInfo', 1)) {
   const info = await bridge.call<{ os: string; osVersion: string }>('device.getInfo', {}, { timeout: 3000 });
 }
 
-if (bridge.hasEvent('network.changed')) {
-  const off = bridge.on<{ type: string }>('network.changed', (e) => console.log(e.type));
+if (bridge.hasEvent('network.statusChanged')) {
+  const off = bridge.on<{ type: string }>('network.statusChanged', (e) => console.log(e.type));
   await off.ready;
-  off();                                                 // 或 bridge.off('network.changed', handler)
+  off();                                                 // 或 bridge.off('network.statusChanged', handler)
 }
 
 // 取消
@@ -46,8 +46,9 @@ export interface MethodMap {
   // ...
 }
 export interface EventMap {
-  'network.changed': NetworkChangedEvent;
-  'app.didEnterBackground': Record<string, never>;
+  'network.statusChanged': NetworkChangedEvent;
+  'app.foregrounded': null;
+  'app.backgrounded': null;
 }
 
 export interface CallOptions<C = unknown> {
@@ -179,7 +180,7 @@ sequenceDiagram
 ### 2.4 事件多路复用
 
 ```ts
-const off = bridge.on<{ type: string }>('network.changed', ({ type }) => {
+const off = bridge.on<{ type: string }>('network.statusChanged', ({ type }) => {
   console.log(type);
 });
 
@@ -255,6 +256,8 @@ declare module '@open-jsbridge/web' {
 
 [独立项目接入示例](../examples/web-demo/README.md#在独立-web-项目安装)
 
+从当前源码打包后，按需引入可使用 `@open-jsbridge/web/app`、`/device`、`/network`、`/ui` 和 `/media`。各入口复用一个连接，导入 Web 模块只提供调用接口。运行时使用 `bridge.has()` 和 `bridge.hasEvent()` 读取握手能力。构建器可以移除未使用的模块。
+
 ## 6. Mock 与调试工具
 
 ### 6.1 `@open-jsbridge/web/mock`
@@ -273,7 +276,7 @@ const host = installMockHost({
 });
 host.register('device.getInfo', () => ({ os: 'ios', osVersion: '27.2' }));
 host.register('acme.photos.prepare', async (_p, ctx) => { ctx.callback({ selected: 1 }); return { images: [] }; });
-host.emit('network.changed', { type: 'wifi' });
+host.emit('network.statusChanged', { type: 'wifi' });
 host.failNext('acme.pay.create', { code: -32007, message: 'User denied' });
 ```
 

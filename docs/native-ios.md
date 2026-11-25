@@ -234,7 +234,7 @@ bridge.registry.register(ChooseImage())
 以下 Native → Web API 在 §9 的 document 定向机制验证后开放，宿主只声明已启用的能力。
 
 ```swift
-bridge.emit("network.changed", ["type": "wifi"])
+bridge.emit("network.statusChanged", ["type": "wifi"])
 let share: ShareInfo = try await bridge.callWeb("page.getShareInfo", timeout: 3)
 ```
 
@@ -349,7 +349,7 @@ let security = SecurityChain(
 
 ## 9. Native → Web 推送
 
-参考宿主为受信主文档提供可选的 `network.changed`。Native 检查当前会话和订阅，随后把 origin、文档标记和序列化的信封作为 `callAsyncJavaScript` 的参数传入。脚本在同一次执行中校验 origin 和文档标记，通过后交给页面接收器。Shim 在接收器就绪前按协议缓冲通知。
+参考宿主为受信主文档提供可选的 `network.statusChanged`。Native 检查当前会话和订阅，随后把 origin、文档标记和序列化的信封作为 `callAsyncJavaScript` 的参数传入。脚本在同一次执行中校验 origin 和文档标记，通过后交给页面接收器。Shim 在接收器就绪前按协议缓冲通知。
 
 整页导航提交使旧会话失效。退订停止后续通知，页面隐藏时更换 shim 的文档标记并清空通知缓存。iOS 13 回退、子 frame 与反向请求仍需独立验证。
 

@@ -104,10 +104,10 @@ const result = await bridge.call('conformance.echo', { text: '你好' });
 
 ## 订阅宿主事件
 
-在浏览器 Demo 的事件区订阅 `network.changed`，然后点击「切换 Mock 网络」，可以看到业务收到的 payload 和原始 `bridge.event` 通知。退订后可以再切换一次，确认监听结果保持不变。查询网络状态仍会返回当前值。
+在浏览器 Demo 的事件区订阅 `network.statusChanged`，然后点击「切换 Mock 网络」，可以看到业务收到的 payload 和原始 `bridge.event` 通知。退订后可以再切换一次，确认监听结果保持不变。查询网络状态仍会返回当前值。
 
 ```js
-const off = bridge.on('network.changed', ({ type }) => {
+const off = bridge.on('network.statusChanged', ({ type }) => {
   console.log('当前网络', type);
 });
 

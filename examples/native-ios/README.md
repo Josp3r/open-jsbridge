@@ -25,13 +25,13 @@ let webView = NativeIOSHost.makeWebView(
 
 - `deviceInfo` 开启 `device.getInfo@1`，返回 iOS 系统版本。
 - `networkStatus` 开启 `network.getStatus@1`，返回 `NWPathMonitor` 最近一次观测的标准网络类型。初次观测前返回 `unknown`。
-- `networkChanges` 声明 `network.changed`。订阅成功后，标准网络类型发生变化时发送与查询相同的 `{ type }` 结构。跨文档导航会清除订阅并停止本次会话的网络监测。
+- `networkChanges` 声明 `network.statusChanged`。订阅成功后，标准网络类型发生变化时发送与查询相同的 `{ type }` 结构。跨文档导航会清除订阅并停止本次会话的网络监测。
 
 三个能力的参数、返回值和网络类型定义见 [设备和网络 Profiles](../../docs/native-profiles.md)。
 
 ## 接入 App 自己的 WKWebView
 
-App 可以使用 Swift Package 的 `NativeIOSHost` 产品，把 bridge 装到自己创建的 `WKWebView` 上。先安装再导航。传入精确的 HTTPS origin，包括自定义端口。App 持有返回的 `Attachment`，继续用自己的 `WKNavigationDelegate` 决定导航策略。
+App 使用 Swift Package 的 `NativeIOSHost` 产品，把 bridge 装到自己创建的 `WKWebView` 上。先安装再导航。`allowing` 接受一个精确 HTTPS origin，也接受非空的 `[URL]` 来源列表。自定义端口参与精确匹配，每个来源都须通过验证。App 持有返回的 `Attachment`，继续用自己的 `WKNavigationDelegate` 决定导航策略。
 
 ```swift
 let origin = URL(string: "https://app.example.com")!
@@ -73,6 +73,10 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 ```
 
 `emit` 接收任意符合协议的 JSON 值，使用 `NSNull()` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
+
+## 订阅 App 前后台事件
+
+设置 `options: .init(appLifecycle: true)` 后，H5 可分别订阅 `app.foregrounded` 和 `app.backgrounded`。两项都返回 JSON `null`，分别来自 UIKit 的 `willEnterForegroundNotification` 和 `didEnterBackgroundNotification`。订阅确认后才发送后续转换。换页、退订和拆卸会结束对应的事件投递。
 
 ## 运行 Release SDK Consumer
 

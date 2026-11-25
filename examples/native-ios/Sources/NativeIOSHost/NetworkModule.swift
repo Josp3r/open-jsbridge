@@ -27,7 +27,7 @@ final class NetworkModule {
     typealias Watch = @MainActor (@escaping Update) -> () -> Void
 
     nonisolated static let method = "network.getStatus"
-    nonisolated static let event = "network.changed"
+    nonisolated static let event = "network.statusChanged"
 
     private let watch: Watch
     private var generation: UUID?

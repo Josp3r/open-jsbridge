@@ -10,7 +10,7 @@ import java.util.UUID
 
 /** State for one WebView, confined to the UI thread by AndroidBridge. */
 internal class DocumentTransport(
-    allowedOrigin: String,
+    allowedOrigins: Collection<String>,
     private val enableEcho: Boolean,
     private val modules: BridgeModules = BridgeModules(),
     private val businessMethods: List<BusinessMethod> = emptyList(),
@@ -18,8 +18,10 @@ internal class DocumentTransport(
     events: List<String> = emptyList(),
     private val scheduleReply: (() -> Unit) -> Unit = { reply -> reply() },
 ) {
-    val originRule = requireNotNull(exactOrigin(allowedOrigin)) { "An exact HTTP(S) origin is required" }
+    val originRules = exactOrigins(allowedOrigins)
     private val registeredEvents = events.indexBusinessEvents()
+
+    data class CommitChallenge(val origin: String, val nonce: String)
 
     private data class ParkedFrame(val bytes: Int, val action: () -> Unit)
 
@@ -35,13 +37,19 @@ internal class DocumentTransport(
         }
     }
 
-    private class Document(val token: String, val proxy: Any, val session: RpcSession, var challenge: String) {
+    private class Document(
+        val origin: String,
+        val token: String,
+        val proxy: Any,
+        val session: RpcSession,
+        var challenge: String,
+    ) {
         val parked = ArrayDeque<ParkedFrame>()
         var parkedBytes = 0
         var businessWork: BusinessWork? = null
     }
 
-    private var pendingChallenge: String? = null
+    private var pendingChallenge: CommitChallenge? = null
     private var document: Document? = null
 
     fun emit(name: String, payload: JsonElement): Boolean {
@@ -54,43 +62,50 @@ internal class DocumentTransport(
         retireDocument()
     }
 
-    fun onPageCommitVisible(url: String, currentUrl: String? = null): String? {
-        // A delayed off-origin callback can arrive after a trusted page becomes current.
-        // The URL hint only schedules a challenge; WebMessageListener still verifies the caller.
-        if (originOf(parseUri(url)) != originRule && originOf(currentUrl?.let(::parseUri)) != originRule) {
+    fun onPageCommitVisible(url: String, currentUrl: String? = null): CommitChallenge? {
+        // A delayed callback may describe a page that is no longer current.
+        // The current URL only selects a challenge origin; WebMessageListener verifies the sender.
+        val origin = originOf(currentUrl?.let(::parseUri)) ?: originOf(parseUri(url))
+        if (origin == null || origin !in originRules) {
             invalidate()
             return null
         }
-        return UUID.randomUUID().toString().also { pendingChallenge = it }
+        if (document?.origin != origin) retireDocument()
+        return CommitChallenge(origin, UUID.randomUUID().toString()).also { pendingChallenge = it }
     }
 
     fun receive(raw: String, sourceOrigin: String, isMainFrame: Boolean, proxy: Any, postReply: (String) -> Unit) {
-        if (!isMainFrame || (sourceOrigin != originRule && exactOrigin(sourceOrigin) != originRule)) return
+        if (!isMainFrame) return
+        val origin = sourceOrigin.takeIf(originRules::contains)
+            ?: exactOrigin(sourceOrigin)?.takeIf(originRules::contains) ?: return
 
         val challenge = pendingChallenge
-        if (challenge != null && raw.length == COMMIT_LENGTH && raw.startsWith("commit:$challenge:")) {
+        if (challenge != null && raw.length == COMMIT_LENGTH && raw.startsWith("commit:${challenge.nonce}:")) {
+            if (challenge.origin != origin) return
             val token = raw.takeLast(TOKEN_LENGTH)
             if (!TOKEN_PATTERN.matches(token)) return
             val previous = document
             // A queued commit callback may target a document we already confirmed.
             // Only its original proxy and token may reuse the session and its queue.
-            val current = if (previous != null && previous.proxy === proxy && previous.token == token) {
+            val current = if (previous != null && previous.origin == origin && previous.proxy === proxy &&
+                previous.token == token
+            ) {
                 previous
             } else {
                 retireDocument()
                 val session = RpcSession(enableEcho, modules, businessMethods,
                     supportsCancellation = runBusiness != null, businessEvents = registeredEvents)
-                Document(token, proxy, session, challenge).also { document = it }
+                Document(origin, token, proxy, session, challenge.nonce).also { document = it }
             }
-            current.challenge = challenge
+            current.challenge = challenge.nonce
             pendingChallenge = null
-            postReply("ready:$challenge:$token")
+            postReply("ready:${challenge.nonce}:$token")
             replay(current)
             return
         }
 
         val current = document ?: return
-        if (proxy !== current.proxy) return
+        if (origin != current.origin || proxy !== current.proxy) return
         if (raw == "leave:${current.token}") {
             retireDocument()
             return
@@ -228,6 +243,13 @@ internal class DocumentTransport(
             URI(raw)
         } catch (_: URISyntaxException) {
             null
+        }
+
+        fun exactOrigins(origins: Collection<String>): Set<String> {
+            require(origins.isNotEmpty()) { "At least one exact origin is required" }
+            return origins.mapTo(linkedSetOf()) { origin ->
+                requireNotNull(exactOrigin(origin)) { "An exact HTTP(S) origin is required" }
+            }
         }
 
         fun exactOrigin(raw: String): String? {

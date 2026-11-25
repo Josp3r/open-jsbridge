@@ -51,7 +51,7 @@
     },
     {
       "name": "event notification with extensible bridge metadata",
-      "frame": {"jsb":"1.0","futureExtension":true,"meta":{"sid":"s-1","futureField":true},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"network.changed","payload":{"type":"wifi"}}}}
+      "frame": {"jsb":"1.0","futureExtension":true,"meta":{"sid":"s-1","futureField":true},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"network.statusChanged","payload":{"type":"wifi"}}}}
     },
     {
       "name": "progress notification",

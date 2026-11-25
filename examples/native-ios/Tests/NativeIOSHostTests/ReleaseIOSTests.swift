@@ -112,6 +112,79 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
+    func testAllowlistAllowsBothExactOriginsAndRetiresPreviousSession() async throws {
+        let second = URL(string: "https://second.example.test:8443/")!
+        let unlistedPort = URL(string: "https://second.example.test/")!
+        let (webView, delegate) = makeWebView()
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: [origin, second], options: .init(deviceInfo: true))
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+
+        await loadPage(in: webView, with: delegate, at: origin)
+        let firstSID = try await hello(in: webView)
+        let iframeTransport = try await webView.callAsyncJavaScript("""
+            const frame = document.createElement('iframe');
+            frame.srcdoc = '<p>Same-origin child</p>';
+            await new Promise(resolve => {
+                frame.onload = resolve;
+                document.body.append(frame);
+            });
+            return typeof frame.contentWindow.__OJSB_TRANSPORT__;
+            """, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(iframeTransport, "undefined")
+
+        await loadPage(in: webView, with: delegate, at: second)
+        let secondSID = try await hello(in: webView)
+        XCTAssertNotEqual(secondSID, firstSID)
+        let stale = try await request("device.getInfo", id: "stale", sid: firstSID, in: webView)
+        XCTAssertTrue(stale is NSNull)
+        let current = try await request("device.getInfo", id: "current", sid: secondSID, in: webView)
+        XCTAssertEqual((current as? [String: String])?["os"], "ios")
+
+        await loadPage(in: webView, with: delegate, at: unlistedPort)
+        let transport = try await webView.callAsyncJavaScript(
+            "return typeof window.__OJSB_TRANSPORT__;", arguments: [:], in: nil, contentWorld: .page
+        ) as? String
+        XCTAssertEqual(transport, "undefined")
+    }
+
+    @MainActor
+    func testAppLifecyclePublishesOnlySubscribedTransitionsForCurrentDocument() async throws {
+        let (webView, delegate) = makeWebView()
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: origin, options: .init(appLifecycle: true))
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+
+        await loadPage(in: webView, with: delegate, at: origin)
+        let sid = try await hello(in: webView)
+        try await captureFirstEvent(in: webView)
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: UIApplication.shared)
+        let subscribed = try await request("bridge.subscribe", id: "sub", sid: sid,
+                                           params: ["events": ["app.foregrounded"]], in: webView)
+        XCTAssertEqual(subscribed as? [String: [String]], ["subscribed": ["app.foregrounded"], "denied": []])
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: UIApplication.shared)
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: UIApplication.shared)
+        let event = try await nextEvent(in: webView)
+        XCTAssertEqual(event["name"] as? String, "app.foregrounded")
+        XCTAssertEqual(event["sid"] as? String, sid)
+        XCTAssertTrue(event["payload"] is NSNull)
+
+        await loadPage(in: webView, with: delegate, at: origin.appendingPathComponent("app-lifecycle-next"))
+        let nextSID = try await hello(in: webView)
+        XCTAssertNotEqual(nextSID, sid)
+        try await captureFirstEvent(in: webView)
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: UIApplication.shared)
+        let next = try await request("bridge.subscribe", id: "sub", sid: nextSID,
+                                      params: ["events": ["app.backgrounded"]], in: webView)
+        XCTAssertEqual(next as? [String: [String]], ["subscribed": ["app.backgrounded"], "denied": []])
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: UIApplication.shared)
+        let background = try await nextEvent(in: webView)
+        XCTAssertEqual(background["name"] as? String, "app.backgrounded")
+        XCTAssertEqual(background["sid"] as? String, nextSID)
+        XCTAssertTrue(background["payload"] is NSNull)
+    }
+
+    @MainActor
     func testDifferentHTTPSPortCannotUseBridge() async throws {
         let (webView, delegate) = makeWebView()
         let attachment = try NativeIOSHost.attach(to: webView, allowing: origin)

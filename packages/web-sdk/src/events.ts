@@ -2,6 +2,16 @@ import { ErrorCode, type JsonObject, type JsonValue } from '../../protocol/src/i
 import { BridgeError } from './errors.js';
 import { isObject, type Session } from './session.js';
 
+export interface NetworkStatus {
+  type: 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none' | 'unknown';
+}
+
+export interface StandardEvents {
+  'network.statusChanged': NetworkStatus;
+  'app.foregrounded': null;
+  'app.backgrounded': null;
+}
+
 export type EventListener<T = unknown> = (payload: T) => void;
 
 export interface EventSubscription {

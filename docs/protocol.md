@@ -13,7 +13,7 @@ flowchart LR
   end
   subgraph Host["Host（iOS / Android / Flutter / RN）"]
     CH[Channel<br/>WithReply / WebMessageListener /<br/>JavaScriptChannel / onMessage] --> CORE[Bridge Core<br/>解码 · 会话 · 超时 · 取消]
-    CORE --> SEC[Security Chain<br/>origin · frame · ACL · 限流]
+    CORE --> SEC[Security Chain<br/>来源白名单 · frame · 限流]
     SEC --> REG[Handler Registry]
     REG --> H1["device.*"]
     REG --> H2["ui.*"]
@@ -101,6 +101,7 @@ declare global {
 ```
 
 - v1 消息 MUST 带 `jsb: "1.0"` 和 `rpc` 对象。`rpc.jsonrpc` MUST 为 `"2.0"`。`jsb` 标识外层 OJSB 协议版本，`jsonrpc` 标识内部 RPC 格式。
+- 此处的 1.0 是外层 wire 协议基线。方法的 `@1` 与事件的 Schema 版本独立，npm 包沿用自己的 SemVer。
 - `meta` MAY 省略。若存在，MUST 为对象。`meta.sid` 若存在 MUST 为非空字符串，会话内消息始终携带它（§6.2）。`meta.timeout` 与 `meta.ts` 若存在 MUST 为非负整数，分别表示剩余超时毫秒数与发送方 epoch 毫秒时间戳（§7）。`meta.traceId` 若存在 MUST 为字符串（§14）。
 - 接收方 MUST 忽略未知的信封字段与 `meta` 字段。`rpc` 及 `rpc.error` 只接受 §3.2 和 §4.1 列出的字段。实现可在校验后为内部消息设置类型标记。
 - 信封 JSON Schema 位于 `spec/protocol/envelope.schema.json`。会话、权限和分派规则由运行时执行。
@@ -137,7 +138,7 @@ declare global {
 - Wire 名称至少两段，匹配 `^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+$`。
 - 标准能力方法 SHOULD 使用 `domain.action`。`domain` 表示负责该能力的领域，`action` 为 lowerCamelCase 动词。需要说明动作对象时使用动宾结构，如 `device.getInfo`、`network.getStatus` 和 `media.chooseMedia`。
 - 一个职责内聚、可独立定义契约和启用的模块 MAY 使用 `domain.subdomain.action`。例如 `ui.toast.show` 中的 `toast` 是独立启用的原生反馈模块。
-- 事件名描述已发生的状态变化或事实，使用 lowerCamelCase，如 `network.changed` 和 `app.didEnterBackground`。
+- 标准事件使用 lowerCamelCase 的「名词 + 过去分词」，描述已经发生的变化，如 `network.statusChanged`。当命名空间已说明主语，可直接使用过去分词，如 `app.foregrounded` 和 `app.backgrounded`。`bridge.event`、`bridge.progress` 和 `bridge.cancel` 沿用协议控制信号约定。 [CDP 事件命名示例](https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-responseReceived)
 - 保留命名空间（业务 MUST NOT 注册）：
 
 | 命名空间 | 用途 |
@@ -191,7 +192,7 @@ declare global {
 | -32000 | Bridge unavailable | 不在宿主中 / 通道不存在（SDK 本地产生） | 否 |
 | -32001 | Timeout | 超过 deadline（通常由调用方本地产生） | 视 method |
 | -32002 | Cancelled | 被 `bridge.cancel` 或页面卸载终止 | 否 |
-| -32003 | Permission denied | origin / frame / ACL 校验失败 | 否 |
+| -32003 | Permission denied | 来源、frame 或能力访问被拒绝 | 否 |
 | -32004 | Unsupported protocol | shim 或握手通告的协议主版本无交集 | 否 |
 | -32005 | Not ready | 握手未完成且未入队（如队列溢出） | 是 |
 | -32006 | Payload too large | 超过单消息上限（§10） | 否 |
@@ -286,11 +287,11 @@ sequenceDiagram
   "sid": "a1b2c3d4",               // 非空会话 id，此后的会话消息在 meta.sid 中携带
   "host": { "platform": "ios", "name": "ios-wk", "version": "1.0.3", "appId": "com.acme.app", "appVersion": "8.2.0" },
   "capabilities": {
-    "methods": {                   // 当前 origin + frame 在 ACL 过滤后 *可调用* 的 method
+    "methods": {                   // 当前宿主已启用且可调用的方法
       "device.getInfo": { "versions": [1, 2] },
       "ui.toast.show":  { "versions": [1] }
     },
-    "events": ["app.didEnterBackground", "network.changed"],
+    "events": ["app.backgrounded", "network.statusChanged"],
     "features": ["callbacks", "cancel", "blob"]
   },
   "limits": { "maxMessageBytes": 1048576, "maxInflight": 64, "defaultTimeoutMs": 15000 }
@@ -300,16 +301,17 @@ sequenceDiagram
 规则：
 
 - **H1** `bridge.hello` 通告的协议主版本与 Host 无交集时，Host MUST 返回 `-32004`，并以 `data.supported` 给出自身支持的主版本。shim 通告无交集时 SDK 可在本地判定 `-32004`。SDK 遇到协议不兼容 MUST 进入降级模式（§6.4）。外层 `jsb` 字段的形状校验见 §3.1，违反该约束属于 `-32600`。
-- **H2** `capabilities.methods` MUST 是**经过 ACL 过滤后的结果**，不向不受信 origin 泄露完整能力清单。
+- **H2** `capabilities.methods` 与 `capabilities.events` MUST 反映当前宿主已启用的能力。只有来源白名单中的可信文档可握手。
 - **H3** 同一 document 的有效会话内重复 `bridge.hello` 时，Host MUST 返回同一 `sid`（幂等）。会话已失效时，握手 MUST 重新校验调用者并分配新的 `sid`。
 - **H4** Host MUST 先校验调用者的 origin、frame 和通道策略。`bridge.hello` 是唯一允许在没有有效会话时执行的 request。调用者校验通过后，无 `sid` 且尚未握手的 request 使用 `-32005`。其余缺少有效匹配 `sid` 的 request 使用 `-32009`。调用者被策略拒绝时使用 `-32003`，校验意外异常按 §11.3 处理。Host 仅在满足 H6、F3 和 L2 时发送错误响应，其余情况记录错误并丢弃消息。
-- **H5** `bridge.getCapabilities` MAY 在有效会话内调用以刷新能力（例如登录后 ACL 变化）；Host 能力变化时 SHOULD 发送 `bridge.capabilitiesChanged` 事件。
+- **H5** `bridge.getCapabilities` MAY 在有效会话内调用以刷新能力（例如宿主启用新的能力）；Host 能力变化时 SHOULD 发送 `bridge.capabilitiesChanged` 事件。
 - **H6** 仅 `bridge.hello` request 及其关联的握手 response 可省略 `meta.sid`。Host MUST 对携带 `meta.sid` 的入站消息校验 WebView、frame 和 document 绑定。Web MUST 在分派会话内消息前校验 `meta.sid` 与当前有效会话一致。SDK 建立或重建会话时，只允许当前尚未结算的 `bridge.hello` 的关联 response 进入握手流程。成功响应 MUST 包含有效的协商版本和非空 `rpc.result.sid`。成功响应若携带 `meta.sid`，其值 MUST 等于 `rpc.result.sid`。握手失败的 response 也可省略 `meta.sid`。握手过期、被取消或被替换后，SDK MUST 丢弃其迟到响应。
 
 ### 6.3 SDK 侧握手超时
 
 - SDK 检测不到 `__OJSB_TRANSPORT__` 时，SHOULD 监听 `ojsb:transportready` 至多 `handshakeTimeout`（默认 3000 ms），之后判定为"不在宿主中"。
-- `bridge.hello` 本身超时（默认 3000 ms）MAY 用新请求 ID 重试一次。Web SDK 自动重试一次，两次都超时则 `ready()` 返回 `-32001`。格式有效但语义非法的成功响应立即以 `-32600` 结束本次握手，同一个 ID 的后续响应不再处理。
+- Web SDK 对首次超时的 `bridge.hello` 自动换 ID 重试一次。每次尝试有独立的 `handshakeTimeout`，默认共最多约 6 秒，注入通道发现另用最多 3 秒。两次超时返回 `-32001`。格式有效但语义非法的成功响应立即以 `-32600` 结束握手，同一 ID 的后续响应被丢弃。
+- `reconnect()` 在连接中共享当前 `ready()` Promise。文档处于 `pagehide` 挂起期间时返回 `-32000`，等待 `pageshow` 恢复。终态失败后调用可开始新的握手。
 
 ### 6.4 降级
 
@@ -372,30 +374,30 @@ sequenceDiagram
 
 ### 9.1 订阅模型
 
-事件采用**显式订阅**，避免 Host 向不关心或无权限的页面推送：
+事件采用**显式订阅**，Host 只向订阅了已启用事件的可信文档推送：
 
 ```mermaid
 sequenceDiagram
   participant B as 业务
   participant S as SDK
   participant H as Host
-  B->>S: bridge.on('network.changed', fn)
+  B->>S: bridge.on('network.statusChanged', fn)
   alt 本地首个监听者
-    S->>H: request bridge.subscribe { events:["network.changed"] }
-    H->>H: ACL 校验，登记 (sid, frame) → event
-    H-->>S: response { subscribed:["network.changed"], denied:[] }
+    S->>H: request bridge.subscribe { events:["network.statusChanged"] }
+    H->>H: 检查事件可用性，登记 (sid, frame) → event
+    H-->>S: response { subscribed:["network.statusChanged"], denied:[] }
   end
-  H-->>S: notification bridge.event { name:"network.changed", payload:{ type:"wifi" } }
+  H-->>S: notification bridge.event { name:"network.statusChanged", payload:{ type:"wifi" } }
   S-->>B: fn({type:"wifi"})
-  B->>S: bridge.off('network.changed', fn)
+  B->>S: bridge.off('network.statusChanged', fn)
   alt 本地最后一个监听者移除
-    S->>H: request bridge.unsubscribe { events:["network.changed"] }
+    S->>H: request bridge.unsubscribe { events:["network.statusChanged"] }
   end
 ```
 
 宿主在握手的 `capabilities.events` 声明当前页面可请求订阅的事件。SDK 使用带请求 ID 的 `bridge.subscribe` 和 `bridge.unsubscribe`，宿主按当前会话执行这两个控制方法。 对同一会话中的同一事件，宿主 MUST 按控制请求的到达顺序更新订阅，并在更新后应答。
 
-- 两个请求的 `params.events` 都是非空、无重复的事件名列表。事件名至少两段，例如 `network.changed` 或 `acme.pay.orderChanged`。 保留 `rpc.*`。
+- 两个请求的 `params.events` 都是非空、无重复的事件名列表。事件名至少两段，例如 `network.statusChanged` 或 `acme.pay.orderChanged`。 保留 `rpc.*`。
 - `bridge.subscribe` 返回 `{ subscribed, denied }`。请求中的每个事件名恰好出现在其中一个列表。
 - `bridge.unsubscribe` 返回 `{ unsubscribed }`。它确认请求的各个事件已处于退订状态，包括原先就未订阅的事件。
 
@@ -403,7 +405,7 @@ sequenceDiagram
 
 规则：
 
-- **E1** Host MUST 只向订阅了该事件且通过 ACL 的 (sid, frame) 推送。
+- **E1** Host MUST 只向当前已验证且订阅了该事件的 (sid, frame) 推送。
 - **E2** 事件 MUST NOT 依赖投递保证：document 卸载、WebView 不可见时可能丢失。需要可靠性的场景 MUST 用 request 拉取当前状态（"事件提示 + 拉取真相"模式），例如订阅 `auth.changed` 后调用 `auth.getState`。
 - **E3** 页面内 SDK MUST 做本地多路复用：同一事件只向 Host 订阅一次，引用计数归零再退订。
 - **E4** Host MAY 对高频事件做合并/节流，schema 中以 `x-ojsb-throttle-ms` 声明。
@@ -461,7 +463,7 @@ v1 分片契约只提供 Host 到 Web 的只读资源。
 
 | 威胁 | 示例 | 对策 |
 |------|------|------|
-| 不受信页面调用敏感能力 | WebView 被重定向到第三方页面 / 广告落地页 | origin 白名单 + method ACL（11.2/11.3） |
+| 不受信页面调用敏感能力 | WebView 被重定向到第三方页面 / 广告落地页 | 来源白名单和文档校验（11.2/11.3） |
 | 第三方 iframe | 嵌入的广告、评论组件 | 默认只允许 main frame；iframe 单独授权（11.4） |
 | 伪造来源 | payload 里写 `"origin": "https://trusted.com"` | origin 只取 Native 从 WebView 获得的值（11.2） |
 | 导航后迟到响应 | A 页面的结果被投递到 B 页面 | sid 绑定 document，导航即失效（§12） |
@@ -469,18 +471,18 @@ v1 分片契约只提供 Host 到 Web 的只读资源。
 | 注入 | Host 拼接 JS 字符串推送数据 | 推送 MUST 用 JSON 序列化后作为字符串字面量传入（11.5） |
 | 滥用/DoS | 高频调用、超大消息 | 限流 + maxInflight + maxMessageBytes |
 
-> 范围说明：同一 origin 下的页面脚本（含 XSS）与 SDK 处于同一信任域，协议层无法区分"合法业务代码"与"XSS 注入的代码"。防御 XSS 属于 Web 安全（CSP 等）的职责；协议能做的是把能力最小化到 origin + frame + method 级别。
+> 范围说明：同一 origin 下的页面脚本（含 XSS）与 SDK 处于同一信任域，协议层无法区分"合法业务代码"与"XSS 注入的代码"。防御 XSS 属于 Web 安全（CSP 等）的职责，宿主可为指定 WebView 只启用必要能力。
 
 ### 11.2 Origin 获取与校验
 
 - **S1** Host MUST 从平台提供的可信来源获取调用者 origin：iOS `WKScriptMessage.frameInfo.securityOrigin`；Android `WebMessageListener` 回调的 `sourceOrigin`；Flutter / React Native 见 flutter.md、react-native.md（多数情况下拿不到可信 frame origin，按 S2 处理）。payload 中的任何 origin/url 字段 MUST 被忽略。
-- **S2** 当通道缺少可信 origin 或 frame 信息时，Host MUST 默认禁用该通道。只有宿主能够独立约束可达内容、确认其满足调用来源与 frame 策略并显式启用时，才 MAY 建立 `trust: "degraded"` 会话。此类会话只允许 ACL 中标注 `allowDegraded: true` 的 method。顶层 URL 和页面自报字段不能充当消息来源或主 frame 的证明。
+- **S2** 当通道缺少可信 origin 或 frame 信息时，Host MUST 默认禁用该通道。只有宿主能够独立约束可达内容、确认其满足调用来源与 frame 策略并显式启用时，才 MAY 建立 `trust: "degraded"` 会话。此类会话属于可选策略扩展，当前参考宿主只实现可信来源模式。顶层 URL 和页面自报字段不能充当消息来源或主 frame 的证明。
 - **S3** origin 匹配 MUST 是 `scheme://host[:port]` 的精确匹配或受限通配（仅允许最左子域 `https://*.example.com`），MUST NOT 用前缀/子串匹配（防 `https://example.com.evil.io`）。
 - **S4** `http:` origin 默认 MUST 被拒绝，除非 debug 构建显式开启。`file:`、`data:`、`about:blank`、opaque origin（`null`）默认 MUST 被拒绝。
 
-### 11.3 Method 级 ACL
+### 11.3 来源白名单与可选策略扩展
 
-配置示例（三端共用同一格式，可随 App 下发、也可内置）：
+参考宿主使用一个或多个精确 HTTPS origin 作为来源白名单，只有匹配的主文档可见注入的 bridge。可信 origin、主 frame、WebView、document 和 sid 校验仍适用。注册表和握手描述哪些方法与事件可用。下列 `rules` JSON 为可选配置提案，参考宿主尚未实现。
 
 ```jsonc
 {
@@ -503,15 +505,15 @@ v1 分片契约只提供 Host 到 Web 的只读资源。
 }
 ```
 
-- 求值顺序：`deny` 优先于 `allow`；未命中任何规则 → `default`（MUST 为 `deny`）。
+- 可选配置的求值顺序为 `deny` 优先于 `allow`。未命中任何规则 → `default`（MUST 为 `deny`）。
 - 任何权限规则拒绝或抛出异常时，Host MUST 停止处理且不得调用 handler。可安全回复的 request 遇到意外校验异常时使用 `-32603`，错误中不得包含内部异常细节。
-- `bridge.hello` 通过调用者校验后可在无会话时执行。其他保留 method 须匹配当前会话并实施各自的权限检查，例如 `bridge.subscribe` 须校验事件 ACL。平台支持按 origin 限制注入时，Host SHOULD 不向白名单外的 origin 注入 shim。
+- `bridge.hello` 通过调用者校验后可在无会话时执行。其他保留 method 须匹配当前会话并实施各自的权限检查，例如 `bridge.subscribe` 须检查事件是否可用。平台支持按 origin 限制注入时，Host SHOULD 不向白名单外的 origin 注入 shim。
 - Handler MAY 声明 `requiresUserGesture` / `requiresPermission`（系统权限），在安全链中统一检查。
 
 ### 11.4 iframe
 
-- **F1** 默认仅 main frame 可用（`frames: "main"`）。
-- **F2** 允许 iframe 时，每个 frame 独立握手、独立 sid、独立 ACL 评估（按该 frame 自己的 origin）。
+- **F1** 默认仅 main frame 可用。
+- **F2** 允许 iframe 时，每个 frame 独立验证来源、独立握手和 sid。
 - **F3** Host → Web 的消息 MUST 定向投递到对应的 frame 与 document。响应对应请求来源，事件对应每个获准订阅的目标。Host MUST NOT 广播到主 frame 再由页面转发。
 - **F4** 页面内用 `window.postMessage` 在 frame 间转发 bridge 调用的"代理模式"MUST NOT 被参考实现采用（会使 origin 校验失效）。
 - **F5** Host 只有在能够可信识别发起 frame、将会话绑定到该 frame 的 document、按 L1/L2 失效和隔离投递时，才 MAY 开启并声明 `iframe` 能力。其余宿主只接受可信主 frame，或遵循 S2 的受控降级条件。`frames: "any"` 规则不能启用平台尚未提供的能力。
@@ -566,7 +568,7 @@ stateDiagram-v2
 
 ### 12.3 多 WebView
 
-- 无状态 handler 的注册表 MAY 全局共享。会话、订阅、pending、Blob 引用和 ACL 结果 MUST 按 WebView 实例隔离。
+- 无状态 handler 的注册表 MAY 全局共享。会话、订阅、pending、资源引用 MUST 按 WebView 实例隔离。
 - 需要"推送给所有页面"的事件由 Host 侧事件总线分发到每个 WebView 的 bridge 实例，各自按订阅过滤。
 
 ---
@@ -640,13 +642,13 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 // Web → Host hello request
 {"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"open-jsbridge","version":"1.2.0"}}}}
 // Host → Web hello response
-{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseMedia":{"versions":[1]},"bridge.blob.read":{"versions":[1]},"bridge.blob.release":{"versions":[1]}},"events":["app.didEnterBackground"],"features":["cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseMedia":{"versions":[1]},"bridge.blob.read":{"versions":[1]},"bridge.blob.release":{"versions":[1]}},"events":["app.backgrounded"],"features":["cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
 // Web → Host request
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":120000},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","method":"media.chooseMedia","params":{"count":1}}}
 // Host → Web response
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"status":"selected","files":[{"type":"image","blobRef":"b6eefefd035e4f65ad2c1e76b9ac418d","mime":"image/jpeg","size":823412,"expiresAt":1763880304410}]}}}
 // Host → Web 事件通知
-{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"app.didEnterBackground","payload":null}}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"app.backgrounded","payload":null}}}
 // 错误响应
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-8","error":{"code":-32003,"message":"Permission denied","data":{"reason":"frame_not_allowed","retryable":false,"method":"acme.pay.create"}}}}
 // 无可识别的请求 id，且能安全投递到当前会话时的解析错误

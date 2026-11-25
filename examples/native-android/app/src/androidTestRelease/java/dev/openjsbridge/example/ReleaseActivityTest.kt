@@ -90,12 +90,31 @@ class ReleaseActivityTest {
                     const { methods, events } = nativeReplies['probe-hello'].result.capabilities;
                     return methods['device.getInfo'].versions.join() === '1' &&
                       methods['acme.app.getConfig'].versions.join() === '1' &&
-                      events.join() === '$CONFIG_CHANGED' &&
+                      events.length === 3 && events.includes('$CONFIG_CHANGED') &&
+                      events.includes('app.foregrounded') && events.includes('app.backgrounded') &&
                       !('conformance.echo' in methods);
                 })()
             """.trimIndent()))
             evaluate(scenario, "window.sendNative('invalid-config', 'acme.app.getConfig', {unexpected: true})")
             awaitScript(scenario, "nativeReplies['invalid-config']?.error?.code === -32602")
+        }
+    }
+
+    @Test
+    fun lifecycleSubscriptionDoesNotReplayTheCurrentForegroundState() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            awaitScript(scenario, "document.querySelector('#bridge-results')?.dataset.state === 'ready'")
+            hello(scenario, "/")
+            evaluate(scenario, """
+                window.sendNative('lifecycle', 'bridge.subscribe@1', {events: ['app.foregrounded', 'app.backgrounded']})
+            """.trimIndent())
+            awaitScript(scenario, """
+                nativeReplies.lifecycle?.result?.subscribed?.slice().sort().join() === 'app.backgrounded,app.foregrounded' &&
+                  nativeReplies.lifecycle?.result?.denied?.length === 0
+            """.trimIndent())
+
+            awaitDeviceRoundTrip(scenario)
+            assertEquals("0", evaluate(scenario, "nativeEvents.length"))
         }
     }
 
@@ -175,6 +194,40 @@ class ReleaseActivityTest {
             val replacementPayload = JsonPrimitive("replacement")
             scenario.onActivity { assertTrue(attachment.emit(CONFIG_CHANGED, replacementPayload)) }
             assertEvent(scenario, replacementSid, replacementPayload)
+        }
+    }
+
+    @Test
+    fun crossingAllowedOriginsReplacesTheSessionAndAnUnlistedOriginHasNoTransport() {
+        withEventProbe(
+            events = listOf(CONFIG_CHANGED),
+            allowedOrigins = listOf(ORIGIN, SECOND_ORIGIN),
+        ) { scenario, webView, attachment ->
+            scenario.onActivity { loadPage(webView, "$ORIGIN/first-origin") }
+            val firstSid = hello(scenario, "/first-origin")
+            assertEquals(JsonPrimitive(ORIGIN).toString(), evaluate(scenario, "location.origin"))
+            awaitDeviceRoundTrip(scenario)
+            subscribe(scenario)
+
+            scenario.onActivity { loadPage(webView, "$SECOND_ORIGIN/second-origin") }
+            val secondSid = hello(scenario, "/second-origin")
+            assertEquals(JsonPrimitive(SECOND_ORIGIN).toString(), evaluate(scenario, "location.origin"))
+            assertNotEquals(firstSid, secondSid)
+            scenario.onActivity { assertFalse(attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE)) }
+            evaluate(scenario, """
+                window.sendNative('prior-origin', 'bridge.subscribe', {events: ['$CONFIG_CHANGED']}, ${JsonPrimitive(firstSid)})
+            """.trimIndent())
+            awaitDeviceRoundTrip(scenario)
+            assertEquals("false", evaluate(scenario, "'prior-origin' in nativeReplies"))
+            subscribe(scenario)
+            scenario.onActivity { assertTrue(attachment.emit(CONFIG_CHANGED, JsonNull.INSTANCE)) }
+            assertEvent(scenario, secondSid, JsonNull.INSTANCE)
+
+            scenario.onActivity { loadPage(webView, "$UNLISTED_ORIGIN/unlisted") }
+            awaitScript(scenario, "location.origin === '$UNLISTED_ORIGIN' && document.body?.id === 'probe'")
+            assertEquals("true", evaluate(scenario, """
+                typeof window.__OJSB_TRANSPORT__ === 'undefined' && typeof window.__ojsb_wml === 'undefined'
+            """.trimIndent()))
         }
     }
 
@@ -293,6 +346,7 @@ class ReleaseActivityTest {
     private fun withEventProbe(
         events: List<String> = emptyList(),
         shouldForwardCommit: (String) -> Boolean = { true },
+        allowedOrigins: List<String> = listOf(ORIGIN),
         run: (ActivityScenario<MainActivity>, WebView, AndroidBridge) -> Unit,
     ) {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -305,6 +359,7 @@ class ReleaseActivityTest {
                     options = AndroidBridge.Options(deviceInfo = true),
                     events = events,
                     shouldForwardCommit = shouldForwardCommit,
+                    allowedOrigins = allowedOrigins,
                 )
                 testView = findWebView(activity)
             }
@@ -327,6 +382,7 @@ class ReleaseActivityTest {
         options: AndroidBridge.Options = AndroidBridge.Options(),
         events: List<String> = emptyList(),
         shouldForwardCommit: (String) -> Boolean = { true },
+        allowedOrigins: List<String> = listOf(ORIGIN),
     ): AndroidBridge {
         lateinit var attachment: AndroidBridge
         val webView = WebView(activity).apply {
@@ -338,7 +394,9 @@ class ReleaseActivityTest {
                 }
             }
         }
-        attachment = checkNotNull(AndroidBridge.attach(webView, ORIGIN, options, methods = listOfNotNull(config), events = events))
+        attachment = checkNotNull(
+            AndroidBridge.attach(webView, allowedOrigins, options, methods = listOfNotNull(config), events = events)
+        )
         activity.setContentView(webView)
         return attachment
     }
@@ -437,6 +495,8 @@ class ReleaseActivityTest {
 
     private companion object {
         const val ORIGIN = "https://app.example.test"
+        const val SECOND_ORIGIN = "https://support.example.test"
+        const val UNLISTED_ORIGIN = "https://unlisted.example.test"
         const val CONFIG_CHANGED = "acme.app.configChanged"
     }
 }

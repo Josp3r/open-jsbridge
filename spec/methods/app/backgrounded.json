@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:event/app.backgrounded",
+  "title": "app.backgrounded",
+  "description": "宿主 App 进程进入后台。",
+  "x-ojsb-kind": "event",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "payload": {
+    "type": "null"
+  }
+}

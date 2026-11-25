@@ -26,8 +26,6 @@ class AndroidBridge private constructor(
     private var script: ScriptHandler?,
     private val businessScope: CoroutineScope,
 ) {
-    private val originLiteral = JsonPrimitive(transport.originRule).toString()
-
     /** Enable only the standard capabilities the app intends to expose. */
     data class Options(
         val deviceInfo: Boolean = false,
@@ -35,6 +33,7 @@ class AndroidBridge private constructor(
         val networkChanges: Boolean = false,
         val toast: Boolean = false,
         val media: Boolean = false,
+        val appLifecycle: Boolean = false,
     )
 
     /**
@@ -54,10 +53,11 @@ class AndroidBridge private constructor(
         requireUiThread()
         val webView = webView ?: return
         val challenge = transport.onPageCommitVisible(url, webView.url) ?: return
+        val origin = JsonPrimitive(challenge.origin).toString()
         // The shim is already installed at document start. This control call
         // proves which injected object is current, without evaluating RPC data.
         webView.evaluateJavascript(
-            "if (window.location.origin === $originLiteral) window.__OJSB_ANDROID_COMMIT__?.('$challenge')",
+            "if (window.location.origin === $origin) window.__OJSB_ANDROID_COMMIT__?.('${challenge.nonce}')",
             null,
         )
     }
@@ -104,10 +104,31 @@ class AndroidBridge private constructor(
         /**
          * Attach before the first navigation, and forward lifecycle callbacks from the app's WebViewClient.
          * Returns `null` when the installed WebView lacks the required message or script support.
-         * The app is responsible for enabling JavaScript and loading content from the allowed HTTPS origin.
+         * The app enables JavaScript and supplies the exact HTTPS origins that may use this bridge.
          * [events] opts in to unique, unversioned business event names, outside reserved namespaces.
          * Media requires [Options.media], an app-owned [mediaPicker], and the system Photo Picker.
          */
+        @MainThread
+        fun attach(
+            webView: WebView,
+            allowedOrigins: Collection<String>,
+            options: Options = Options(),
+            methods: List<BusinessMethod> = emptyList(),
+            events: List<String> = emptyList(),
+            mediaPicker: AndroidMediaPicker? = null,
+        ): AndroidBridge? {
+            requireUiThread()
+            val origins = DocumentTransport.exactOrigins(allowedOrigins)
+            require(origins.all { it.startsWith("https://") }) { "Only exact HTTPS origins are allowed" }
+            val registeredMethods = methods.toList()
+            registeredMethods.indexBusinessMethods()
+            val registeredEvents = events.toList()
+            registeredEvents.indexBusinessEvents()
+            return install(webView, origins, modulesFor(webView, options, mediaPicker), registeredMethods,
+                events = registeredEvents)
+        }
+
+        /** Attach to a single exact HTTPS origin. */
         @MainThread
         fun attach(
             webView: WebView,
@@ -116,19 +137,7 @@ class AndroidBridge private constructor(
             methods: List<BusinessMethod> = emptyList(),
             events: List<String> = emptyList(),
             mediaPicker: AndroidMediaPicker? = null,
-        ): AndroidBridge? {
-            requireUiThread()
-            val origin = requireNotNull(DocumentTransport.exactOrigin(allowedOrigin)) {
-                "An exact HTTPS origin is required"
-            }
-            require(origin.startsWith("https://")) { "An exact HTTPS origin is required" }
-            val registeredMethods = methods.toList()
-            registeredMethods.indexBusinessMethods()
-            val registeredEvents = events.toList()
-            registeredEvents.indexBusinessEvents()
-            return install(webView, origin, modulesFor(webView, options, mediaPicker), registeredMethods,
-                events = registeredEvents)
-        }
+        ): AndroidBridge? = attach(webView, listOf(allowedOrigin), options, methods, events, mediaPicker)
 
         internal fun modulesFor(
             webView: WebView,
@@ -141,6 +150,7 @@ class AndroidBridge private constructor(
                 network = if (options.networkStatus) network else null,
                 networkEvents = if (options.networkChanges) network?.events else null,
                 toast = if (options.toast) androidToastModule(webView.context) else null,
+                appLifecycle = if (options.appLifecycle) androidAppLifecycleEvents() else null,
                 media = if (options.media && mediaPicker != null && AndroidMediaPicker.isAvailable(webView.context)) {
                     mediaPicker.module(webView.context)
                 } else null,
@@ -150,7 +160,7 @@ class AndroidBridge private constructor(
         @MainThread
         internal fun install(
             webView: WebView,
-            allowedOrigin: String,
+            allowedOrigins: Collection<String>,
             modules: BridgeModules = BridgeModules(),
             methods: List<BusinessMethod> = emptyList(),
             enableEcho: Boolean = false,
@@ -169,7 +179,7 @@ class AndroidBridge private constructor(
             val main = Handler(Looper.getMainLooper())
             val scope = CoroutineScope(SupervisorJob() + Executor { main.post(it) }.asCoroutineDispatcher())
             val transport = DocumentTransport(
-                allowedOrigin, enableEcho, modules, businessMethods = methods,
+                allowedOrigins, enableEcho, modules, businessMethods = methods,
                 runBusiness = { call, complete ->
                     val job = scope.launch {
                         val result = try {
@@ -192,7 +202,7 @@ class AndroidBridge private constructor(
                     }
                 },
             )
-            val origins = setOf(transport.originRule)
+            val origins = transport.originRules
             val source = webView.context.assets.open("open-jsbridge/android-transport.js")
                 .bufferedReader(Charsets.UTF_8).use { it.readText() }
             WebViewCompat.addWebMessageListener(webView, NATIVE_OBJECT, origins) { _, message, origin, main, proxy ->

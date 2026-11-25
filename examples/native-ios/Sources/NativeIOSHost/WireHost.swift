@@ -46,7 +46,7 @@ final class WireHost {
 
     init(platform: String, options: NativeIOSHost.Options = .init(),
          businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], businessEvents: [String] = [],
-         enableEcho: Bool = true, supportsMedia: Bool = true,
+         enableEcho: Bool = true, supportsMedia: Bool = true, supportsAppLifecycle: Bool = true,
          networkType: @escaping () -> NetworkConnection = { .unknown }) {
         self.platform = platform
         self.businessMethods = businessMethods
@@ -65,11 +65,17 @@ final class WireHost {
             }
         }
         self.methods = methods
-        events = businessEvents + (options.networkChanges ? [NetworkModule.event] : [])
+        let lifecycleEvents = options.appLifecycle && supportsAppLifecycle
+            ? AppLifecycleEvent.allCases.map(\.rawValue) : []
+        events = businessEvents + (options.networkChanges ? [NetworkModule.event] : []) + lifecycleEvents
     }
 
     var watchesNetwork: Bool {
         sid != nil && (methods[NetworkModule.method] != nil || subscriptions[NetworkModule.event] == .subscribed)
+    }
+
+    var watchesAppLifecycle: Bool {
+        sid != nil && AppLifecycleEvent.allCases.contains { subscriptions[$0.rawValue] == .subscribed }
     }
 
     func reset() {
@@ -339,6 +345,10 @@ final class WireHost {
 
     func networkEvent(_ type: NetworkConnection, for sid: String) -> String? {
         event(NetworkModule.event, payload: type.payload, for: sid)
+    }
+
+    func appLifecycleEvent(_ transition: AppLifecycleEvent, for sid: String) -> String? {
+        event(transition.rawValue, payload: NSNull(), for: sid)
     }
 
     private func event(_ name: String, payload: Any, for sid: String) -> String? {

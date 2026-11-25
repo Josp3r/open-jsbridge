@@ -67,11 +67,12 @@ test('the default bridge negotiates and echoes through the preinstalled Mock tra
   assert.deepEqual(response.rpc.result, payload);
 });
 
-test('the default bridge sends its queued first call after Mock dispatches transportready', async (t) => {
+test('an independent bridge sends its queued first call after Mock dispatches transportready', async (t) => {
   const window = browserWindow(t);
   const { installMockTransport } = await import(mockModule);
   assert.equal(typeof installMockTransport, 'function');
-  const { bridge } = await import('../dist/packages/web-sdk/src/index.js?late-mock');
+  const { createBridge } = await import('../dist/packages/web-sdk/src/index.js');
+  const bridge = createBridge();
   const pending = bridge.call(echo, { text: 'first call' });
 
   assert.equal(bridge.state, 'connecting');
