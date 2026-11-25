@@ -553,7 +553,7 @@ stateDiagram-v2
 - **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放 blob，并丢弃该 sid 下所有待发送消息。
 - 使用脚本执行等下行方式时，Host MUST 在目标 document 内执行消息交付前确认身份，或使用由平台绑定到该 document 的通道。仅在入队时检查、等待 TTL 回收或依靠 SDK 收到后丢弃，均不能保证旧消息不进入新 document。无法保证时，Host MUST 关闭对应的下行能力。
 - **L3** 同 document 内的 History API 路由（SPA `pushState`）**不**改变 sid。
-- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。旧会话声明 `cancel` 时，SDK 尽力用旧 `sid` 向已发送的请求投递 `bridge.cancel`，随后解除传输绑定。仍在排队的请求在本地取消。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
+- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
 - **L5** WebView 渲染进程崩溃（iOS `webViewWebContentProcessDidTerminate`、Android `onRenderProcessGone`）MUST 视同 sid 失效。
 
 ### 12.2 WebView 复用 / 预热
