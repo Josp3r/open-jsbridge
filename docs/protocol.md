@@ -36,6 +36,7 @@ flowchart LR
 2. Wire 格式 MUST 是 UTF-8 JSON 文本（一个完整 JSON object 对应一条消息）。Transport 即便支持结构化对象（如 `WKScriptMessage.body` 可传 JS 对象），参考实现也 SHOULD 统一传字符串，以保证三端解析行为一致（数字精度、`undefined`、`Date` 等边界一致）。
 3. 一条消息 MUST 是一个 JSON object，包含一个 JSON-RPC 2.0 对象。v1 在信封层和 `rpc` 层均不支持批量消息。接收方 MUST NOT 依赖字段顺序。
 4. 整数超出 JavaScript 安全整数范围（−(2^53−1) 至 2^53−1）时 MUST 以字符串传输。JSON 数字须能以有限值解码。
+5. Web 编码器在序列化前校验整个信封的 JSON 值。对象字段必须是可枚举的字符串数据属性，数组必须稠密。遇到 JavaScript 专有值、访问器、非普通对象、自定义序列化函数或循环引用时，编码器以 `-32600` 拒绝。可选字段应直接省略。
 
 ---
 

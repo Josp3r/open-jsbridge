@@ -101,3 +101,47 @@ test('echo fixtures satisfy the method schema', () => {
   assert.equal(ajv.compile(echo.params)(request.params), true);
   assert.equal(ajv.compile(echo.result)({ text: '你好' }), true);
 });
+
+const nestedRequest = (value) => ({
+  jsb: '1.0',
+  rpc: { jsonrpc: '2.0', id: 'w-json', method: 'conformance.echo', params: { value } },
+});
+
+const cyclic = {};
+cyclic.self = cyclic;
+for (const [name, value] of [
+  ['Date', new Date('2026-01-01T00:00:00.000Z')],
+  ['undefined', undefined],
+  ['function', () => null],
+  ['bigint', 1n],
+  ['symbol', Symbol('not a JSON value')],
+  ['sparse array', Array(1)],
+  ['Map', new Map([['key', 'value']])],
+  ['custom serializer', { toJSON() { return 'converted'; } }],
+  ['symbol property', { [Symbol('key')]: 'value' }],
+  ['array property', Object.assign([null], { key: 'value' })],
+  ['cyclic object', cyclic],
+  ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+]) {
+  test(`encoding rejects a nested ${name}`, () => {
+    const before = (error) => error instanceof WireDecodeError && error.code === ErrorCode.InvalidRequest;
+    assert.throws(() => encodeEnvelope(nestedRequest({ value })), before);
+  });
+}
+
+test('encoding reads JSON data without executing accessors or custom serializers', () => {
+  let calls = 0;
+  const value = {
+    get field() { calls++; return 'value'; },
+    toJSON() { calls++; return null; },
+  };
+  assert.throws(() => encodeEnvelope(nestedRequest(value)), { code: ErrorCode.InvalidRequest });
+  assert.equal(calls, 0);
+});
+
+test('nested plain JSON including shared references survives encode and decode', () => {
+  const shared = { absent: null, truth: false, count: 2.25 };
+  const value = { items: [shared, shared, null, ['text']], toJSON: 'ordinary JSON field' };
+  const frame = nestedRequest(value);
+  assert.deepEqual(decodeEnvelope(encodeEnvelope(frame)), frame);
+});

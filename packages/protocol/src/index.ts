@@ -150,15 +150,68 @@ export function decodeEnvelope(raw: string): Envelope {
   return value;
 }
 
-export function encodeEnvelope(envelope: Envelope): string {
-  let raw: string;
+function jsonProperty(object: object, key: string, ancestors: Set<object>): JsonValue {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (!descriptor?.enumerable || !hasOwn(descriptor, 'value')) {
+    throw new WireDecodeError(ErrorCode.InvalidRequest, 'Expected an enumerable JSON data property');
+  }
+  return copyJson(descriptor.value, ancestors);
+}
+
+function copyJson(value: unknown, ancestors: Set<object>): JsonValue {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') {
+    checkJsonNumber('', value);
+    return value;
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) {
+    throw new WireDecodeError(ErrorCode.InvalidRequest, 'Expected an acyclic JSON value');
+  }
+
+  ancestors.add(value);
   try {
-    raw = JSON.stringify(envelope, checkJsonNumber);
+    const keys = Reflect.ownKeys(value);
+    if (Array.isArray(value)) {
+      if (keys.length !== value.length + 1 || 'toJSON' in value) {
+        throw new WireDecodeError(ErrorCode.InvalidRequest, 'Expected a dense JSON array');
+      }
+      const result: JsonValue[] = [];
+      for (let index = 0; index < value.length; index++) {
+        result.push(jsonProperty(value, String(index), ancestors));
+      }
+      return result;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) {
+      throw new WireDecodeError(ErrorCode.InvalidRequest, 'Expected a plain JSON object');
+    }
+    const result: JsonObject = Object.create(null);
+    for (const key of keys) {
+      if (typeof key !== 'string') {
+        throw new WireDecodeError(ErrorCode.InvalidRequest, 'Expected a string JSON property name');
+      }
+      result[key] = jsonProperty(value, key, ancestors);
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+export function snapshotJson(value: unknown): JsonValue {
+  try {
+    return copyJson(value, new Set());
   } catch (cause) {
     if (cause instanceof WireDecodeError) throw cause;
     throw new WireDecodeError(ErrorCode.InvalidRequest, 'Message is not serializable', cause);
   }
-  // Encoding can omit undefined members or apply custom serializers. Check the wire representation.
-  decodeEnvelope(raw);
-  return raw;
+}
+
+export function encodeEnvelope(envelope: Envelope): string {
+  const snapshot = snapshotJson(envelope);
+  if (!isEnvelope(snapshot)) {
+    throw new WireDecodeError(ErrorCode.InvalidRequest, 'Invalid request');
+  }
+  return JSON.stringify(snapshot);
 }
