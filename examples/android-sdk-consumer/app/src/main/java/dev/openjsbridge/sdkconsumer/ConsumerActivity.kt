@@ -16,10 +16,11 @@ class ConsumerActivity : ComponentActivity() {
         private set
     private var bridge: AndroidBridge? = null
     private var mediaPicker: AndroidMediaPicker? = null
+    private val photoPickerContract = ActivityResultContracts.PickVisualMedia()
 
     // The app owns registration and launch; the SDK only receives this picker result.
     private val pickImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        mediaPicker?.onResult(if (result.resultCode == RESULT_OK) result.data?.data else null)
+        mediaPicker?.onResult(photoPickerContract.parseResult(result.resultCode, result.data))
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -46,9 +47,12 @@ class ConsumerActivity : ComponentActivity() {
                 return true
             }
         }
-        val picker = AndroidMediaPicker.createIntent(this)?.let { intent ->
-            AndroidMediaPicker { pickImage.launch(intent) }
-        }
+        val picker = if (AndroidMediaPicker.isAvailable(this)) {
+            AndroidMediaPicker {
+                val intent = checkNotNull(AndroidMediaPicker.createIntent(this)) { "System Photo Picker unavailable" }
+                pickImage.launch(intent)
+            }
+        } else null
         mediaPicker = picker
         bridge = AndroidBridge.attach(
             view, allowedOrigins = listOf(ORIGIN),

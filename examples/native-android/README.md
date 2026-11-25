@@ -79,9 +79,11 @@ attachment?.emit("acme.app.configChanged", JsonNull.INSTANCE)
 
 ## 单图 Photo Picker（可选）
 
-在 App 的 Activity 进入 `STARTED` 前用 Activity Result API 注册 launcher。用 `AndroidMediaPicker.createIntent(context)` 获取系统单图选择 Intent（API 33+；不可用时返回 `null`），用 `AndroidMediaPicker { launcher.launch(intent) }` 接入，并把选中的 URI 或关闭选择器时的 `null` 交给 `picker.onResult`。挂载时显式传 `AndroidBridge.Options(media = true)` 和 `mediaPicker = picker`。不需要相册权限，SDK 只读当前选中的图；不支持时握手不会声明媒体能力。 [独立 Release App 接入](../android-sdk-consumer/README.md)
+在 App 的 Activity 进入 `STARTED` 前注册 Activity Result launcher。用 `AndroidMediaPicker.createIntent(context)` 获取 AndroidX `PickVisualMedia` 选择的系统单图 Intent。可用范围包含系统内置选择器、扩展更新和已安装的 OEM 或 Google Play 服务回移实现，覆盖符合条件的 API 24–32 设备。App 可在启动时用 `isAvailable(context)` 探测，并在每次打开时重新调用 `createIntent(context)`。Activity Result 回调可用 `PickVisualMedia().parseResult(resultCode, data)` 解析 URI，再交给 `picker.onResult`。挂载时显式传 `AndroidBridge.Options(media = true)` 和 `mediaPicker = picker`。 [Android Photo Picker](https://developer.android.com/training/data-storage/shared/photo-picker) · [独立 Release App 接入](../android-sdk-consumer/README.md)
 
-页面得到的是当前文档有效的 `blobRef`，不是系统 URI。读取按 64 KiB 原始字节分块；单文件与当前会话总量均上限 20 MiB，引用在 5 分钟后失效。读取完请主动释放；导航或宿主销毁也会回收。关闭系统选择器会成功返回 `cancelled`；SDK 取消请求会忽略迟到的系统结果，不强制关闭系统界面。
+SDK 通过系统选择器读取用户选中的图片，无需相册或存储权限。设备缺少受信的选择器时 `createIntent` 返回 `null`，握手省略媒体能力。App 可选择在自己的 `<application>` 中声明官方 `ModuleDependencies` 服务，邀请 Google Play 服务为符合条件的旧设备安装回移组件。独立 Consumer 的 manifest 展示了此配置，安装由 App 显式启用。Release 验收可在 API 35 系统选择器和有已安装回移组件的旧设备上分别执行。 [安装配置](../android-sdk-consumer/app/src/main/AndroidManifest.xml)
+
+页面收到当前文档的媒体 `id` 和 `thumbUrl`，用缩略图 URL 显示选择结果。原图暂存在宿主私有目录，每个会话最多 20 MiB，5 分钟内有效。换页、宿主销毁或到期时自动清理。关闭系统选择器返回 `cancelled`。SDK 取消请求后忽略迟到的系统结果，系统界面由用户关闭。[会话媒体协议](../../docs/protocol.md#101-原生句柄和缩略图)
 
 ## 在模拟器验证
 

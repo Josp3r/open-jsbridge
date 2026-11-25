@@ -136,9 +136,11 @@ internal class DocumentTransport(
         whenActive(current, payload) {
             var acknowledge: (() -> Unit)? = null
             var businessCall: RpcSession.BusinessCall? = null
+            val pending = current.businessWork?.call
             val response = current.session.receive(
                 payload,
-                businessBusy = current.businessWork != null,
+                businessBusy = pending != null,
+                mediaBusy = pending?.mediaSelection == true,
                 onBusinessCall = runBusiness?.let { { call -> businessCall = call } },
                 onCancellation = { id -> cancelBusiness(current, id) },
                 afterResponse = { acknowledge = it },

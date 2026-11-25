@@ -11,7 +11,6 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.RandomAccessFile
 import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.CancellationException
@@ -21,30 +20,50 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 internal class MediaImage(val mime: () -> String?, val open: () -> InputStream)
 
+/** Original oriented dimensions and a separately encoded JPEG sample. */
+internal data class MediaThumbnail(val width: Int, val height: Int, val jpeg: ByteArray) {
+    companion object {
+        const val MAX_EDGE = 256
+        const val MAX_BYTES = 32 * 1024
+    }
+}
+
 internal class MediaFailure(val code: Int, message: String) : RuntimeException(message)
 
 /** One presenter per attachment; each confirmed document gets a separate store. */
 internal class MediaModule(
     private val pick: suspend () -> MediaImage?,
     private val directory: File,
+    private val generateThumbnail: (File) -> MediaThumbnail,
     private val scheduleExpiry: (Long, () -> Unit) -> (() -> Unit),
     private val epochMillis: () -> Long = System::currentTimeMillis,
     private val elapsedMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    fun newSession() = MediaSession(pick, directory, scheduleExpiry, epochMillis, elapsedMillis, io)
+    fun newSession() = MediaSession(
+        pick, directory, generateThumbnail, scheduleExpiry, epochMillis, elapsedMillis, io,
+    )
 }
 
-/** State is owned by the WebView thread. Only bounded file I/O runs on [io]. */
+/** State is owned by the WebView thread. Copying and thumbnail preparation run on [io]. */
 internal class MediaSession(
     private val pick: suspend () -> MediaImage?,
     private val directory: File,
+    private val generateThumbnail: (File) -> MediaThumbnail,
     private val scheduleExpiry: (Long, () -> Unit) -> (() -> Unit),
     private val epochMillis: () -> Long,
     private val elapsedMillis: () -> Long,
     private val io: CoroutineDispatcher,
 ) {
-    private class Blob(val file: File, val size: Int, val expiresAt: Long, val deadline: Long) {
+    private data class PreparedSelection(
+        val mime: String,
+        val size: Int,
+        val width: Int,
+        val height: Int,
+        val thumbnailBase64: String,
+    )
+
+    private class Selection(val file: File, val size: Int, val expiresAt: Long, val deadline: Long) {
         var cancelExpiry: (() -> Unit)? = null
     }
 
@@ -65,7 +84,9 @@ internal class MediaSession(
             return temp.outputStream().also { output = it }
         }
 
-        @Synchronized fun take(): File = checkNotNull(file).also { file = null }
+        @Synchronized fun stagedFile(): File = file ?: throw CancellationException()
+
+        @Synchronized fun take(): File = stagedFile().also { file = null }
 
         @Synchronized fun discard() {
             discarded = true
@@ -77,52 +98,65 @@ internal class MediaSession(
         }
     }
 
-    private val entries = mutableMapOf<String, Blob>()
+    private val entries = mutableMapOf<String, Selection>()
     private var allocated = 0
     private var closed = false
     private var pending: StagedCopy? = null
 
+    @OptIn(ExperimentalEncodingApi::class)
     suspend fun choose(): JsonObject {
         check(!closed)
-        val image = pick()
+        val image = accessSelection { pick() }
         currentCoroutineContext().ensureActive()
         check(!closed)
         if (image == null) return choice("cancelled")
         sweepExpired()
-        val budget = MAX_BYTES - allocated
+        val budget = MAX_STORED_BYTES - allocated
         if (budget == 0) throw tooLarge()
         val staged = StagedCopy(directory)
         check(pending == null)
         pending = staged
         try {
-            val (mime, size) = withContext(io) {
-                val mime = image.mime()?.lowercase(Locale.ROOT)?.takeIf(IMAGE_MIME::matches)
-                    ?: throw IOException("Selected item is not an image")
-                val context = currentCoroutineContext()
-                val size = staged.open().use { output ->
-                    image.open().use { input -> copyBounded(context, input, output, budget) }
+            val selected = accessSelection {
+                withContext(io) {
+                    val mime = image.mime()?.lowercase(Locale.ROOT)?.takeIf(IMAGE_MIME::matches)
+                        ?: throw IOException("Selected item is not an image")
+                    val context = currentCoroutineContext()
+                    val size = staged.open().use { output ->
+                        image.open().use { input -> copyBounded(context, input, output, budget) }
+                    }
+                    if (size == 0) throw IOException("Selected image is empty")
+                    context.ensureActive()
+                    val thumbnail = generateThumbnail(staged.stagedFile())
+                    context.ensureActive()
+                    if (thumbnail.width <= 0 || thumbnail.height <= 0 || thumbnail.jpeg.isEmpty()) {
+                        throw IOException("Invalid media thumbnail")
+                    }
+                    if (thumbnail.jpeg.size > MediaThumbnail.MAX_BYTES) throw tooLarge()
+                    PreparedSelection(mime, size, thumbnail.width, thumbnail.height, Base64.encode(thumbnail.jpeg))
                 }
-                if (size == 0) throw IOException("Selected image is empty")
-                mime to size
             }
             currentCoroutineContext().ensureActive()
             check(!closed && pending === staged)
-            val ref = generateSequence(::randomRef).first { it !in entries }
-            val blob = Blob(staged.take(), size, epochMillis() + TTL_MILLIS, elapsedMillis() + TTL_MILLIS)
-            entries[ref] = blob
-            allocated += size
+            val id = generateSequence(::randomId).first { it !in entries }
+            val selection = Selection(staged.take(), selected.size, epochMillis() + TTL_MILLIS, elapsedMillis() + TTL_MILLIS)
+            entries[id] = selection
+            allocated += selected.size
             try {
-                blob.cancelExpiry = scheduleExpiry(TTL_MILLIS) { remove(ref) }
+                selection.cancelExpiry = scheduleExpiry(TTL_MILLIS) { remove(id) }
             } catch (error: RuntimeException) {
-                remove(ref)
+                remove(id)
                 throw error
             }
             return choice("selected", JsonObject().apply {
                 addProperty("type", "image")
-                addProperty("blobRef", ref)
-                addProperty("mime", mime)
-                addProperty("size", size)
-                addProperty("expiresAt", blob.expiresAt)
+                addProperty("id", id)
+                addProperty("mime", selected.mime)
+                addProperty("size", selected.size)
+                addProperty("width", selected.width)
+                addProperty("height", selected.height)
+                addProperty("expiresAt", selection.expiresAt)
+                addProperty("thumbnailBase64", selected.thumbnailBase64)
             })
         } finally {
             if (pending === staged) pending = null
@@ -130,35 +164,14 @@ internal class MediaSession(
         }
     }
 
-    @OptIn(ExperimentalEncodingApi::class)
-    suspend fun read(ref: String, index: Long): JsonObject {
-        sweepExpired()
-        val blob = entries[ref] ?: throw permissionDenied()
-        if (index !in 0..((blob.size - 1) / CHUNK_BYTES).toLong()) throw MediaFailure(-32602, "Invalid params")
-        val offset = index * CHUNK_BYTES
-        val count = minOf(CHUNK_BYTES.toLong(), blob.size - offset).toInt()
-        val encoded = try {
-            withContext(io) {
-                val bytes = ByteArray(count)
-                RandomAccessFile(blob.file, "r").use { file -> file.seek(offset); file.readFully(bytes) }
-                Base64.encode(bytes)
-            }
-        } catch (error: IOException) {
-            sweepExpired()
-            if (entries[ref] !== blob) throw permissionDenied()
-            throw error
-        }
-        sweepExpired()
-        if (entries[ref] !== blob) throw permissionDenied()
-        return JsonObject().apply {
-            addProperty("dataBase64", encoded)
-            addProperty("done", offset + count == blob.size.toLong())
-        }
-    }
-
-    fun release(ref: String): JsonObject {
-        remove(ref)
-        return JsonObject()
+    private suspend fun <T> accessSelection(block: suspend () -> T): T = try {
+        block()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: MediaFailure) {
+        throw error
+    } catch (_: Exception) {
+        throw MediaFailure(-32003, "Permission denied")
     }
 
     fun abortCopy() {
@@ -178,23 +191,21 @@ internal class MediaSession(
         entries.filterValues { it.deadline <= elapsed || it.expiresAt <= now }.keys.forEach(::remove)
     }
 
-    private fun remove(ref: String) {
-        val previous = entries.remove(ref) ?: return
+    private fun remove(id: String) {
+        val previous = entries.remove(id) ?: return
         allocated -= previous.size
         previous.cancelExpiry?.invoke()
         previous.file.delete()
     }
 
     companion object {
-        private const val MAX_BYTES = 20 * 1024 * 1024
-        private const val CHUNK_BYTES = 64 * 1024
-        const val MAX_CHUNK_INDEX = MAX_BYTES / CHUNK_BYTES - 1
+        private const val MAX_STORED_BYTES = 20 * 1024 * 1024
         private const val TTL_MILLIS = 5 * 60 * 1000L
         private val IMAGE_MIME = Regex("image/[a-z0-9!#$&^_.+\\-]{1,122}")
         private val random = SecureRandom()
         private const val HEX = "0123456789abcdef"
 
-        private fun randomRef(): String = buildString(32) {
+        private fun randomId(): String = buildString(32) {
             for (byte in ByteArray(16).also(random::nextBytes)) {
                 append(HEX[(byte.toInt() ushr 4) and 15]); append(HEX[byte.toInt() and 15])
             }
@@ -229,6 +240,5 @@ internal class MediaSession(
         }
 
         private fun tooLarge() = MediaFailure(-32006, "Payload too large")
-        private fun permissionDenied() = MediaFailure(-32003, "Permission denied")
     }
 }

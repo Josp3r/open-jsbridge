@@ -32,19 +32,19 @@ flowchart LR
 
 - Host 核心使用内部 TS 模块 `host-core`，**与 `@open-jsbridge/web/mock` 共用同一个参考 Host 状态机**。它按 protocol §3 解码单条 `{jsb, meta?, rpc}` JSON-RPC 2.0 信封并拒绝批量数组。RN 平台通道须按 §6 单独验证。
 - 优点：不改原生代码、可 OTA 更新 handler、与 `react-native-webview` 全部能力兼容、Expo 等托管工作流也能用。
-- 缺点：trust = degraded（拿不到可信 frame origin）；消息要经过原生 WebView → RN 事件 → JS 线程，JS 线程繁忙时 bridge 延迟会上升；大数据只能走 base64 / 分片，或额外借助原生模块提供本地 URL。
+- 缺点：trust = degraded（拿不到可信 frame origin）；消息要经过原生 WebView → RN 事件 → JS 线程，JS 线程繁忙时 bridge 延迟会上升。JSON 消息受握手上限约束。标准选图需要原生宿主管理会话媒体句柄。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
 ### 方案 B：新架构 TurboModule / JSI 复用原生 OJSB
 
 - 原生 OJSB（iOS/Android 实现层）直接挂在原生 WebView 上；RN 通过 **TurboModule**（Codegen 生成的类型化接口，JSI 直接调用）注册 handler、接收调用、推送事件。
 - 需要控制**原生 WebView 实例**：要么写一个自己的 Fabric native component（内部创建并配置原生 WebView + 原生 OJSB），要么 patch / fork `react-native-webview` 以暴露配置钩子。两者都需要长期维护原生代码。
-- 优点：可复用原生 Host 的调用方校验、frame 定向通道和大数据通道，也可直接复用原生 handler。`trust = full` 和 iframe 能力按原生 transport 的实际能力启用（见 §5）。
+- 优点：可复用原生 Host 的调用方校验、frame 定向通道和媒体句柄，也可直接复用原生 handler。`trust = full` 和 iframe 能力按原生 transport 的实际能力启用（见 §5）。
 - 缺点：失去纯 JS 方案的 OTA 和托管工作流便利；要跟随 RN 新架构与 WebView 组件的版本演进；自研 WebView 组件需补齐 cookie、下载、文件上传等能力。
 
 ### 推荐
 
 - **优先采用方案 A**：仅在接入方按 §5 显式启用降级并能独立确保内容与 frame 隔离时接入。
-- 以下任一条件成立时选**方案 B**：需要开放支付/账号等高敏感能力给 H5；必须支持第三方 iframe；需要大文件本地 URL；App 已有大量原生 OJSB handler（混合工程）。
+- 以下任一条件成立时选**方案 B**：需要开放支付/账号等高敏感能力给 H5；必须支持第三方 iframe；需要复用标准选图模块；App 已有大量原生 OJSB handler（混合工程）。
 - 两个方案对 H5 完全透明（同一 shim 契约），可以先 A 后 B 平滑迁移。
 
 ## 3. Shim（方案 A）
@@ -91,7 +91,7 @@ const host = createHostBridge({
       if (ctx.signal.aborted) throw new BridgeError(-32002, 'Cancelled');
       const picked = await pickImages(count, { signal: ctx.signal });
       if (!picked) throw new BridgeError(-32007, 'User denied');
-      return { images: picked.map((p) => ({ dataBase64: p.base64 })) };   // 纯 JS 方案只能 inline/分片
+      return { count: picked.length };
     },
   },
 });
@@ -161,7 +161,7 @@ export const OJSBWebView = forwardRef<WebView, Props>(({ bridge, onMessage, onSh
 1. **调用方身份**。仅经验证的原生 WebView 调用方信息可用于判断 origin 与 frame。WebView 当前 URL 仅用于导航检查或诊断。
 2. **降级启用**。接入方 MUST 显式启用降级并独立执行内容与 frame 隔离，确保从初始加载到后续导航都只有受信的主文档可使用通道。条件不成立时，MUST 禁用 OJSB 通道和 shim，并使已有会话失效。`originWhitelist`、`onShouldStartLoadWithRequest` 和 main-frame-only shim 仅作辅助。Android 首次加载不会调用 `onShouldStartLoadWithRequest`。
 3. **iframe 能力**。方案 A 只支持主文档。只有具备可验证的原生调用方 frame/document 绑定、原生失效信号以及对同一 frame/document 的定向投递时，才能宣告 iframe 能力，并按 frame 执行 ACL（protocol F5）。
-4. **能力分级**。降级会话只开放 ACL 中标注 `allowDegraded: true` 的 method（protocol S2）。支付、账号、文件系统等高敏感 method 只在 `trust = full` 时开放，并继续受 ACL 约束。
+4. **能力启用**。宿主注册表决定会话可以协商的能力。标记 `trust = degraded` 的可选通道需要满足独立的来源与 frame 限制（protocol S2）。支付、账号、文件系统等敏感方法应在具备可信来源校验的宿主上启用。
 5. **推送防注入**：只通过 `__OJSB_RECEIVE__(<二次编码字符串>)` 推送，禁止把业务数据拼进 JS 源码。
 6. **调试开关**：`webviewDebuggingEnabled` 等调试能力只在 debug 构建打开。
 7. **会话与请求去重**。仅 `bridge.hello` 请求及其关联响应可省略 `meta.sid`，握手仍须通过调用者授权。入站会话消息须匹配当前 WebView、frame、document 和 `meta.sid`。规则拒绝或异常时停止分发。握手按 document、其他请求按 sid 和发起方向去重，重复项在分发前静默丢弃。响应只经满足会话校验且绑定到原 document 的通道发送。

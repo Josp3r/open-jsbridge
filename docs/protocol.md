@@ -419,36 +419,18 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 
 ## 10. 二进制与大数据传输
 
-协议通道传输字符串。方法契约定义数据交付方式，调用方通过契约和握手确定可用能力。
+协议使用 JSON 消息交付符合方法 Schema 及握手上限的数据。首批媒体采用原生句柄和有界缩略图。原始文件留在宿主。
 
-| 方式 | 适用范围 | 传输 |
-|------|----------|------|
-| Inline | 小数据，完整 UTF-8 消息 SHOULD ≤ 256 KB，仍遵守握手上限 | 直接放在 params/result。二进制字段使用 Base64 字符串，字段名以 `Base64` 结尾 |
-| 分片读取 | 方法交付的会话内只读数据，单个资源 1 字节至 20 MiB | Host 发放 `blobRef`，Web 调用 `bridge.blob.read@1` 和 `bridge.blob.release@1` |
-| 本地资源 URL | 有专门契约并能执行等效访问控制的平台扩展 | Host 发放受控 URL，Web 按扩展契约读取 |
+### 10.1 原生句柄和缩略图
 
-256 KB 是 Inline 的建议值。`media.chooseMedia@1` 统一使用分片读取，包括较小的图片。单条消息的实际限制见 §10.3。
+- `media.chooseMedia@1` 通过验证过的主 frame RPC 投递不透明 `id` 和 `thumbnailBase64`。宿主用 128 位密码学随机值生成 32 个小写十六进制字符，并绑定 WebView、origin、frame、document 和 sid。随选择结果返回原图 MIME、大小、方向归一化后的像素宽高和到期时间。
+- 宿主 MUST 降采样并生成 JPEG 缩略图，长边最多 256 px，二进制最多 32 KiB。线上字段采用标准 Base64，完整消息仍受协商的 UTF-8 帧上限约束。宿主保留原图的时间为 5 分钟，每会话最多 20 MiB。
+- Web SDK 用这份缩略图创建本地对象 URL，作为 `thumbUrl` 交给应用。SDK 在过期、`pagehide` 和实例清理时撤销 URL。原生句柄在有效期结束或文档会话退出时回收。到期时间使用 Unix 毫秒时间戳。
+- 原生访问校验发生在缩略图 RPC 交付时。对象 URL 的读取和撤销采用浏览器的存储分区规则，已被页面复制的像素或字节可被该页面保留。[文件 API](https://www.w3.org/TR/FileAPI/#access-restrictions-on-blob-urls)
 
-### 10.1 URL 引用（扩展方案）
+### 10.2 大文件能力候选
 
-本地资源 URL 需要独立的能力声明与契约。扩展必须定义允许访问的 origin、frame、document 和 sid、过期和释放行为，以及其承诺支持的读取方式。只有 Host 能验证这些作用域时才可发放 URL。`blob` 特性声明只承诺 §10.2 的分片读取与释放。应用层上传或下载按自己的网络或文件传输契约处理。
-
-<a id="102-分片兜底"></a>
-
-### 10.2 分片读取与释放
-
-`blob` 是可选的协议特性。为当前调用方发放 v1 分片引用的 Host MUST 在握手中通告 `blob` 和下列两个方法的 v1，并按 §11 校验调用。引用由 `media.chooseMedia@1` 等发放方法返回，其描述符声明 MIME 类型、字节大小和毫秒级 Unix 到期时间。[媒体能力契约](native-profiles.md#media)
-
-- [`bridge.blob.read@1`](../spec/methods/bridge/blob/read.json) 接收 `{ blobRef, index }`，返回 `{ dataBase64, done }`。同一引用在有效期内可以按索引重复读取。
-- [`bridge.blob.release@1`](../spec/methods/bridge/blob/release.json) 接收 `{ blobRef }`，返回 `{}`。授权和会话校验通过后，格式正确的引用均返回空对象，包括已经释放、过期、未知或属于其他会话的引用。
-
-- [`blobRef`](../spec/schemas/blob-ref.json) 是 32 个小写十六进制字符编码的 128 位密码学安全随机值。Host MUST 将它绑定到发放时的授权 origin、WebView、frame、document 和 sid，并在每次读取和释放时校验归属。
-- `index` 是 0 至 319 的整数。索引 `i` 从字节偏移 `i × 65,536` 开始。非末片恰好 64 KiB，末片为 1 至 64 KiB，只有末片的 `done` 为 `true`。每片独立使用标准 Base64 编码和必要填充，末组未使用的位设为零。分片并发数 SHOULD ≤ 4，并遵守握手上限。
-- 会话和权限校验通过后，Host MUST 先校验参数形状、引用格式和协议索引范围。参数无效或索引超出当前有效资源的末片时返回 `-32602`。引用格式和索引均符合协议范围时，对已释放、已过期、未知或属于其他会话的引用读取均返回 `-32003`。消息携带失效的 sid 时先按 §6 校验会话。
-- Host 声明的 `limits.maxMessageBytes` MUST 容纳完整分片响应。原始 64 KiB 编码为 87,384 个字符，预算还需包括信封和实际 JSON 转义。
-- Host MUST 在显式释放、到期或文档会话失效时回收资源，并丢弃旧会话迟到的分片和选择结果。各发放契约声明暂存额度和有效期。`media.chooseMedia@1` 每会话最多暂存 20 MiB，有效期为 5 分钟。会话失效规则见 §12.1。
-
-v1 分片契约只提供 Host 到 Web 的只读资源。
+原图预览、原生上传及进度、按需原图 URL 与主动释放是候选能力。原生本地资源 URL 扩展需要能证明图片请求的来源和文档，并定义等效的访问控制、过期和清理。平台的普通子资源拦截回调不足以证明调用 frame。早期 `bridge.blob.read` / `bridge.blob.release` 分片方案退出首批，宿主不通告对应方法和 `blob` 特性。
 
 ### 10.3 上限
 
@@ -555,10 +537,10 @@ stateDiagram-v2
 ```
 
 - **L1** 一个 sid 绑定一个 (WebView, frame, document)。Host MUST 在 frame 发生新 document 提交时使旧 sid 失效。
-- **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放 blob，并丢弃该 sid 下所有待发送消息。
+- **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放该会话的媒体资源，并丢弃该 sid 下所有待发送消息。
 - 使用脚本执行等下行方式时，Host MUST 在目标 document 内执行消息交付前确认身份，或使用由平台绑定到该 document 的通道。仅在入队时检查、等待 TTL 回收或依靠 SDK 收到后丢弃，均不能保证旧消息不进入新 document。无法保证时，Host MUST 关闭对应的下行能力。
 - **L3** 同 document 内的 History API 路由（SPA `pushState`）**不**改变 sid。
-- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。Shim MUST 停止使用旧文档路由。Host 收到可验证的路由退出或身份变更信号后 MUST 按 L2 清理。在 bfcache 恢复（`pageshow` 且 `persisted === true`）时，SDK MUST 重新握手，Host MUST 在建立新会话前使旧 sid 失效。旧 `blobRef` 无法在恢复后的会话继续读取。新握手成功前按 H6 拒绝分派会话消息。
+- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。Shim MUST 停止使用旧文档路由。Host 收到可验证的路由退出或身份变更信号后 MUST 按 L2 清理。在 bfcache 恢复（`pageshow` 且 `persisted === true`）时，SDK MUST 重新握手，Host MUST 在建立新会话前使旧 sid 失效。旧媒体句柄和对象 URL 在恢复后的会话无效。新握手成功前按 H6 拒绝分派会话消息。
 - **L5** WebView 渲染进程崩溃（iOS `webViewWebContentProcessDidTerminate`、Android `onRenderProcessGone`）MUST 视同 sid 失效。
 
 ### 12.2 WebView 复用 / 预热
@@ -642,11 +624,11 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 // Web → Host hello request
 {"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"open-jsbridge","version":"1.2.0"}}}}
 // Host → Web hello response
-{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseMedia":{"versions":[1]},"bridge.blob.read":{"versions":[1]},"bridge.blob.release":{"versions":[1]}},"events":["app.backgrounded"],"features":["cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseMedia":{"versions":[1]}},"events":["app.backgrounded"],"features":["cancel"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
 // Web → Host request
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":120000},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","method":"media.chooseMedia","params":{"count":1}}}
 // Host → Web response
-{"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"status":"selected","files":[{"type":"image","blobRef":"b6eefefd035e4f65ad2c1e76b9ac418d","mime":"image/jpeg","size":823412,"expiresAt":1763880304410}]}}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"status":"selected","files":[{"type":"image","id":"b6eefefd035e4f65ad2c1e76b9ac418d","mime":"image/jpeg","size":823412,"width":1600,"height":1200,"expiresAt":1763880304410,"thumbnailBase64":"<JPEG Base64>"}]}}}
 // Host → Web 事件通知
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"app.backgrounded","payload":null}}}
 // 错误响应

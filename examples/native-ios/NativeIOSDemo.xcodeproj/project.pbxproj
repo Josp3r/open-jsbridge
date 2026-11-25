@@ -18,7 +18,6 @@
 		A1000000000000000000000C = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = IOSSDKConsumerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1000000000000000000000D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/IOSSDKConsumerMediaUITests.swift; sourceTree = "<group>"; };
 		A1000000000000000000000E = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = IOSSDKConsumerMediaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A1000000000000000000000F = {isa = PBXFileReference; explicitFileType = file; name = MediaFixture.png; path = ../../dist/sdk-consumer/MediaFixture.png; sourceTree = SOURCE_ROOT; };
 
 		A20000000000000000000001 = {isa = PBXBuildFile; fileRef = A10000000000000000000001; };
 		A20000000000000000000002 = {isa = PBXBuildFile; productRef = A80000000000000000000002; };
@@ -31,11 +30,10 @@
 		A20000000000000000000009 = {isa = PBXBuildFile; productRef = A80000000000000000000006; };
 		A2000000000000000000000A = {isa = PBXBuildFile; fileRef = A1000000000000000000000B; };
 		A2000000000000000000000B = {isa = PBXBuildFile; fileRef = A1000000000000000000000D; };
-		A2000000000000000000000C = {isa = PBXBuildFile; fileRef = A1000000000000000000000F; };
 
 		A30000000000000000000001 = {
 			isa = PBXGroup;
-			children = (A30000000000000000000002, A10000000000000000000004, A10000000000000000000006, A1000000000000000000000B, A1000000000000000000000D, A1000000000000000000000F, A30000000000000000000003);
+			children = (A30000000000000000000002, A10000000000000000000004, A10000000000000000000006, A1000000000000000000000B, A1000000000000000000000D, A30000000000000000000003);
 			sourceTree = "<group>";
 		};
 		A30000000000000000000002 = {
@@ -61,7 +59,6 @@
 		A40000000000000000000008 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000008); runOnlyForDeploymentPostprocessing = 0; };
 		A40000000000000000000009 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A2000000000000000000000A); runOnlyForDeploymentPostprocessing = 0; };
 		A4000000000000000000000A = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A2000000000000000000000B); runOnlyForDeploymentPostprocessing = 0; };
-		A4000000000000000000000B = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A2000000000000000000000C); runOnlyForDeploymentPostprocessing = 0; };
 
 		A50000000000000000000001 = {
 			isa = PBXNativeTarget;
@@ -113,7 +110,7 @@
 		A50000000000000000000005 = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A70000000000000000000006;
-			buildPhases = (A4000000000000000000000A, A4000000000000000000000B);
+			buildPhases = (A4000000000000000000000A);
 			buildRules = ();
 			dependencies = (A80000000000000000000009);
 			name = IOSSDKConsumerMediaUITests;

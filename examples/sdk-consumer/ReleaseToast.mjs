@@ -1,4 +1,4 @@
-import { blob, bridge, media, ui } from '@open-jsbridge/web';
+import { bridge, media, ui } from '@open-jsbridge/web';
 
 const text = 'Open JSBridge native toast';
 const run = document.getElementById('run');
@@ -40,20 +40,10 @@ window.__sdkToastProbe = probe;
 run.addEventListener('click', () => { probe().catch(() => {}); });
 setStatus('ready', 'Ready to call the native SDK');
 
-function dataUrlFor(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-async function mediaProbe(expectedBase64) {
+async function mediaProbe() {
   pick.disabled = true;
   mediaStatus.textContent = 'Select a photo…';
   document.documentElement.dataset.mediaProbe = 'running';
-  let reference;
   try {
     const selection = await media.chooseMedia();
     if (selection.status === 'cancelled') {
@@ -62,21 +52,16 @@ async function mediaProbe(expectedBase64) {
       return { status: 'cancelled' };
     }
     const resource = selection.files[0];
-    reference = resource.blobRef;
-    const file = await blob.read(resource);
-    const url = await dataUrlFor(file);
-    const bytesBase64 = url.slice(url.indexOf(',') + 1);
-    if (expectedBase64 !== undefined && bytesBase64 !== expectedBase64) {
-      throw new Error('Selected image bytes differ from the fixture');
-    }
-    preview.src = url;
+    if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src);
+    preview.src = resource.thumbUrl;
+    await preview.decode();
     preview.hidden = false;
-    const action = expectedBase64 === undefined ? 'Read' : 'Verified';
-    mediaStatus.textContent = `${action} ${file.size} bytes`;
+    mediaStatus.textContent = 'Preview ready';
     document.documentElement.dataset.mediaProbe = 'selected';
-    return { status: 'selected', size: file.size, mime: file.type, bytesBase64, blobRef: reference };
+    return {
+      status: 'selected', ...resource, thumbnailWidth: preview.naturalWidth, thumbnailHeight: preview.naturalHeight,
+    };
   } catch (error) {
-    if (reference) await blob.release(reference).catch(() => {});
     mediaStatus.textContent = error.message;
     document.documentElement.dataset.mediaProbe = 'failed';
     throw error;
@@ -86,10 +71,9 @@ async function mediaProbe(expectedBase64) {
 }
 
 window.__sdkMediaProbe = mediaProbe;
-window.__sdkMediaRead = (blobRef) => bridge.call('bridge.blob.read@1', { blobRef, index: 0 });
-window.__sdkMediaRelease = (blobRef) => blob.release(blobRef);
-pick.addEventListener('click', () => {
-  mediaProbe(window.__sdkExpectedMediaBase64).then((result) => {
-    if (result.status === 'selected') return blob.release(result.blobRef);
-  }).catch(() => {});
-});
+window.__sdkThumbReadable = async (url) => {
+  if (typeof url !== 'string' || !url.startsWith('blob:')) return false;
+  try { return (await fetch(url)).ok; }
+  catch { return false; }
+};
+pick.addEventListener('click', () => { mediaProbe().catch(() => {}); });

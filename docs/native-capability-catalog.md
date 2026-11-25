@@ -22,7 +22,7 @@
 - [`ui.toast.show@1`](../spec/methods/ui/toast/show.json) 使用 `toast` 子域表示独立启用的原生反馈模块，`show` 表示展示请求。
 - [`media.chooseMedia@1`](../spec/methods/media/chooseMedia.json) 使用 `chooseMedia` 表达系统媒体选择。v1 的来源、类型与选择数量由媒体契约约束。
 
-首批方法沿用现有命名。生命周期标准补充 `app.foregrounded` 和 `app.backgrounded` 两个事件。媒体字节通过协议层的 `bridge.blob.read@1` 和 `bridge.blob.release@1` 读取和释放。[原生能力接入](native-profiles.md) · [Blob 协议](protocol.md#102-分片读取与释放)
+首批方法沿用现有命名。生命周期标准补充 `app.foregrounded` 和 `app.backgrounded` 两个事件。首批媒体能力返回会话媒体句柄和缩略图 URL，原生预览与上传是候选能力。[原生能力接入](native-profiles.md) · [会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
 ## 1. 宿主与运行环境
 

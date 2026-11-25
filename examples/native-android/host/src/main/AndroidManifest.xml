@@ -5,5 +5,11 @@
             <action android:name="android.provider.action.PICK_IMAGES" />
             <data android:mimeType="image/*" />
         </intent>
+        <intent>
+            <action android:name="androidx.activity.result.contract.action.PICK_IMAGES" />
+        </intent>
+        <intent>
+            <action android:name="com.google.android.gms.provider.action.PICK_IMAGES" />
+        </intent>
     </queries>
 </manifest>

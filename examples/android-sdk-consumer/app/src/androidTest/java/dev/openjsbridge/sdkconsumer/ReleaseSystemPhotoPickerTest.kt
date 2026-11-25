@@ -3,6 +3,7 @@ package dev.openjsbridge.sdkconsumer
 import android.accessibilityservice.AccessibilityService
 import android.content.ContentValues
 import android.content.pm.ApplicationInfo
+import android.graphics.BitmapFactory
 import android.icu.text.DateFormat
 import android.icu.text.DisplayContext
 import android.os.Build
@@ -10,9 +11,9 @@ import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.MediaStore.MediaColumns
-import android.util.Base64
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SdkSuppress
@@ -22,6 +23,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.FileNotFoundException
@@ -32,16 +34,21 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.TIRAMISU)
+// The fixture inserts a scoped MediaStore row, which requires Android 10+.
+@SdkSuppress(minSdkVersion = Build.VERSION_CODES.Q)
 class ReleaseSystemPhotoPickerTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val app = instrumentation.targetContext
     private val automation get() = instrumentation.uiAutomation
     private val pickerPackage by lazy {
-        val intent = checkNotNull(AndroidMediaPicker.createIntent(app)) {
-            "Run the media tests on an Android 13+ device with the system Photo Picker (API 35 emulator recommended)"
-        }
-        assertEquals(MediaStore.ACTION_PICK_IMAGES, intent.action)
+        val candidate = AndroidMediaPicker.createIntent(app)
+        assumeNotNull(candidate)
+        val intent = checkNotNull(candidate)
+        assertTrue(intent.action in setOf(
+            MediaStore.ACTION_PICK_IMAGES,
+            PickVisualMedia.ACTION_SYSTEM_FALLBACK_PICK_IMAGES,
+            "com.google.android.gms.provider.action.PICK_IMAGES",
+        ))
         val component = checkNotNull(intent.component)
         val flags = app.packageManager.getApplicationInfo(component.packageName, 0).flags
         assertTrue("Expected an external system Photo Picker: $component",
@@ -52,50 +59,123 @@ class ReleaseSystemPhotoPickerTest {
     }
 
     @Test
-    fun packagedWebSdkPicksReadsAndReleasesTheSharedPngInRelease() = withFixture { fixture ->
+    fun packagedWebSdkRendersABoundedJpegThumbnailInRelease() = withFixture { fixture ->
         inRelease { scenario ->
-            val ref = selectFixture(scenario, fixture)
-            assertReadable(scenario, ref, fixture)
-            val release = call(scenario, "window.__sdkMediaRelease(${JSONObject.quote(ref)})")
-            assertEquals(0, value(release).length())
-            assertRejected(PERMISSION_DENIED, call(scenario, readExpression(ref)))
+            val thumbUrl = selectFixture(scenario, fixture)
+            assertTrue("New thumbnail URL must be readable", isThumbnailReadable(scenario, thumbUrl))
+            val jpeg = value(call(scenario, """
+                (async () => {
+                  const response = await fetch(${JSONObject.quote(thumbUrl)});
+                  if (!response.ok) throw new Error('Thumbnail fetch failed: ' + response.status);
+                  const image = await response.blob();
+                  const signature = new Uint8Array(await image.slice(0, 2).arrayBuffer());
+                  return { mime: image.type, size: image.size, jpeg: signature[0] === 255 && signature[1] === 216 };
+                })()
+            """.trimIndent()))
+            assertEquals("image/jpeg", jpeg.getString("mime"))
+            assertTrue("Blob URL must point to an actual JPEG", jpeg.getBoolean("jpeg"))
+            assertTrue("Expected a JPEG within the 32 KiB decoded limit: $jpeg", jpeg.getInt("size") in 1..MAX_THUMBNAIL_BYTES)
+            Log.i(TAG, "JPEG fetched from preview Blob URL: ${jpeg.getInt("size")} bytes")
         }
     }
 
     @Test
-    fun systemBackCancelsThePickerWithoutReturningABlob() = inRelease { scenario ->
+    fun systemBackCancelsThePickerWithoutReturningAThumbnail() = inRelease { scenario ->
         val outcome = withPicker(scenario, "window.__sdkMediaProbe()") {
             // Use the system Back action just as a user would; no injected Activity result.
             assertTrue("Could not dismiss the system Photo Picker", automation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK))
         }
         val result = value(outcome)
         assertEquals("cancelled", result.getString("status"))
-        assertEquals("Cancellation must not expose a blob or any metadata", 1, result.length())
+        assertEquals("Cancellation must not expose a URL or any metadata", 1, result.length())
     }
 
     @Test
-    fun navigationInvalidatesTheBlobAndDifferentPortCannotUseMedia() = withFixture { fixture ->
+    fun sameOriginReplacementCannotFetchThePreviousDocumentsThumbnail() = withFixture { fixture ->
         inRelease { scenario ->
-            val ref = selectFixture(scenario, fixture)
-            // This ref is live and unreleased before the navigation.
-            assertReadable(scenario, ref, fixture)
+            val thumbUrl = selectFixture(scenario, fixture)
+            assertTrue("Confirm the old URL works before navigating", isThumbnailReadable(scenario, thumbUrl))
 
             replaceDocument(scenario, ConsumerActivity.ORIGIN, "/media-replacement")
-            assertRejected(PERMISSION_DENIED, call(scenario, readExpression(ref)))
-
-            val otherOrigin = ConsumerActivity.ORIGIN + ":444"
-            replaceDocument(scenario, otherOrigin, "/media-denied")
-            assertEquals("true", evaluate(scenario, """
-                typeof window.__OJSB_TRANSPORT__ === 'undefined' && typeof window.__ojsb_wml === 'undefined'
+            assertEquals("true", evaluate(scenario, "typeof window.__androidMediaResult === 'undefined'"))
+            assertFalse("A fresh same-origin document must not read the old URL", isThumbnailReadable(scenario, thumbUrl))
+            // Also try fetch directly; the page helper alone could reject a URL it did not create.
+            val fetch = value(call(scenario, """
+                fetch(${JSONObject.quote(thumbUrl)}).then(response => ({ readable: response.ok }), () => ({ readable: false }))
             """.trimIndent()))
-            // The *same packaged Web SDK code* runs on the other port, but cannot make a media call.
-            assertRejected(UNAVAILABLE, call(scenario, readExpression(ref)))
-            assertRejected(UNAVAILABLE, call(scenario, "window.__sdkMediaProbe()"))
+            assertFalse("The previous document's Blob URL must no longer resolve", fetch.getBoolean("readable"))
+        }
+    }
+
+    @Test
+    fun unlistedPortCannotUseThePackagedMediaProbe() = inRelease { scenario ->
+        replaceDocument(scenario, ConsumerActivity.ORIGIN + ":444", "/media-denied")
+        assertEquals("true", evaluate(scenario, """
+            typeof window.__OJSB_TRANSPORT__ === 'undefined' && typeof window.__ojsb_wml === 'undefined'
+        """.trimIndent()))
+        // The same packaged npm page runs on the other port, but cannot open the native picker.
+        assertRejected(UNAVAILABLE, call(scenario, "window.__sdkMediaProbe()"))
+    }
+
+    @Test
+    fun nativeHandshakeAndDispatchDoNotExposeLegacyBlobMethods() = inRelease { scenario ->
+        // A separate test document exercises the real injected transport without sharing the
+        // npm page's receiver or letting SDK capability checks reject the requests locally.
+        val url = ConsumerActivity.ORIGIN + "/thumbnail-wire-check"
+        scenario.onActivity { activity ->
+            checkNotNull(activity.browser).loadDataWithBaseURL(
+                url, "<!doctype html><title>Thumbnail wire check</title>", "text/html", "UTF-8", null,
+            )
+        }
+        awaitScript(scenario, "location.href === ${JSONObject.quote(url)} && !!window.__OJSB_TRANSPORT__")
+        val wire = value(call(scenario, """
+            (async () => {
+              const transport = window.__OJSB_TRANSPORT__;
+              const send = (id, method, params, sid) => new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('No native reply for ' + method)), 4000);
+                window.__OJSB_RECEIVE__ = raw => {
+                  const reply = JSON.parse(raw);
+                  if (reply.rpc?.id !== id) return;
+                  clearTimeout(timer);
+                  resolve(reply.rpc);
+                };
+                transport.postMessage(JSON.stringify({
+                  jsb: '1.0', rpc: { jsonrpc: '2.0', id, method, params },
+                  ...(sid ? { meta: { sid } } : {})
+                }));
+              });
+              try {
+                const hello = await send('thumbnail-hello', 'bridge.hello', { protocols: [1] });
+                if (!hello.result?.sid) throw new Error('No native session: ' + JSON.stringify(hello));
+                const { sid, capabilities } = hello.result;
+                const blobRef = '0'.repeat(32);
+                const read = await send('thumbnail-old-read', 'bridge.blob.read@1', { blobRef, index: 0 }, sid);
+                const release = await send('thumbnail-old-release', 'bridge.blob.release@1', { blobRef }, sid);
+                return { capabilities, read, release };
+              } finally {
+                window.__OJSB_RECEIVE__ = undefined;
+              }
+            })()
+        """.trimIndent()))
+        val capabilities = wire.getJSONObject("capabilities")
+        val methods = capabilities.getJSONObject("methods")
+        assertEquals(1, methods.getJSONObject("media.chooseMedia").getJSONArray("versions").getInt(0))
+        assertEquals(1, methods.getJSONObject("ui.toast.show").getJSONArray("versions").getInt(0))
+        assertFalse("Legacy read must be absent from hello", methods.has("bridge.blob.read"))
+        assertFalse("Legacy release must be absent from hello", methods.has("bridge.blob.release"))
+        val features = capabilities.optJSONArray("features")
+        if (features != null) {
+            assertFalse("The blob feature must be absent from hello", (0 until features.length()).any { features.getString(it) == "blob" })
+        }
+        for (method in listOf("read", "release")) {
+            val reply = wire.getJSONObject(method)
+            assertEquals("Expected a native Method not found reply for legacy $method: $reply",
+                METHOD_NOT_FOUND, reply.getJSONObject("error").getInt("code"))
         }
     }
 
     private fun selectFixture(scenario: ActivityScenario<ConsumerActivity>, fixture: Fixture): String {
-        val outcome = withPicker(scenario, "window.__sdkMediaProbe(${JSONObject.quote(fixture.base64)})") {
+        val outcome = withPicker(scenario, "window.__sdkMediaProbe()") {
             await("Photo Picker tile for ${fixture.displayName} (${fixture.timestamps.joinToString()})", PICKER_TIMEOUT) {
                 val root = automation.rootInActiveWindow ?: return@await false
                 if (root.packageName?.toString() != pickerPackage) return@await false
@@ -109,24 +189,42 @@ class ReleaseSystemPhotoPickerTest {
             }
         }
         val result = value(outcome)
+        val fields = result.keys().asSequence().toSet()
+        val required = setOf("status", "id", "mime", "size", "width", "height", "thumbnailWidth", "thumbnailHeight", "thumbUrl")
+        assertTrue("Missing preview metadata: ${required - fields}", fields.containsAll(required))
+        val unexpected = fields - required - setOf("type", "expiresAt")
+        assertTrue("The probe must only return preview metadata, not original bytes, Base64 or URI fields: $unexpected", unexpected.isEmpty())
         assertEquals("selected", result.getString("status"))
+        if (result.has("type")) assertEquals("image", result.getString("type"))
+        if (result.has("expiresAt")) assertTrue("Image expiry must be in the future", result.getLong("expiresAt") > System.currentTimeMillis())
+        assertTrue("Expected an opaque 32-hex image ID", IMAGE_ID.matches(result.getString("id")))
         assertEquals(PNG_MIME, result.getString("mime"))
-        assertEquals(fixture.size, result.getInt("size"))
-        assertEquals(fixture.base64, result.getString("bytesBase64"))
-        assertEquals(setOf("status", "mime", "size", "bytesBase64", "blobRef"), result.keys().asSequence().toSet())
-        val ref = result.getString("blobRef")
-        assertTrue("Expected an opaque blob reference rather than a path or URI", ref.isNotBlank() && !ref.contains('/') && !ref.contains(':'))
-        Log.i(TAG, "Shared PNG selected via $pickerPackage, ${fixture.size} bytes verified by the Web SDK")
-        return ref
+        assertEquals(fixture.size, result.get("size"))
+        assertEquals(FIXTURE_WIDTH, result.get("width"))
+        assertEquals(FIXTURE_HEIGHT, result.get("height"))
+        val width = result.getInt("thumbnailWidth")
+        val height = result.getInt("thumbnailHeight")
+        assertTrue("Thumbnail dimensions must each be in 1..256: ${width}x$height",
+            width in 1..MAX_THUMBNAIL_EDGE && height in 1..MAX_THUMBNAIL_EDGE)
+        val thumbUrl = result.getString("thumbUrl")
+        assertTrue("Expected a browser Blob URL, not an original image URL or data URL", thumbUrl.startsWith("blob:"))
+        awaitScript(scenario, """
+            (() => {
+              const preview = document.getElementById('media-preview');
+              const status = document.getElementById('media-status');
+              return status?.textContent?.trim() === 'Preview ready' && !!preview && !preview.hidden &&
+                preview.complete && preview.currentSrc === ${JSONObject.quote(thumbUrl)} &&
+                preview.naturalWidth === $width && preview.naturalHeight === $height;
+            })()
+        """.trimIndent())
+        Log.i(TAG, "Photo Picker ($pickerPackage): ${FIXTURE_WIDTH}x$FIXTURE_HEIGHT PNG (${fixture.size} bytes) -> ${width}x$height preview")
+        return thumbUrl
     }
 
-    private fun assertReadable(scenario: ActivityScenario<ConsumerActivity>, ref: String, fixture: Fixture) {
-        val read = value(call(scenario, readExpression(ref)))
-        assertEquals(fixture.base64, read.getString("dataBase64"))
-        assertTrue("The small fixture should fit in one read: $read", read.getBoolean("done"))
-    }
-
-    private fun readExpression(ref: String) = "window.__sdkMediaRead(${JSONObject.quote(ref)})"
+    private fun isThumbnailReadable(scenario: ActivityScenario<ConsumerActivity>, thumbUrl: String): Boolean =
+        value(call(scenario, """
+            (async () => ({ readable: await window.__sdkThumbReadable(${JSONObject.quote(thumbUrl)}) }))()
+        """.trimIndent())).getBoolean("readable")
 
     private fun withFixture(run: (Fixture) -> Unit) {
         val bytes = try {
@@ -134,6 +232,11 @@ class ReleaseSystemPhotoPickerTest {
         } catch (error: FileNotFoundException) {
             throw AssertionError("Build the shared SDK consumer or set -PojsbConsumerMediaFixture to its MediaFixture.png", error)
         }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        assertEquals("Expected the synthetic PNG from the thumbnail build", PNG_MIME, bounds.outMimeType)
+        assertEquals("Expected the new 800×640 shared fixture", FIXTURE_WIDTH, bounds.outWidth)
+        assertEquals("Expected the new 800×640 shared fixture", FIXTURE_HEIGHT, bounds.outHeight)
         val displayName = "ojsb-release-${UUID.randomUUID()}.png"
         val resolver = app.contentResolver
         val row = checkNotNull(resolver.insert(
@@ -160,8 +263,7 @@ class ReleaseSystemPhotoPickerTest {
             val format = DateFormat.getInstanceForSkeleton("MMMdyhmmss", Locale.getDefault()).apply {
                 setContext(DisplayContext.CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE)
             }
-            run(Fixture(displayName, times.map { format.format(Date(it)) }.toSet(), bytes.size,
-                Base64.encodeToString(bytes, Base64.NO_WRAP)))
+            run(Fixture(displayName, times.map { format.format(Date(it)) }.toSet(), bytes.size))
         } finally {
             // Delete only the URI returned by our own insert, even if selection or assertions fail.
             assertEquals("Could not clean up the test-owned MediaStore row", 1, resolver.delete(row, null, null))
@@ -261,15 +363,20 @@ class ReleaseSystemPhotoPickerTest {
         throw AssertionError("Timed out waiting for $description. Active package: ${activePackage()}")
     }
 
-    private data class Fixture(val displayName: String, val timestamps: Set<String>, val size: Int, val base64: String)
+    private data class Fixture(val displayName: String, val timestamps: Set<String>, val size: Int)
 
     private companion object {
         const val TAG = "OjsbSdkPhotoPickerTest"
         const val PNG_MIME = "image/png"
+        const val FIXTURE_WIDTH = 800
+        const val FIXTURE_HEIGHT = 640
+        const val MAX_THUMBNAIL_EDGE = 256
+        const val MAX_THUMBNAIL_BYTES = 32 * 1024
         const val PICKER_TIMEOUT = 10_000L
-        const val PERMISSION_DENIED = -32003
         const val UNAVAILABLE = -32000
+        const val METHOD_NOT_FOUND = -32601
+        val IMAGE_ID = Regex("[0-9a-f]{32}")
         const val MEDIA_PROBES = """typeof window.__sdkMediaProbe === 'function' &&
-            typeof window.__sdkMediaRead === 'function' && typeof window.__sdkMediaRelease === 'function'"""
+            typeof window.__sdkThumbReadable === 'function'"""
     }
 }

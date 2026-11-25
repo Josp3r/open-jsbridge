@@ -4,23 +4,24 @@ import type { Bridge, CallOptions } from './bridge.js';
 import { isObject } from './session.js';
 
 const chooseMethod = 'media.chooseMedia@1';
-const readMethod = 'bridge.blob.read@1';
-const releaseMethod = 'bridge.blob.release@1';
-const chunkSize = 64 * 1024;
-const maxBlobSize = 20 * 1024 * 1024;
-const blobRefPattern = /^[0-9a-f]{32}$/;
-const mimePattern = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
-const base64Pattern = /^[A-Za-z0-9+/]+={0,2}(?![\s\S])/;
+const maxImageBytes = 20 * 1024 * 1024;
+const maxThumbnailBytes = 32 * 1024;
+const previewLifetime = 300_000;
+const mediaId = /^[0-9a-f]{32}$/;
+const imageMime = /^image\/[a-z0-9!#$&^_.+-]+$/i;
+const jpegBase64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?(?![\s\S])/;
 
-export interface BlobResource {
-  blobRef: string;
+const previews = new WeakMap<Bridge, Map<string, ReturnType<typeof setTimeout>>>();
+
+export interface ImageResource {
+  type: 'image';
+  id: string;
   mime: string;
   size: number;
+  width: number;
+  height: number;
   expiresAt: number;
-}
-
-export interface ImageResource extends BlobResource {
-  type: 'image';
+  thumbUrl: string;
 }
 
 export type ChooseMediaParams = {
@@ -33,52 +34,65 @@ export type ChooseMediaResult =
   | { status: 'cancelled'; files: [] }
   | { status: 'selected'; files: [ImageResource] };
 
-type MediaCallOptions = Omit<CallOptions, 'version'>;
+export function revokeMediaPreviews(client: Bridge): void {
+  const active = previews.get(client);
+  if (!active) return;
+  previews.delete(client);
+  for (const [url, timer] of active) {
+    clearTimeout(timer);
+    URL.revokeObjectURL(url);
+  }
+}
 
-function decodeChunk(chunk: unknown, size: number, expectedDone: boolean): Uint8Array | undefined {
-  if (!isObject(chunk) || typeof chunk.dataBase64 !== 'string' || chunk.done !== expectedDone ||
-      chunk.dataBase64.length !== 4 * Math.ceil(size / 3) || !base64Pattern.test(chunk.dataBase64)) {
-    return;
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function invalidSelection(): BridgeError {
+  return new BridgeError(ErrorCode.InternalError, 'Invalid media selection', { method: chooseMethod });
+}
+
+function thumbnailBlob(encoded: unknown): Blob {
+  if (typeof encoded !== 'string' || encoded.length > 4 * Math.ceil(maxThumbnailBytes / 3) ||
+      !jpegBase64.test(encoded)) throw invalidSelection();
+  const binary = atob(encoded);
+  if (binary.length < 4 || binary.length > maxThumbnailBytes ||
+      binary.charCodeAt(0) !== 255 || binary.charCodeAt(1) !== 216 ||
+      binary.charCodeAt(binary.length - 2) !== 255 || binary.charCodeAt(binary.length - 1) !== 217) {
+    throw invalidSelection();
   }
-  let binary: string;
-  try {
-    binary = atob(chunk.dataBase64);
-  } catch {
-    return;
-  }
-  if (binary.length !== size) return;
-  return Uint8Array.from(binary, (byte) => byte.charCodeAt(0));
+  return new Blob([Uint8Array.from(binary, (byte) => byte.charCodeAt(0))], { type: 'image/jpeg' });
 }
 
 export function createMediaHelpers(client: Bridge) {
   return {
     media: {
-      chooseMedia(params?: ChooseMediaParams, options?: MediaCallOptions): Promise<ChooseMediaResult> {
-        return client.call(chooseMethod, params, { ...options, timeout: options?.timeout ?? 120_000 });
-      },
-    },
-    blob: {
-      async read(resource: BlobResource, options?: MediaCallOptions): Promise<Blob> {
-        if (!resource || typeof resource.blobRef !== 'string' || !blobRefPattern.test(resource.blobRef) ||
-            !Number.isSafeInteger(resource.size) || resource.size < 1 || resource.size > maxBlobSize ||
-            typeof resource.mime !== 'string' || resource.mime.length > 128 || !mimePattern.test(resource.mime) ||
-            !Number.isSafeInteger(resource.expiresAt) || resource.expiresAt < 1) {
-          throw new BridgeError(ErrorCode.InvalidParams, 'Invalid blob resource', { method: readMethod });
+      async chooseMedia(params?: ChooseMediaParams, options?: Omit<CallOptions, 'version'>): Promise<ChooseMediaResult> {
+        const active = previews.get(client) ?? new Map<string, ReturnType<typeof setTimeout>>();
+        previews.set(client, active);
+        const result = await client.call(chooseMethod, params, { ...options, timeout: options?.timeout ?? 120_000 });
+        if (previews.get(client) !== active) {
+          throw new BridgeError(ErrorCode.Cancelled, 'Media selection retired', { method: chooseMethod });
         }
+        if (!isObject(result) || !Array.isArray(result.files)) throw invalidSelection();
+        if (result.status === 'cancelled' && result.files.length === 0) return { status: 'cancelled', files: [] };
+        const [file] = result.files;
+        if (result.status !== 'selected' || result.files.length !== 1 || !isObject(file)) throw invalidSelection();
+        const { type, id, mime, size, width, height, expiresAt, thumbnailBase64 } = file;
+        if (type !== 'image' || typeof id !== 'string' || !mediaId.test(id) ||
+            typeof mime !== 'string' || mime.length > 128 || !imageMime.test(mime) ||
+            !isPositiveInteger(size) || size > maxImageBytes ||
+            !isPositiveInteger(width) || !isPositiveInteger(height) ||
+            width > 2147483647 || height > 2147483647 || !isPositiveInteger(expiresAt)) throw invalidSelection();
 
-        const { blobRef, size, mime } = resource;
-        const bytes = new Uint8Array(size);
-        for (let offset = 0; offset < size; offset += chunkSize) {
-          const length = Math.min(chunkSize, size - offset);
-          const chunk = await client.call(readMethod, { blobRef, index: offset / chunkSize }, options);
-          const decoded = decodeChunk(chunk, length, offset + length === size);
-          if (!decoded) throw new BridgeError(ErrorCode.InternalError, 'Invalid blob chunk', { method: readMethod });
-          bytes.set(decoded, offset);
-        }
-        return new Blob([bytes], { type: mime });
-      },
-      release(blobRef: string, options?: MediaCallOptions): Promise<Record<string, never>> {
-        return client.call(releaseMethod, { blobRef }, options);
+        const ttl = Math.min(expiresAt - Date.now(), previewLifetime);
+        if (ttl <= 0) throw new BridgeError(ErrorCode.PermissionDenied, 'Media selection expired', { method: chooseMethod });
+        const thumbUrl = URL.createObjectURL(thumbnailBlob(thumbnailBase64));
+        active.set(thumbUrl, setTimeout(() => {
+          active.delete(thumbUrl);
+          URL.revokeObjectURL(thumbUrl);
+        }, ttl));
+        return { status: 'selected', files: [{ type, id, mime, size, width, height, expiresAt, thumbUrl }] };
       },
     },
   };
