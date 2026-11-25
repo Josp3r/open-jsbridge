@@ -65,7 +65,10 @@
       "properties": {
         "jsonrpc": { "const": "2.0" },
         "id": { "$ref": "#/$defs/id" },
-        "method": { "$ref": "#/$defs/method" },
+        "method": {
+          "$ref": "#/$defs/method",
+          "not": { "type": "string", "pattern": "^bridge\\.(cancel|event|progress)(@[1-9][0-9]*)?$" }
+        },
         "params": { "type": "object" }
       }
     },

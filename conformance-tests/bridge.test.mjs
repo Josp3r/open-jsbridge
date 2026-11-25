@@ -730,7 +730,7 @@ test('pagehide retires the receiver and pending calls, then bfcache restore nego
   const shim = shimWindow(t, {
     name: 'mock', protocols: [1],
     postMessage(raw) {
-      return new Promise((resolve) => sent.push({ rpc: JSON.parse(raw).rpc, resolve }));
+      return new Promise((resolve) => sent.push({ ...JSON.parse(raw), resolve }));
     },
   });
   const client = createBridge({ handshakeTimeout: 200 });
@@ -747,23 +747,26 @@ test('pagehide retires the receiver and pending calls, then bfcache restore nego
   await Promise.all([pending, queued]);
   assert.equal(shim.receiver, undefined);
   assert.equal(client.has(echo), false);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 3);
+  assert.equal(sent[2].meta.sid, hello.sid);
+  assert.equal(sent[2].rpc.method, 'bridge.cancel');
+  assert.deepEqual(sent[2].rpc.params, { requestId: sent[1].rpc.id });
 
   restorePage(shim.window);
   assert.equal(client.state, 'connecting');
   const after = client.ready();
   await setImmediate();
-  assert.equal(sent[2].rpc.method, 'bridge.hello');
-  assert.notEqual(sent[2].rpc.id, sent[0].rpc.id);
+  assert.equal(sent[3].rpc.method, 'bridge.hello');
+  assert.notEqual(sent[3].rpc.id, sent[0].rpc.id);
   sent[1].resolve(frame({ id: sent[1].rpc.id, result: 'old request' }, { sid: hello.sid }));
   shim.window.__OJSB_RECEIVE__(frame({ id: sent[0].rpc.id, result: hello }));
   assert.equal(client.state, 'connecting');
 
   const sid = 'restored-session';
-  sent[2].resolve(frame({ id: sent[2].rpc.id, result: { ...hello, sid } }));
+  sent[3].resolve(frame({ id: sent[3].rpc.id, result: { ...hello, sid } }));
   await after;
   const call = client.call(echo);
-  const id = sent[3].rpc.id;
+  const id = sent[4].rpc.id;
   shim.window.__OJSB_RECEIVE__(frame({ id, result: 'old session' }, { sid: hello.sid }));
   shim.window.__OJSB_RECEIVE__(frame({ id, result: 'restored session' }, { sid }));
   assert.equal(await call, 'restored session');
@@ -787,6 +790,92 @@ test('pagehide cancels a bootstrap response that arrived but has not installed i
   shim.window.__OJSB_RECEIVE__(frame({ id: sent[1].rpc.id, result: { ...hello, sid: 'fresh-session' } }));
   await after;
   assert.equal(client.has(echo), true);
+});
+
+test('a queued call takes a JSON snapshot of its params before handshaking', async () => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const params = { nested: { order: ['first'] }, keep: true };
+  const pending = client.call(echo, params);
+  params.nested.order.push('later mutation');
+  delete params.keep;
+  await setImmediate();
+  connect(transport);
+  await client.ready();
+  assert.deepEqual(transport.sent[1].rpc.params, { nested: { order: ['first'] }, keep: true });
+  await assert.rejects(client.call(echo, { nested: { notJson: undefined } }), { code: ErrorCode.InvalidParams });
+  assert.equal(transport.sent.length, 2);
+  transport.push(frame({ id: transport.sent[1].rpc.id, result: true }, { sid: hello.sid }));
+  assert.equal(await pending, true);
+});
+
+test('aborting or closing during a params snapshot never enqueues the call', async () => {
+  for (const retire of ['abort', 'close']) {
+    const transport = controlledTransport();
+    const client = createBridge({ adapter: transport.adapter });
+    const ready = client.ready();
+    await setImmediate();
+    connect(transport);
+    await ready;
+
+    const controller = new AbortController();
+    const params = new Proxy({}, {
+      ownKeys() {
+        if (retire === 'abort') controller.abort();
+        else client.close();
+        return [];
+      },
+    });
+    await assert.rejects(client.call(echo, params, { signal: controller.signal, timeout: 100 }), {
+      code: ErrorCode.Cancelled,
+    });
+    assert.deepEqual(transport.sent.map(({ rpc }) => rpc.method), ['bridge.hello']);
+    client.close();
+  }
+});
+
+test('the hello byte limit applies before the frame is parsed', async (t) => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter });
+  const ready = client.ready();
+  await setImmediate();
+  const oversized = frame({ id: transport.sent[0].rpc.id, result: { ...hello, padding: '你'.repeat(350_000) } });
+  assert.ok(oversized.length < 1_048_576);
+  assert.ok(Buffer.byteLength(oversized) > 1_048_576);
+  const parse = JSON.parse;
+  let parsedOversized = false;
+  t.mock.method(JSON, 'parse', (raw, ...options) => {
+    if (raw === oversized) parsedOversized = true;
+    return parse(raw, ...options);
+  });
+  transport.push(oversized);
+  connect(transport);
+  assert.deepEqual(await ready, host);
+  assert.equal(parsedOversized, false);
+});
+
+test('close cancels outstanding work, removes lifecycle listeners and prevents reuse', async (t) => {
+  const sent = [];
+  const shim = shimWindow(t, { name: 'mock', protocols: [1], postMessage(raw) {
+    const request = JSON.parse(raw);
+    sent.push(request);
+    if (request.rpc.method === 'bridge.hello') return Promise.resolve(frame({ id: request.rpc.id, result: hello }));
+  } });
+  const remove = t.mock.method(shim.window, 'removeEventListener');
+  const client = createBridge();
+  await client.ready();
+  const pending = assert.rejects(client.call(echo), { code: ErrorCode.Cancelled });
+  client.close();
+  client.close();
+  await pending;
+  assert.equal(shim.receiver, undefined);
+  assert.equal(sent[2].rpc.method, 'bridge.cancel');
+  assert.deepEqual(remove.mock.calls.map(({ arguments: args }) => args[0]), ['pagehide', 'pageshow']);
+  restorePage(shim.window);
+  await assert.rejects(client.ready(), { code: ErrorCode.Cancelled });
+  await assert.rejects(client.reconnect(), { code: ErrorCode.Cancelled });
+  await assert.rejects(client.call(echo), { code: ErrorCode.Cancelled });
+  assert.equal(sent.length, 3);
 });
 
 test('request size preflight enforces the negotiated UTF-8 byte limit', async () => {

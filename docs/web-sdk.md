@@ -10,6 +10,8 @@ App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`�
 
 未发现注入通道时，`ready()` 返回 `-32000`。已发送的握手超时会换新 ID 自动重试一次，再次超时返回 `-32001`。非法握手结果返回 `-32600`。握手失败后可以调用 `bridge.reconnect()` 重新探测与握手，连接正常时返回当前宿主信息。 等待通道发现和每次 hello 分别使用 `handshakeTimeout`，默认各 3 秒。连接中调用 `reconnect()` 分享当前握手 Promise。文档在 `pagehide` 后挂起期间返回 `-32000`，恢复后由 SDK 重新握手。
 
+用 `createBridge()` 创建独立实例时，可在拥有它的页面或组件卸载时调用 `close()`。它会解绑监听，拒绝待处理调用，并永久停用该实例。关闭后 `ready()`、`reconnect()` 和 `call()` 返回 `-32002`。调用时 SDK 会保存参数的 JSON 快照，排队期间修改原对象不会改变发送值。关闭实例或页面离开时，SDK 会用旧 `sid` 尽力取消已发送且宿主支持取消的请求，再解除传输绑定。仍在排队的请求在本地以 `-32002` 取消。两种情况都会撤销该实例管理的媒体预览 URL。
+
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
@@ -69,6 +71,7 @@ export interface Bridge {
   readonly host?: HostInfo;
   ready(): Promise<HostInfo>;
   reconnect(): Promise<HostInfo>;
+  close(): void;
   has(method: string, version?: number): boolean;
 
   call<M extends keyof MethodMap>(method: M, params?: MethodMap[M]['params'], opts?: CallOptions): Promise<MethodMap[M]['result']>;

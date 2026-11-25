@@ -99,6 +99,15 @@ test('Web exposes only a revocable JPEG object URL and the original metadata', a
   assert.deepEqual(requests, ['bridge.hello', 'media.chooseMedia@1', 'bridge.hello', 'media.chooseMedia@1']);
 });
 
+test('closing a bridge permanently revokes its media previews', async (t) => {
+  const { bridge, media } = setup(t, () => ({ status: 'selected', files: [resource] }));
+  const { files: [{ thumbUrl }] } = await media.chooseMedia();
+  assert.equal((await fetch(thumbUrl)).ok, true);
+  bridge.close();
+  await assert.rejects(fetch(thumbUrl));
+  await assert.rejects(media.chooseMedia(), { code: ErrorCode.Cancelled });
+});
+
 test('Web rejects over-limit and malformed thumbnails before returning an object URL', async (t) => {
   let source = thumbnailBase64;
   const { media } = setup(t, () => ({ status: 'selected', files: [{ ...resource, thumbnailBase64: source }] }));

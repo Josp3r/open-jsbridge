@@ -37,6 +37,7 @@ flowchart LR
 3. 一条消息 MUST 是一个 JSON object，包含一个 JSON-RPC 2.0 对象。v1 在信封层和 `rpc` 层均不支持批量消息。接收方 MUST NOT 依赖字段顺序。
 4. 整数超出 JavaScript 安全整数范围（−(2^53−1) 至 2^53−1）时 MUST 以字符串传输。JSON 数字须能以有限值解码。
 5. Web 编码器在序列化前校验整个信封的 JSON 值。对象字段必须是可枚举的字符串数据属性，数组必须稠密。遇到 JavaScript 专有值、访问器、非普通对象、自定义序列化函数或循环引用时，编码器以 `-32600` 拒绝。可选字段应直接省略。
+6. Web 解码器在返回 JSON 数据前过滤任意层级的 `__proto__`、`constructor` 和 `prototype` 对象字段。
 
 ---
 
@@ -434,7 +435,7 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 
 ### 10.3 上限
 
-- `limits.maxMessageBytes` 按 UTF-8 编码后的完整消息计算。接收方 MUST 在解析前丢弃超限帧，以免读取无法安全关联的请求或通知 id。需要传输层回执时返回 `null`。
+- `limits.maxMessageBytes` 按 UTF-8 编码后的完整消息计算。Web SDK 在建立会话前使用 1 MiB 的入站帧上限。接收方 MUST 在解析前丢弃超限帧，以免读取无法安全关联的请求或通知 id。需要传输层回执时返回 `null`。
 - SDK SHOULD 在发送前检查大小并以 `-32006` 本地结算超限请求。若已校验的请求产生超限结果，Host MUST 用同一请求 id 返回 `-32006` 错误响应。
 
 ---
