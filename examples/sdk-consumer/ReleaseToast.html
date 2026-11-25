@@ -7,12 +7,16 @@
     <style>
       body { font: 1rem system-ui, sans-serif; margin: 2rem; }
       button { font: inherit; padding: 0.6rem 1rem; }
+      img { max-width: 12rem; max-height: 12rem; }
     </style>
   </head>
   <body>
     <h1>SDK consumer</h1>
     <button id="run" type="button">Show native toast</button>
     <p id="status" role="status">Loading Web SDK…</p>
+    <button id="pick" type="button">Choose image</button>
+    <p id="media-status" role="status"></p>
+    <img id="media-preview" alt="Selected image" hidden>
     <!-- sdk-consumer-script -->
   </body>
 </html>

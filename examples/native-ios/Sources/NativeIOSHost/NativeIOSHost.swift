@@ -8,13 +8,15 @@ public enum NativeIOSHost {
         public let networkStatus: Bool
         public let networkChanges: Bool
         public let toast: Bool
+        public let media: Bool
 
         public init(deviceInfo: Bool = false, networkStatus: Bool = false, networkChanges: Bool = false,
-                    toast: Bool = false) {
+                    toast: Bool = false, media: Bool = false) {
             self.deviceInfo = deviceInfo
             self.networkStatus = networkStatus
             self.networkChanges = networkChanges
             self.toast = toast
+            self.media = media
         }
     }
 
@@ -286,6 +288,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     private let wire: WireHost
     private let network: NetworkModule?
     private let toast: ToastModule?
+    private let mediaPicker: MediaPicker?
     private var activeDocument: String?
     private var pending: [Delivery] = []
     private var businessWork: [UUID: BusinessWork] = [:]
@@ -308,8 +311,14 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             ? NetworkModule(watch: watchNetwork ?? NetworkModule.watchSystemPath) : nil
         self.network = network
         toast = options.toast ? ToastModule() : nil
+        #if os(iOS)
+        mediaPicker = options.media ? MediaPicker() : nil
+        #else
+        mediaPicker = nil
+        #endif
         wire = WireHost(platform: "ios", options: options, businessMethods: businessMethods,
-                        businessEvents: businessEvents, enableEcho: enableEcho, networkType: { network?.type ?? .unknown })
+                        businessEvents: businessEvents, enableEcho: enableEcho,
+                        supportsMedia: mediaPicker != nil, networkType: { network?.type ?? .unknown })
     }
 
     func install(in controller: WKUserContentController) {
@@ -384,6 +393,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         wire.reset()
         network?.stop()
         toast?.dismiss()
+        mediaPicker?.cancel()
         deferredReplies.discard()
         let abandoned = businessWork.values
         businessWork.removeAll()
@@ -420,6 +430,13 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                     let exceedsInflightLimit = delivery.exceedsBacklogLimit || self.businessWork.count >= WireHost.maxInflight
                     if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: exceedsInflightLimit,
                                                         presentToast: { self.toast?.show($0, in: webView) ?? false },
+                                                        chooseMedia: { [weak self] _ in
+                                                            guard let picker = self?.mediaPicker, let webView = self?.webView else {
+                                                                throw MediaProfileError.unavailable
+                                                            }
+                                                            return try await picker.choose(in: webView)
+                                                        },
+                                                        mediaBusy: self.businessWork.values.contains { $0.call.isMedia },
                                                         onBusinessCall: { businessCall = $0 },
                                                         onCancelRequest: { self.cancel($0, document: delivery.document) },
                                                         afterReply: { acknowledge = $0 }) {
@@ -469,6 +486,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
               let work = businessWork.removeValue(forKey: id) else { return }
         // Removing the task gives cancellation sole ownership of the original WithReply.
         work.task.cancel()
+        if work.call.isMedia { mediaPicker?.cancel() }
         guard let response = wire.cancelBusinessCall(work.call) else {
             work.reply(nil)
             return

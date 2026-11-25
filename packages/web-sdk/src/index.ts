@@ -4,12 +4,14 @@ import {
 } from '../../protocol/src/index.js';
 import { BridgeError } from './errors.js';
 import { EventSubscriptions, hasSessionEvent, type EventControl, type EventListener, type EventSubscription } from './events.js';
+import { createMediaHelpers } from './media.js';
 import { isObject, readSession, type HostInfo, type Session } from './session.js';
 import { findBrowserAdapter, type Adapter } from './transport.js';
 
 export { BridgeError, ErrorCode };
 export type { EventListener, EventSubscription };
 export type { Adapter, HostInfo };
+export type { BlobResource, ChooseMediaParams, ChooseMediaResult, ImageResource } from './media.js';
 
 export type BridgeState = 'idle' | 'connecting' | 'ready' | 'unavailable';
 
@@ -318,7 +320,7 @@ class WebBridge implements Bridge {
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events', 'blob'],
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
@@ -508,6 +510,7 @@ export function createBridge(options: BridgeOptions = {}): Bridge {
 }
 
 export const bridge = createBridge();
+export const { media, blob } = createMediaHelpers(bridge);
 
 export const ui = {
   toast: {

@@ -34,6 +34,7 @@ class AndroidBridge private constructor(
         val networkStatus: Boolean = false,
         val networkChanges: Boolean = false,
         val toast: Boolean = false,
+        val media: Boolean = false,
     )
 
     /**
@@ -105,6 +106,7 @@ class AndroidBridge private constructor(
          * Returns `null` when the installed WebView lacks the required message or script support.
          * The app is responsible for enabling JavaScript and loading content from the allowed HTTPS origin.
          * [events] opts in to unique, unversioned business event names, outside reserved namespaces.
+         * Media requires [Options.media], an app-owned [mediaPicker], and the system Photo Picker.
          */
         @MainThread
         fun attach(
@@ -113,6 +115,7 @@ class AndroidBridge private constructor(
             options: Options = Options(),
             methods: List<BusinessMethod> = emptyList(),
             events: List<String> = emptyList(),
+            mediaPicker: AndroidMediaPicker? = null,
         ): AndroidBridge? {
             requireUiThread()
             val origin = requireNotNull(DocumentTransport.exactOrigin(allowedOrigin)) {
@@ -123,16 +126,24 @@ class AndroidBridge private constructor(
             registeredMethods.indexBusinessMethods()
             val registeredEvents = events.toList()
             registeredEvents.indexBusinessEvents()
-            return install(webView, origin, modulesFor(webView, options), registeredMethods, events = registeredEvents)
+            return install(webView, origin, modulesFor(webView, options, mediaPicker), registeredMethods,
+                events = registeredEvents)
         }
 
-        internal fun modulesFor(webView: WebView, options: Options): BridgeModules {
+        internal fun modulesFor(
+            webView: WebView,
+            options: Options,
+            mediaPicker: AndroidMediaPicker? = null,
+        ): BridgeModules {
             val network = if (options.networkStatus || options.networkChanges) AndroidNetwork(webView.context) else null
             return BridgeModules(
                 device = if (options.deviceInfo) androidDeviceModule() else null,
                 network = if (options.networkStatus) network else null,
                 networkEvents = if (options.networkChanges) network?.events else null,
                 toast = if (options.toast) androidToastModule(webView.context) else null,
+                media = if (options.media && mediaPicker != null && AndroidMediaPicker.isAvailable(webView.context)) {
+                    mediaPicker.module(webView.context)
+                } else null,
             )
         }
 

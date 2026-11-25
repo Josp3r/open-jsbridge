@@ -1,6 +1,6 @@
 # Swift / WKWebView 示例
 
-`NativeIOSDemo` 的 Debug 构建加载仓库的 Web Demo，Release 构建演示设备查询和 App 注册的业务方法。`IOSSDKConsumer` 使用 Swift Package 中的 `NativeIOSHost` 产品，在独立的 Release App 中运行 iOS 和 Android 共用的 H5，验证设备查询和原生 toast。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
+`NativeIOSDemo` 的 Debug 构建加载仓库的 Web Demo，Release 构建演示设备查询和 App 注册的业务方法。`IOSSDKConsumer` 使用 Swift Package 中的 `NativeIOSHost` 产品，在独立的 Release App 中运行 iOS 和 Android 共用的 H5，验证设备查询、原生 toast、相册选择和图片读取。Swift Package 使用 iOS 14 的 WithReply API，示例 App 和测试目标需要 iOS 15+。
 
 ## 安装 Swift Package
 
@@ -80,6 +80,10 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 
 在自有 App 中调用 `NativeIOSHost.attach` 时，使用 `options: .init(deviceInfo: true, toast: true)` 开启对应能力。`toast` 默认关闭。Web SDK 可以调用 `bridge.call('ui.toast.show', { text: '保存成功' })`。文本长度为 1–120 个 Unicode 码点，宿主接收展示请求后返回 `{}`。当前 WebView 须位于前台窗口。toast 支持 VoiceOver 公告，自动消失，并随文档会话失效清除。
 
+向 options 加上 `media: true` 可开启系统相册单张图片选择，以及 `bridge.blob.read@1` 和 `bridge.blob.release@1`。`media` 默认关闭。iOS 通过 PHPicker 读取用户选中的图片，宿主无需申请整个照片库的访问权限。点击 H5 的 **Choose image** 打开选择器。选中后 H5 读取图片字节并渲染预览，取消时显示 **Selection cancelled**。
+
+宿主最多为当前文档保存 20 MiB，并按 64 KiB 分片供 H5 读取。图片大小超过上限或会话额度不足时返回 `-32006`。已有选择请求时返回 `-32010`。引用在五分钟后过期，跨文档导航、Web 内容进程退出、附件拆卸或显式释放会提前使引用失效。
+
 ## 宿主的关键代码
 
 - [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。Debug Demo 使用回环地址，App 接入入口使用精确的 HTTPS origin。
@@ -106,6 +110,15 @@ xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme NativeIO
 xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme IOSSDKConsumer \
   -configuration Release -destination 'platform=iOS Simulator,name=iPhone 17e' \
   CODE_SIGNING_ALLOWED=NO test
+```
+
+`IOSSDKConsumerMedia` scheme 通过 UI 测试取消一次选择，再从系统相册选择测试图片。H5 逐字节对照测试基准并显示预览。先生成共用 H5，再启动独立模拟器并把测试图片作为最新照片导入。
+
+```sh
+xcrun simctl addmedia <模拟器UDID> dist/sdk-consumer/MediaFixture.png
+xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj -scheme IOSSDKConsumerMedia \
+  -configuration Release -destination 'platform=iOS Simulator,id=<模拟器UDID>' \
+  -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
 ```
 
 在 macOS 上可离线测试 Swift 协议处理。

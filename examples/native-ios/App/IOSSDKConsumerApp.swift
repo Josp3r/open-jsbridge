@@ -17,6 +17,14 @@ private struct ConsumerWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        if let expected = ProcessInfo.processInfo.environment["OJSB_EXPECTED_MEDIA_BASE64"],
+           let encoded = try? JSONEncoder().encode(expected) {
+            let literal = String(decoding: encoded, as: UTF8.self)
+            let script = "if (location.origin === 'https://sdk-consumer.example.test') window.__sdkExpectedMediaBase64 = \(literal);"
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true
+            ))
+        }
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
 
@@ -26,7 +34,7 @@ private struct ConsumerWebView: UIViewRepresentable {
             }
             let html = try String(contentsOf: resource, encoding: .utf8)
             context.coordinator.attachment = try NativeIOSHost.attach(
-                to: webView, allowing: origin, options: .init(deviceInfo: true, toast: true)
+                to: webView, allowing: origin, options: .init(deviceInfo: true, toast: true, media: true)
             )
             // This offline example assigns the HTTPS base URL to the bundled page.
             webView.loadHTMLString(html, baseURL: origin)

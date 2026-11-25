@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/media.chooseMedia",
+  "title": "media.chooseMedia",
+  "description": "从系统相册选择一张图片，交付当前会话的短期只读引用。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "properties": {
+      "mediaType": { "const": ["image"], "default": ["image"] },
+      "sourceType": { "const": ["album"], "default": ["album"] },
+      "count": { "const": 1, "default": 1 }
+    },
+    "additionalProperties": false
+  },
+  "result": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "status": { "const": "cancelled" },
+          "files": { "type": "array", "maxItems": 0 }
+        },
+        "required": ["status", "files"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "status": { "const": "selected" },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "const": "image" },
+                "blobRef": { "$ref": "ojsb:schema/blob.ref" },
+                "mime": { "type": "string", "pattern": "^image/[a-zA-Z0-9!#$&^_.+\\-]+$", "maxLength": 128 },
+                "size": { "type": "integer", "minimum": 1, "maximum": 20971520 },
+                "expiresAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+              },
+              "required": ["type", "blobRef", "mime", "size", "expiresAt"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["status", "files"],
+        "additionalProperties": false
+      }
+    ]
+  }
+}

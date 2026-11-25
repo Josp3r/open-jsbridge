@@ -179,10 +179,10 @@ struct DeviceGetInfo: BridgeHandler {
     }
 }
 
-struct ChooseImage: BridgeHandler {
+struct PreparePhotos: BridgeHandler {
     struct Params: Decodable, Sendable { var count: Int = 1 }
     struct Result: Encodable, Sendable { let images: [BlobRef] }
-    static let method = "media.chooseImage"
+    static let method = "acme.photos.prepare"
     static let versions = [1]
     func handle(_ p: Params, version: Int, ctx: BridgeContext) async throws -> Result {
         // ... 展示 PHPicker；用户取消 → throw BridgeError.userDenied

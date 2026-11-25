@@ -1,3 +1,4 @@
+import PhotosUI
 import UIKit
 import WebKit
 import XCTest
@@ -29,14 +30,39 @@ final class IOSSDKConsumerTests: XCTestCase {
     }
 
     @MainActor
-    private func waitForConsumerPage() async throws -> WKWebView {
+    func testSharedH5MediaRequestPresentsSystemPickerAndReturnsCancellation() async throws {
+        let webView = try await waitForConsumerPage(probe: "__sdkMediaProbe")
+        _ = try await webView.callAsyncJavaScript("""
+            window.pendingMedia = window.__sdkMediaProbe();
+            return true;
+            """, arguments: [:], in: nil, contentWorld: .page)
+
+        var presented: PHPickerViewController?
+        for _ in 0..<120 {
+            if let picker = webView.window?.rootViewController?.presentedViewController as? PHPickerViewController {
+                presented = picker
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let picker = try XCTUnwrap(presented, "The Release App did not present PHPicker")
+        let delegate = try XCTUnwrap(picker.delegate)
+        delegate.picker(picker, didFinishPicking: [])
+        let result = try await webView.callAsyncJavaScript(
+            "return await window.pendingMedia;", arguments: [:], in: nil, contentWorld: .page
+        ) as? [String: Any]
+        XCTAssertEqual(result?["status"] as? String, "cancelled")
+    }
+
+    @MainActor
+    private func waitForConsumerPage(probe: String = "__sdkToastProbe") async throws -> WKWebView {
         for _ in 0..<120 {
             for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
                 for window in scene.windows where window.isKeyWindow {
                     guard let webView = findWebView(in: window) else { continue }
                     let ready = try? await webView.callAsyncJavaScript(
-                        "return typeof window.__sdkToastProbe === 'function';",
-                        arguments: [:], in: nil, contentWorld: .page
+                        "return typeof window[probe] === 'function';",
+                        arguments: ["probe": probe], in: nil, contentWorld: .page
                     ) as? Bool
                     if ready == true { return webView }
                 }
