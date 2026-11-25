@@ -28,6 +28,7 @@ internal class RpcSession(
         val params: JsonObject,
         val id: String,
         val sid: String,
+        val onCancel: (() -> Unit)? = null,
     )
 
     private class EventSubscription {
@@ -56,7 +57,10 @@ internal class RpcSession(
         }
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
-    private val canCancel = supportsCancellation && this.businessMethods.isNotEmpty()
+    private val media = modules.media?.takeIf { supportsCancellation }?.newSession()
+    private val canCancel = supportsCancellation && (this.businessMethods.isNotEmpty() || media != null)
+    // A 64 KiB binary chunk needs 87,384 bytes after base64 encoding, plus its RPC envelope.
+    val maxMessageBytes = if (media == null) MAX_MESSAGE_BYTES else 96 * 1024
     private val networkEvents = modules.networkEvents
     private val enabledEvents = if (networkEvents == null) businessEvents else businessEvents + NETWORK_CHANGED
     private var eventReceiver: ((String) -> Boolean)? = null
@@ -75,7 +79,7 @@ internal class RpcSession(
         val post = eventReceiver ?: return false
         val subscription = subscriptions[name]?.takeIf { it.acknowledged } ?: return false
         val raw = try {
-            validateOutboundValue(payload, depth = 3) // envelope, RPC, and params
+            validateOutboundValue(payload, depth = 3, limit = maxMessageBytes) // envelope, RPC, and params
             eventNotification(activeSid, name, payload)
         } catch (_: RuntimeException) {
             return false
@@ -88,7 +92,11 @@ internal class RpcSession(
         eventReceiver = null
         val stop = subscriptions[NETWORK_CHANGED]?.stop
         subscriptions.clear()
-        stop?.invoke()
+        try {
+            media?.close()
+        } finally {
+            stop?.invoke()
+        }
     }
 
     fun receive(
@@ -126,9 +134,11 @@ internal class RpcSession(
         if (id in seen) return null
         if (seen.size >= MAX_RECORDED_IDS) return failure(id, replySid, -32008, "Request limit reached")
         seen.add(id)
-        val params = rpc.get("params") as? JsonObject
+        val rawParams = rpc.get("params")
+        val params = rawParams as? JsonObject
         val versionOne = method?.removeSuffix("@1").orEmpty()
         val business = businessMethods[versionOne]
+        val activeMedia = media?.takeIf { versionOne in MEDIA_METHODS }
         val invalidMeta = when {
             !envelope.has("meta") -> false
             meta == null -> true
@@ -138,7 +148,7 @@ internal class RpcSession(
             rpc.get("jsonrpc").asStringOrNull() != "2.0" ||
             method == null || !validMethod(method) ||
             !rpc.keySet().all { it in REQUEST_KEYS } ||
-            (rpc.has("params") && params == null) || invalidMeta ||
+            (rawParams != null && params == null) || invalidMeta ||
             !validJsonNumbers(envelope) || method in NOTIFICATION_ONLY
         ) return failure(id, replySid, -32600, "Invalid request")
 
@@ -146,12 +156,17 @@ internal class RpcSession(
         if (businessBusy) return failure(id, replySid, -32008, "Rate limited")
         val handler = methods[versionOne]
         val control = versionOne == SUBSCRIBE || versionOne == UNSUBSCRIBE
-        if ((hello || handler != null || control || business != null) && meta?.get("timeout").asSafeIntegerOrNull() == 0L) {
+        if ((hello || handler != null || control || business != null || activeMedia != null) &&
+            meta?.get("timeout").asSafeIntegerOrNull() == 0L
+        ) {
             return failure(id, replySid, -32602, "Invalid request timeout")
         }
 
         if (hello) return negotiate(id, params)
         val requestSid = activeSid ?: return null
+        if (activeMedia != null) {
+            return receiveMedia(activeMedia, versionOne, params ?: JsonObject(), id, requestSid, onBusinessCall)
+        }
         if (control) {
             val events = eventNames(params) ?: return failure(id, requestSid, -32602, "Invalid event names")
             return updateSubscriptions(id, versionOne, requestSid, events, afterResponse)
@@ -176,6 +191,43 @@ internal class RpcSession(
         return failure(id, requestSid, -32601, "Method not found")
     }
 
+    private fun receiveMedia(
+        media: MediaSession,
+        method: String,
+        params: JsonObject,
+        id: String,
+        sid: String,
+        startCall: ((BusinessCall) -> Unit)?,
+    ): String? {
+        fun invalid() = failure(id, sid, -32602, "Invalid params")
+        val handler: suspend () -> JsonElement = when (method) {
+            MEDIA_CHOOSE -> {
+                if (!params.keySet().all { it in CHOOSE_KEYS } ||
+                    (params.has("mediaType") && !params.get("mediaType").isSingleChoice("image")) ||
+                    (params.has("sourceType") && !params.get("sourceType").isSingleChoice("album")) ||
+                    (params.has("count") && params.get("count").asSafeIntegerOrNull() != 1L)
+                ) return invalid()
+                suspend { media.choose() }
+            }
+            BLOB_READ -> {
+                if (params.keySet() != READ_KEYS) return invalid()
+                val ref = params.get("blobRef").asBlobRef() ?: return invalid()
+                val index = params.get("index").asSafeIntegerOrNull()
+                    ?.takeIf { it in 0L..MediaSession.MAX_CHUNK_INDEX.toLong() } ?: return invalid()
+                suspend { media.read(ref, index) }
+            }
+            BLOB_RELEASE -> {
+                if (params.keySet() != RELEASE_KEYS) return invalid()
+                val ref = params.get("blobRef").asBlobRef() ?: return invalid()
+                return success(id, sid, media.release(ref))
+            }
+            else -> error("Not a media method")
+        }
+        if (startCall == null) return failure(id, sid, -32603, "Internal error")
+        startCall(BusinessCall({ handler() }, params, id, sid, onCancel = if (method == MEDIA_CHOOSE) media::abortCopy else null))
+        return null
+    }
+
     private fun cancellationRequestId(envelope: JsonObject, rpc: JsonObject): String? {
         if (!canCancel || rpc.get("method").asStringOrNull() !in CANCEL_METHODS) return null
         val activeSid = sid ?: return null
@@ -196,10 +248,11 @@ internal class RpcSession(
     fun finishBusinessCall(call: BusinessCall, result: Result<JsonElement>): String? {
         if (sid != call.sid) return null
         val error = result.exceptionOrNull()
+        if (error is MediaFailure) return failure(call.id, call.sid, error.code, checkNotNull(error.message))
         if (error is InvalidBusinessParamsException) return failure(call.id, call.sid, -32602, "Invalid params")
         return try {
             val value = result.getOrNull() ?: return failure(call.id, call.sid, -32603, "Internal error")
-            validateOutboundValue(value, depth = 2) // envelope and RPC
+            validateOutboundValue(value, depth = 2, limit = maxMessageBytes) // envelope and RPC
             val reply = success(call.id, call.sid, value)
             if (exceedsMessageLimit(reply)) failure(call.id, call.sid, -32006, "Payload too large") else reply
         } catch (_: ReplyTooLargeException) {
@@ -288,15 +341,19 @@ internal class RpcSession(
             })
             add("capabilities", JsonObject().apply {
                 add("methods", JsonObject().apply {
-                    for (method in methods.keys + businessMethods.keys) {
+                    val mediaMethods = if (media == null) emptySet() else MEDIA_METHODS
+                    for (method in methods.keys + businessMethods.keys + mediaMethods) {
                         add(method, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
                     }
                 })
                 add("events", strings(availableEvents()))
-                add("features", JsonArray().apply { if (canCancel) add("cancel") })
+                add("features", JsonArray().apply {
+                    if (canCancel) add("cancel")
+                    if (media != null) add("blob")
+                })
             })
             add("limits", JsonObject().apply {
-                addProperty("maxMessageBytes", MAX_MESSAGE_BYTES)
+                addProperty("maxMessageBytes", maxMessageBytes)
                 addProperty("maxInflight", 1)
                 addProperty("defaultTimeoutMs", 15_000)
             })
@@ -306,6 +363,9 @@ internal class RpcSession(
         sid = sessionId
         return reply
     }
+
+    private fun exceedsMessageLimit(raw: String) =
+        raw.length > maxMessageBytes || raw.toByteArray(Charsets.UTF_8).size > maxMessageBytes
 
     companion object {
         const val MAX_MESSAGE_BYTES = 65_536
@@ -317,6 +377,14 @@ internal class RpcSession(
         private const val DEVICE_INFO = "device.getInfo"
         private const val NETWORK_STATUS = "network.getStatus"
         private const val TOAST_SHOW = "ui.toast.show"
+        private const val MEDIA_CHOOSE = "media.chooseMedia"
+        private const val BLOB_READ = "bridge.blob.read"
+        private const val BLOB_RELEASE = "bridge.blob.release"
+        private val MEDIA_METHODS = setOf(MEDIA_CHOOSE, BLOB_READ, BLOB_RELEASE)
+        private val CHOOSE_KEYS = setOf("mediaType", "sourceType", "count")
+        private val READ_KEYS = setOf("blobRef", "index")
+        private val RELEASE_KEYS = setOf("blobRef")
+        private val BLOB_REF = Regex("[0-9a-f]{32}")
         private const val SUBSCRIBE = "bridge.subscribe"
         private const val UNSUBSCRIBE = "bridge.unsubscribe"
         private const val NETWORK_CHANGED = "network.changed"
@@ -332,9 +400,6 @@ internal class RpcSession(
             }
             read()
         }
-
-        private fun exceedsMessageLimit(raw: String) =
-            raw.length > MAX_MESSAGE_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES
 
         private fun parseObject(raw: String): JsonObject? = try {
             JsonReader(StringReader(raw)).use { reader ->
@@ -355,6 +420,11 @@ internal class RpcSession(
             val number = (this as? JsonPrimitive)?.takeIf { it.isNumber }?.asDouble ?: return null
             return number.takeIf { abs(it) <= MAX_SAFE_INTEGER && it % 1 == 0.0 }?.toLong()
         }
+
+        private fun JsonElement?.asBlobRef() = asStringOrNull()?.takeIf(BLOB_REF::matches)
+
+        private fun JsonElement?.isSingleChoice(expected: String): Boolean =
+            this is JsonArray && size() == 1 && get(0).asStringOrNull() == expected
 
         private fun validMeta(meta: JsonObject) =
             (!meta.has("sid") || meta.get("sid").asStringOrNull()?.isNotEmpty() == true) &&
@@ -382,7 +452,8 @@ internal class RpcSession(
             val nodes = ArrayDeque<JsonElement>()
             nodes.add(root)
             while (nodes.isNotEmpty()) {
-                when (val node = nodes.removeLast()) {
+                val node = nodes.removeLast()
+                when (node) {
                     is JsonObject -> node.entrySet().forEach { nodes.add(it.value) }
                     is JsonArray -> node.forEach { nodes.add(it) }
                     is JsonPrimitive -> if (node.isNumber && !validJsonNumber(node.asDouble)) return false
@@ -396,9 +467,9 @@ internal class RpcSession(
 
         private class ReplyTooLargeException : RuntimeException()
 
-        private fun validateOutboundValue(root: JsonElement, depth: Int) {
+        private fun validateOutboundValue(root: JsonElement, depth: Int, limit: Int) {
             // Count a lower bound before serializing mutable Gson trees supplied by the app.
-            var remainingChars = MAX_MESSAGE_BYTES
+            var remainingChars = limit
             fun consume(chars: Int) {
                 if (chars > remainingChars) throw ReplyTooLargeException()
                 remainingChars -= chars

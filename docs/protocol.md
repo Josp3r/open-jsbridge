@@ -135,8 +135,10 @@ declare global {
 
 ### 3.4 Method 命名
 
-- 格式：`<namespace>.<name>`，可多级：`ui.toast.show`。正则：`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+$`。
-- 至少两段；`name` 用 lowerCamelCase 动词开头（`getInfo`、`openUrl`）。事件名用过去式或状态描述（`app.didEnterBackground`、`network.changed`）。
+- Wire 名称至少两段，匹配 `^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+$`。
+- 标准能力方法 SHOULD 使用 `domain.action`。`domain` 表示负责该能力的领域，`action` 为 lowerCamelCase 动词。需要说明动作对象时使用动宾结构，如 `device.getInfo`、`network.getStatus` 和 `media.chooseMedia`。
+- 一个职责内聚、可独立定义契约和启用的模块 MAY 使用 `domain.subdomain.action`。例如 `ui.toast.show` 中的 `toast` 是独立启用的原生反馈模块。
+- 事件名描述已发生的状态变化或事实，使用 lowerCamelCase，如 `network.changed` 和 `app.didEnterBackground`。
 - 保留命名空间（业务 MUST NOT 注册）：
 
 | 命名空间 | 用途 |
@@ -146,7 +148,7 @@ declare global {
 | `ojsb.*` | 未来扩展保留 |
 | `rpc.*` | JSON-RPC 保留，OJSB v1 禁止在 wire 消息中使用 |
 
-- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。已定义的设备和网络接口见 [原生基础能力](native-profiles.md)。系统能力的候选归属见 [原生能力目录提案](native-capability-catalog.md)。
+- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。已定义的契约见 [原生基础能力](native-profiles.md)。首批名称和候选归属见 [原生能力目录提案](native-capability-catalog.md)。
 - 厂商/业务扩展 SHOULD 使用反域名或公司前缀：`acme.pay.create`，避免与未来标准冲突。
 - Method 版本在 schema 中用 `x-ojsb-version` 声明。调用 MAY 写 `device.getInfo@2`。后缀使用无前导零的十进制正整数。省略时选择 Host 声明支持的最低版本。
 
@@ -325,7 +327,7 @@ sequenceDiagram
 
 ## 7. 超时与取消
 
-- **D1** 每个 request MUST 有 deadline。SDK 默认值取 `limits.defaultTimeoutMs`（握手前用 15000），业务可在调用时覆盖；`timeout: 0` 表示不超时，仅允许 schema 中声明 `x-ojsb-long-running: true` 的 method（如等待用户操作的选择器）。
+- **D1** 每个 request MUST 有 deadline。SDK 默认值取 `limits.defaultTimeoutMs`（握手前用 15000），业务可在调用时覆盖。`timeout: 0` 表示不超时，仅允许 schema 中声明 `x-ojsb-long-running: true` 的 method。
 - **D2** 调用方超时时 MUST 本地 reject `-32001`。请求已经发出、原会话仍有效且被调方在该会话声明 `cancel` 能力时，调用方 SHOULD 在该会话发送 `bridge.cancel` 通知，让被调方释放资源。等待握手时也计入调用超时。
 - **D3** 被调方 SHOULD 读取 `meta.timeout` + `meta.ts`，在明显超时后放弃执行（注意两端时钟不一致，只作提示）。
 - **D4** 取消通知用 `params.requestId` 关联被取消的请求。
@@ -416,34 +418,36 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 
 ## 10. 二进制与大数据传输
 
-所有通道都基于字符串，且大字符串会在 JS 引擎与 Native 间复制，对内存与主线程都有压力。规范按大小分三档：
+协议通道传输字符串。方法契约定义数据交付方式，调用方通过契约和握手确定可用能力。
 
-| 档位 | 大小（UTF-8 编码后的消息） | 策略 |
-|------|------------------------|------|
-| Inline | ≤ 256 KB（SHOULD） | 直接放在 params/result；二进制用 base64 字符串，字段名后缀 `Base64`（如 `imageBase64`） |
-| Chunked | 256 KB ~ `limits.maxMessageBytes` 以上、无本地资源 URL 能力时 | 使用 `bridge.blob.*` 分片（见下） |
-| URL 引用 | 大文件、媒体 | Host 返回 **本地资源 URL**，Web 直接 `fetch()` / `<img src>` |
+| 方式 | 适用范围 | 传输 |
+|------|----------|------|
+| Inline | 小数据，完整 UTF-8 消息 SHOULD ≤ 256 KB，仍遵守握手上限 | 直接放在 params/result。二进制字段使用 Base64 字符串，字段名以 `Base64` 结尾 |
+| 分片读取 | 方法交付的会话内只读数据，单个资源 1 字节至 20 MiB | Host 发放 `blobRef`，Web 调用 `bridge.blob.read@1` 和 `bridge.blob.release@1` |
+| 本地资源 URL | 有专门契约并能执行等效访问控制的平台扩展 | Host 发放受控 URL，Web 按扩展契约读取 |
 
-### 10.1 URL 引用（推荐）
+256 KB 是 Inline 的建议值。`media.chooseMedia@1` 统一使用分片读取，包括较小的图片。单条消息的实际限制见 §10.3。
 
-- Host 返回 `{ "blob": { "url": "<scheme>://blob/<token>", "mime": "image/jpeg", "size": 2345678, "expiresAt": 1763880600000 } }`。
-- iOS：`WKURLSchemeHandler` 注册自定义 scheme（如 `ojsb-blob://`）。注意自定义 scheme 与页面 origin 不同，`fetch` 会受 CORS 约束，handler MUST 返回 `Access-Control-Allow-Origin: <页面 origin>`。
-- Android：`shouldInterceptRequest` 或 `androidx.webkit.WebViewAssetLoader` 风格，在页面同源下挂一个虚拟路径（如 `https://<page-host>/__ojsb__/blob/<token>`）返回数据，可规避跨源问题；或使用 `https://appassets.androidplatform.net` 一类专用域。
-- token MUST 不可猜测（≥128 bit 随机）、一次性或短时有效（默认 ≤ 10 分钟）、绑定 sid；会话失效时 MUST 释放。
-- Web → Host 上传大数据：优先让 Host 提供上传 URL（`bridge.blob.createUpload` 返回一个 Host 拦截的 URL，Web 用 `fetch(url, {method:'PUT', body})`）。注意：部分 WebView 的请求拦截 API 拿不到请求体，此时退回分片方案；具体能力以 Host 在 `features` 中是否广告 `blob.upload` 为准。
+### 10.1 URL 引用（扩展方案）
 
-### 10.2 分片（兜底）
+本地资源 URL 需要独立的能力声明与契约。扩展必须定义允许访问的 origin、frame、document 和 sid、过期和释放行为，以及其承诺支持的读取方式。只有 Host 能验证这些作用域时才可发放 URL。`blob` 特性声明只承诺 §10.2 的分片读取与释放。应用层上传或下载按自己的网络或文件传输契约处理。
 
-```
-bridge.blob.open   { mime, size, direction: "upload" }        → { blobId, chunkSize }
-bridge.blob.write  { blobId, index, dataBase64 }              → { }
-bridge.blob.close  { blobId, sha256? }                        → { blobRef }
-bridge.blob.read   { blobRef, index }                         → { dataBase64, done }
-bridge.blob.release{ blobRef }                                → { }
-```
+<a id="102-分片兜底"></a>
 
-- 业务 method 参数中以 `{ "$blobRef": "..." }` 引用已上传对象。
-- 并发分片数 SHOULD ≤ 4，Host MUST 对 blob 总量设上限并在会话结束时回收。
+### 10.2 分片读取与释放
+
+`blob` 是可选的协议特性。为当前调用方发放 v1 分片引用的 Host MUST 在握手中通告 `blob` 和下列两个方法的 v1，并按 §11 校验调用。引用由 `media.chooseMedia@1` 等发放方法返回，其描述符声明 MIME 类型、字节大小和毫秒级 Unix 到期时间。[媒体能力契约](native-profiles.md#media)
+
+- [`bridge.blob.read@1`](../spec/methods/bridge/blob/read.json) 接收 `{ blobRef, index }`，返回 `{ dataBase64, done }`。同一引用在有效期内可以按索引重复读取。
+- [`bridge.blob.release@1`](../spec/methods/bridge/blob/release.json) 接收 `{ blobRef }`，返回 `{}`。授权和会话校验通过后，格式正确的引用均返回空对象，包括已经释放、过期、未知或属于其他会话的引用。
+
+- [`blobRef`](../spec/schemas/blob-ref.json) 是 32 个小写十六进制字符编码的 128 位密码学安全随机值。Host MUST 将它绑定到发放时的授权 origin、WebView、frame、document 和 sid，并在每次读取和释放时校验归属。
+- `index` 是 0 至 319 的整数。索引 `i` 从字节偏移 `i × 65,536` 开始。非末片恰好 64 KiB，末片为 1 至 64 KiB，只有末片的 `done` 为 `true`。每片独立使用标准 Base64 编码和必要填充，末组未使用的位设为零。分片并发数 SHOULD ≤ 4，并遵守握手上限。
+- 会话和权限校验通过后，Host MUST 先校验参数形状、引用格式和协议索引范围。参数无效或索引超出当前有效资源的末片时返回 `-32602`。引用格式和索引均符合协议范围时，对已释放、已过期、未知或属于其他会话的引用读取均返回 `-32003`。消息携带失效的 sid 时先按 §6 校验会话。
+- Host 声明的 `limits.maxMessageBytes` MUST 容纳完整分片响应。原始 64 KiB 编码为 87,384 个字符，预算还需包括信封和实际 JSON 转义。
+- Host MUST 在显式释放、到期或文档会话失效时回收资源，并丢弃旧会话迟到的分片和选择结果。各发放契约声明暂存额度和有效期。`media.chooseMedia@1` 每会话最多暂存 20 MiB，有效期为 5 分钟。会话失效规则见 §12.1。
+
+v1 分片契约只提供 Host 到 Web 的只读资源。
 
 ### 10.3 上限
 
@@ -543,7 +547,7 @@ stateDiagram-v2
   [*] --> NoSession: WebView 创建
   NoSession --> Pending: navigation commit（注入 shim）
   Pending --> Active: bridge.hello 成功（生成 sid）
-  Active --> Invalidated: 新 document 提交 / 进程崩溃 / WebView 销毁
+  Active --> Invalidated: 新 document 提交 / 可验证的路由退出 / 进程崩溃 / WebView 销毁
   Pending --> Invalidated: 同上
   Invalidated --> Pending: 新 document commit
   Invalidated --> [*]: WebView 销毁
@@ -553,7 +557,7 @@ stateDiagram-v2
 - **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放 blob，并丢弃该 sid 下所有待发送消息。
 - 使用脚本执行等下行方式时，Host MUST 在目标 document 内执行消息交付前确认身份，或使用由平台绑定到该 document 的通道。仅在入队时检查、等待 TTL 回收或依靠 SDK 收到后丢弃，均不能保证旧消息不进入新 document。无法保证时，Host MUST 关闭对应的下行能力。
 - **L3** 同 document 内的 History API 路由（SPA `pushState`）**不**改变 sid。
-- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
+- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。Shim MUST 停止使用旧文档路由。Host 收到可验证的路由退出或身份变更信号后 MUST 按 L2 清理。在 bfcache 恢复（`pageshow` 且 `persisted === true`）时，SDK MUST 重新握手，Host MUST 在建立新会话前使旧 sid 失效。旧 `blobRef` 无法在恢复后的会话继续读取。新握手成功前按 H6 拒绝分派会话消息。
 - **L5** WebView 渲染进程崩溃（iOS `webViewWebContentProcessDidTerminate`、Android `onRenderProcessGone`）MUST 视同 sid 失效。
 
 ### 12.2 WebView 复用 / 预热
@@ -563,7 +567,7 @@ stateDiagram-v2
 
 ### 12.3 多 WebView
 
-- Handler Registry MAY 全局共享（无状态 handler），但 **会话、订阅、pending、ACL 结果 MUST 按 WebView 实例隔离**。
+- 无状态 handler 的注册表 MAY 全局共享。会话、订阅、pending、Blob 引用和 ACL 结果 MUST 按 WebView 实例隔离。
 - 需要"推送给所有页面"的事件由 Host 侧事件总线分发到每个 WebView 的 bridge 实例，各自按订阅过滤。
 
 ---
@@ -637,13 +641,11 @@ Host 在 response 的 `meta.timing = { recv: t1, start: t2, end: t3 }` 中回带
 // Web → Host hello request
 {"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","method":"bridge.hello","params":{"protocols":[1],"sdk":{"name":"open-jsbridge","version":"1.2.0"}}}}
 // Host → Web hello response
-{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseImage":{"versions":[1]}},"events":["app.didEnterBackground"],"features":["callbacks","cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
+{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"w-hello-1","result":{"jsb":"1.0","sid":"a1b2c3d4","host":{"platform":"ios","name":"ios-wk","version":"1.0.3","appId":"com.acme.app","appVersion":"8.2.0"},"capabilities":{"methods":{"media.chooseMedia":{"versions":[1]},"bridge.blob.read":{"versions":[1]},"bridge.blob.release":{"versions":[1]}},"events":["app.didEnterBackground"],"features":["cancel","blob"]},"limits":{"maxMessageBytes":1048576,"maxInflight":64,"defaultTimeoutMs":15000}}}}
 // Web → Host request
-{"jsb":"1.0","meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":0},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","method":"media.chooseImage","params":{"count":3}}}
-// Host → Web 进度通知
-{"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.progress","params":{"requestId":"w-a1b2-7","seq":0,"chunk":{"selected":1}}}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4","traceId":"4bf92f3577b34da6a3ce929d0e0e4736","ts":1763880000123,"timeout":120000},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","method":"media.chooseMedia","params":{"count":1}}}
 // Host → Web response
-{"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"images":[{"blob":{"url":"ojsb-blob://blob/9f1c...","mime":"image/jpeg","size":823412}}]}}}
+{"jsb":"1.0","meta":{"sid":"a1b2c3d4","timing":{"recv":1763880000130,"start":1763880000131,"end":1763880004410}},"rpc":{"jsonrpc":"2.0","id":"w-a1b2-7","result":{"status":"selected","files":[{"type":"image","blobRef":"b6eefefd035e4f65ad2c1e76b9ac418d","mime":"image/jpeg","size":823412,"expiresAt":1763880304410}]}}}
 // Host → Web 事件通知
 {"jsb":"1.0","meta":{"sid":"a1b2c3d4"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"app.didEnterBackground","payload":null}}}
 // 错误响应

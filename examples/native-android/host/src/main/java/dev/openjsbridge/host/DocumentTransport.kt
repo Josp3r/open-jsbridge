@@ -25,6 +25,14 @@ internal class DocumentTransport(
 
     private class BusinessWork(val call: RpcSession.BusinessCall, val reply: (String) -> Unit) {
         var cancel: (() -> Unit)? = null
+
+        fun abort() {
+            try {
+                call.onCancel?.invoke()
+            } finally {
+                cancel?.invoke()
+            }
+        }
     }
 
     private class Document(val token: String, val proxy: Any, val session: RpcSession, var challenge: String) {
@@ -108,7 +116,7 @@ internal class DocumentTransport(
             }
             return
         }
-        if (!raw.startsWith(prefix) || raw.length - prefix.length > RpcSession.MAX_MESSAGE_BYTES) return
+        if (!raw.startsWith(prefix) || raw.length - prefix.length > current.session.maxMessageBytes) return
         val payload = raw.substring(prefix.length)
         whenActive(current, payload) {
             var acknowledge: (() -> Unit)? = null
@@ -143,7 +151,7 @@ internal class DocumentTransport(
                 current.session.finishBusinessCall(call, result)?.let(work.reply)
             }
         }
-        if (document !== current) work.cancel?.invoke()
+        if (document !== current) work.abort()
     }
 
     private fun cancelBusiness(current: Document, requestId: String) {
@@ -151,7 +159,7 @@ internal class DocumentTransport(
         if (work.call.id != requestId) return
         val response = current.session.businessCancellationResponse(work.call) ?: return
         current.businessWork = null
-        work.cancel?.invoke()
+        work.abort()
         work.reply(response)
     }
 
@@ -181,8 +189,11 @@ internal class DocumentTransport(
         val work = previous.businessWork
         previous.businessWork = null
         previous.parked.clear()
-        work?.cancel?.invoke()
-        previous.session.close()
+        try {
+            work?.abort()
+        } finally {
+            previous.session.close()
+        }
     }
 
     private fun whenActive(current: Document, frame: String, action: () -> Unit) {
@@ -193,7 +204,7 @@ internal class DocumentTransport(
         }
         if (current.parked.size >= MAX_PARKED_FRAMES) return
         val bytes = frame.toByteArray(Charsets.UTF_8).size
-        if (bytes > RpcSession.MAX_MESSAGE_BYTES - current.parkedBytes) return
+        if (bytes > current.session.maxMessageBytes - current.parkedBytes) return
         current.parked.addLast(ParkedFrame(bytes, action))
         current.parkedBytes += bytes
     }

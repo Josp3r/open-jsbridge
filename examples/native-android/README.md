@@ -75,6 +75,12 @@ attachment?.emit("acme.app.configChanged", JsonNull.INSTANCE)
 
 `emit` 接收符合协议的 `JsonElement`，使用 `JsonNull.INSTANCE` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
 
+## 单图 Photo Picker（可选）
+
+在 App 的 Activity 进入 `STARTED` 前用 Activity Result API 注册 launcher。用 `AndroidMediaPicker.createIntent(context)` 获取系统单图选择 Intent（API 33+；不可用时返回 `null`），用 `AndroidMediaPicker { launcher.launch(intent) }` 接入，并把选中的 URI 或关闭选择器时的 `null` 交给 `picker.onResult`。挂载时显式传 `AndroidBridge.Options(media = true)` 和 `mediaPicker = picker`。不需要相册权限，SDK 只读当前选中的图；不支持时握手不会声明媒体能力。 [独立 Release App 接入](../android-sdk-consumer/README.md)
+
+页面得到的是当前文档有效的 `blobRef`，不是系统 URI。读取按 64 KiB 原始字节分块；单文件与当前会话总量均上限 20 MiB，引用在 5 分钟后失效。读取完请主动释放；导航或宿主销毁也会回收。关闭系统选择器会成功返回 `cancelled`；SDK 取消请求会忽略迟到的系统结果，不强制关闭系统界面。
+
 ## 在模拟器验证
 
 准备 JDK 17、Android SDK Platform 35、Build Tools 34.0.0 和 Platform Tools。命令行使用 `JAVA_HOME` 和 `ANDROID_HOME`，并将 `platform-tools` 加入 `PATH`。启动一台 API 24+ 且支持上述 WebView 功能的 Android Emulator。Windows 使用 `gradlew.bat`。

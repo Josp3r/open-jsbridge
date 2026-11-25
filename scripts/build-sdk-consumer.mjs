@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -41,6 +41,7 @@ try {
   const page = join(consumer, 'ReleaseToast.html');
   await writeFile(page, html);
   await rename(page, join(output, 'ReleaseToast.html'));
+  await copyFile(new URL('examples/sdk-consumer/MediaFixture.png', root), join(output, 'MediaFixture.png'));
   console.log(join(output, 'ReleaseToast.html'));
 } finally {
   await rm(consumer, { recursive: true, force: true });

@@ -54,14 +54,48 @@ val stageConsumerPage by tasks.registering(StageConsumerPage::class) {
     assetsDir.set(layout.buildDirectory.dir("generated/ojsbConsumerPage/assets"))
 }
 
+@CacheableTask
+abstract class StageConsumerMediaFixture @javax.inject.Inject constructor(
+    private val files: FileSystemOperations,
+) : DefaultTask() {
+    @get:InputFile
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val fixture: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val assetsDir: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        // Sync also removes a previous staged fixture when the optional default is absent.
+        files.sync {
+            fixture.orNull?.let { from(it) { rename { "MediaFixture.png" } } }
+            into(assetsDir)
+        }
+    }
+}
+
+val defaultMediaFixture = rootProject.file("../../dist/sdk-consumer/MediaFixture.png")
+val stageConsumerMediaFixture by tasks.registering(StageConsumerMediaFixture::class) {
+    fixture.fileProvider(providers.gradleProperty("ojsbConsumerMediaFixture")
+        .map { rootProject.file(it) }
+        .orElse(providers.provider { defaultMediaFixture.takeIf { it.isFile } }))
+    assetsDir.set(layout.buildDirectory.dir("generated/ojsbConsumerMediaFixture/assets"))
+}
+
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(stageConsumerPage, StageConsumerPage::assetsDir)
+        variant.androidTest?.sources?.assets?.addGeneratedSourceDirectory(
+            stageConsumerMediaFixture, StageConsumerMediaFixture::assetsDir,
+        )
     }
 }
 
 dependencies {
     implementation("io.github.josp3r:open-jsbridge-android:0.1.0")
+    implementation("androidx.activity:activity:1.9.3")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

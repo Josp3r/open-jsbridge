@@ -29,7 +29,7 @@ if (bridge.hasEvent('network.changed')) {
 
 // 取消
 const ac = new AbortController();
-bridge.call('media.chooseImage', { count: 3 }, { signal: ac.signal, timeout: 3000 });
+bridge.call('acme.photos.prepare', { count: 3 }, { signal: ac.signal, timeout: 3000 });
 ac.abort();
 
 try { await bridge.call('acme.pay.create', { orderId }); }
@@ -275,7 +275,7 @@ const host = installMockHost({
   acl: { origins: [location.origin], allow: ['*'] },
 });
 host.register('device.getInfo', () => ({ os: 'ios', osVersion: '27.2' }));
-host.register('media.chooseImage', async (_p, ctx) => { ctx.callback({ selected: 1 }); return { images: [] }; });
+host.register('acme.photos.prepare', async (_p, ctx) => { ctx.callback({ selected: 1 }); return { images: [] }; });
 host.emit('network.changed', { type: 'wifi' });
 host.failNext('acme.pay.create', { code: -32007, message: 'User denied' });
 ```

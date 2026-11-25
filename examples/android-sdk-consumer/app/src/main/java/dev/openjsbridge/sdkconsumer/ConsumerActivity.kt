@@ -1,18 +1,26 @@
 package dev.openjsbridge.sdkconsumer
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.os.Bundle
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import dev.openjsbridge.host.AndroidBridge
+import dev.openjsbridge.host.AndroidMediaPicker
 
-class ConsumerActivity : Activity() {
+class ConsumerActivity : ComponentActivity() {
     internal var browser: WebView? = null
         private set
     private var bridge: AndroidBridge? = null
+    private var mediaPicker: AndroidMediaPicker? = null
+
+    // The app owns registration and launch; the SDK only receives this picker result.
+    private val pickImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        mediaPicker?.onResult(if (result.resultCode == RESULT_OK) result.data?.data else null)
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,9 +46,14 @@ class ConsumerActivity : Activity() {
                 return true
             }
         }
+        val picker = AndroidMediaPicker.createIntent(this)?.let { intent ->
+            AndroidMediaPicker { pickImage.launch(intent) }
+        }
+        mediaPicker = picker
         bridge = AndroidBridge.attach(
             view, allowedOrigin = ORIGIN,
-            options = AndroidBridge.Options(deviceInfo = true, toast = true),
+            options = AndroidBridge.Options(deviceInfo = true, toast = true, media = picker != null),
+            mediaPicker = picker,
         )
         if (bridge == null) {
             view.destroy()
@@ -55,6 +68,7 @@ class ConsumerActivity : Activity() {
     override fun onDestroy() {
         bridge?.detach()
         bridge = null
+        mediaPicker = null
         browser?.let {
             setContentView(TextView(this))
             it.destroy()
