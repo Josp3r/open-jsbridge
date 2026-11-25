@@ -73,6 +73,7 @@ export class WireDecodeError extends Error {
 }
 
 const methodPattern = /^(?!rpc\.)[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+(@[1-9][0-9]*)?$/;
+const notificationOnlyMethodPattern = /^bridge\.(cancel|event|progress)(@[1-9][0-9]*)?$/;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -112,7 +113,7 @@ function isRpcMessage(value: unknown): boolean {
   if (hasOwn(value, 'method')) {
     return typeof value.method === 'string' && methodPattern.test(value.method) &&
       (!hasOwn(value, 'params') || isObject(value.params)) &&
-      (!hasOwn(value, 'id') || isId(value.id)) &&
+      (!hasOwn(value, 'id') || (!notificationOnlyMethodPattern.test(value.method) && isId(value.id))) &&
       hasOnlyKeys(value, ['jsonrpc', 'method', 'params', 'id']);
   }
   if (hasOwn(value, 'error')) {
@@ -128,18 +129,23 @@ function isEnvelope(value: unknown): value is Envelope {
     (!hasOwn(value, 'meta') || isMeta(value.meta));
 }
 
-function checkJsonNumber(_key: string, value: unknown): unknown {
+function checkJsonNumber(value: unknown): void {
   if (typeof value === 'number' &&
     (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
     throw new WireDecodeError(ErrorCode.InvalidRequest, 'Number is outside the supported JSON range');
   }
+}
+
+function decodeJsonProperty(key: string, value: unknown): unknown {
+  if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+  checkJsonNumber(value);
   return value;
 }
 
 export function decodeEnvelope(raw: string): Envelope {
   let value: unknown;
   try {
-    value = JSON.parse(raw, checkJsonNumber);
+    value = JSON.parse(raw, decodeJsonProperty);
   } catch (cause) {
     if (cause instanceof WireDecodeError) throw cause;
     throw new WireDecodeError(ErrorCode.ParseError, 'Parse error', cause);
@@ -161,7 +167,7 @@ function jsonProperty(object: object, key: string, ancestors: Set<object>): Json
 function copyJson(value: unknown, ancestors: Set<object>): JsonValue {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number') {
-    checkJsonNumber('', value);
+    checkJsonNumber(value);
     return value;
   }
   if (typeof value !== 'object' || ancestors.has(value)) {

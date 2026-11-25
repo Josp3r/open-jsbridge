@@ -37,6 +37,7 @@ flowchart LR
 3. 一条消息 MUST 是一个 JSON object，包含一个 JSON-RPC 2.0 对象。v1 在信封层和 `rpc` 层均不支持批量消息。接收方 MUST NOT 依赖字段顺序。
 4. 整数超出 JavaScript 安全整数范围（−(2^53−1) 至 2^53−1）时 MUST 以字符串传输。JSON 数字须能以有限值解码。
 5. Web 编码器在序列化前校验整个信封的 JSON 值。对象字段必须是可枚举的字符串数据属性，数组必须稠密。遇到 JavaScript 专有值、访问器、非普通对象、自定义序列化函数或循环引用时，编码器以 `-32600` 拒绝。可选字段应直接省略。
+6. Web 解码器在返回 JSON 数据前过滤任意层级的 `__proto__`、`constructor` 和 `prototype` 对象字段。
 
 ---
 
@@ -446,7 +447,7 @@ bridge.blob.release{ blobRef }                                → { }
 
 ### 10.3 上限
 
-- `limits.maxMessageBytes` 按 UTF-8 编码后的完整消息计算。接收方 MUST 在解析前丢弃超限帧，以免读取无法安全关联的请求或通知 id。需要传输层回执时返回 `null`。
+- `limits.maxMessageBytes` 按 UTF-8 编码后的完整消息计算。Web SDK 在建立会话前使用 1 MiB 的入站帧上限。接收方 MUST 在解析前丢弃超限帧，以免读取无法安全关联的请求或通知 id。需要传输层回执时返回 `null`。
 - SDK SHOULD 在发送前检查大小并以 `-32006` 本地结算超限请求。若已校验的请求产生超限结果，Host MUST 用同一请求 id 返回 `-32006` 错误响应。
 
 ---
@@ -552,7 +553,7 @@ stateDiagram-v2
 - **L2** sid 失效时，Host MUST 取消该 sid 下进行中的 handler 和反向请求、清理事件订阅、释放 blob，并丢弃该 sid 下所有待发送消息。
 - 使用脚本执行等下行方式时，Host MUST 在目标 document 内执行消息交付前确认身份，或使用由平台绑定到该 document 的通道。仅在入队时检查、等待 TTL 回收或依靠 SDK 收到后丢弃，均不能保证旧消息不进入新 document。无法保证时，Host MUST 关闭对应的下行能力。
 - **L3** 同 document 内的 History API 路由（SPA `pushState`）**不**改变 sid。
-- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
+- **L4** Web 侧在 `pagehide` 时 MUST 清除当前接收会话和握手尝试，并 SHOULD 将所有 pending reject `-32002`。旧会话声明 `cancel` 时，SDK 尽力用旧 `sid` 向已发送的请求投递 `bridge.cancel`，随后解除传输绑定。仍在排队的请求在本地取消。bfcache 恢复（`pageshow` 且 `persisted === true`）时 SDK MUST 重新握手（Host 可能已使会话失效）。在新握手成功前按 H6 拒绝分派会话消息。
 - **L5** WebView 渲染进程崩溃（iOS `webViewWebContentProcessDidTerminate`、Android `onRenderProcessGone`）MUST 视同 sid 失效。
 
 ### 12.2 WebView 复用 / 预热

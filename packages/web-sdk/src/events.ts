@@ -130,6 +130,12 @@ export class EventSubscriptions {
     }
   }
 
+  close(): void {
+    this.reset();
+    this.rejectWaiting(new BridgeError(ErrorCode.Cancelled, 'Bridge closed'));
+    this.subscriptions.clear();
+  }
+
   rejectWaiting(error: BridgeError): void {
     for (const [name, subscription] of this.subscriptions) this.rejectListeners(name, subscription, error);
   }

@@ -1,5 +1,5 @@
 import {
-  decodeEnvelope, encodeEnvelope, ErrorCode,
+  decodeEnvelope, encodeEnvelope, ErrorCode, snapshotJson,
   type Envelope, type JsonObject, type JsonValue, type RpcRequest,
 } from '../../protocol/src/index.js';
 import { BridgeError } from './errors.js';
@@ -31,6 +31,7 @@ export interface Bridge {
   readonly host: HostInfo | undefined;
   ready(): Promise<HostInfo>;
   reconnect(): Promise<HostInfo>;
+  close(): void;
   has(method: string, version?: number): boolean;
   call<T = unknown>(method: string, params?: JsonObject, options?: CallOptions): Promise<T>;
   hasEvent(name: string): boolean;
@@ -60,6 +61,7 @@ interface HelloAttempt {
 
 const versionSuffix = /@([1-9][0-9]*)$/;
 const timerLimit = 2_147_483_647;
+const handshakeMaxMessageBytes = 1_048_576;
 let bridgeCount = 0;
 
 function exceedsMessageLimit(raw: string, maxMessageBytes: number): boolean {
@@ -80,7 +82,8 @@ class WebBridge implements Bridge {
   private currentState: BridgeState = 'idle';
   private connection: Promise<HostInfo> | undefined;
   private lifetime: AbortController | undefined;
-  private lifecycleBound = false;
+  private lifecycleWindow: Window | undefined;
+  private closed = false;
   private suspended = false;
   private adapter: Adapter | undefined;
   private unlisten: (() => void) | undefined;
@@ -106,6 +109,7 @@ class WebBridge implements Bridge {
   get host(): HostInfo | undefined { return this.session?.host; }
 
   ready(): Promise<HostInfo> {
+    if (this.closed) return Promise.reject(new BridgeError(ErrorCode.Cancelled, 'Bridge closed'));
     if (this.suspended) return Promise.reject(new BridgeError(ErrorCode.Unavailable, 'Bridge unavailable'));
     if (!this.connection) {
       this.bindBrowserLifecycle();
@@ -122,6 +126,15 @@ class WebBridge implements Bridge {
       this.connection = undefined;
     }
     return this.ready();
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.lifecycleWindow?.removeEventListener('pagehide', this.onPageHide);
+    this.lifecycleWindow?.removeEventListener('pageshow', this.onPageShow);
+    this.lifecycleWindow = undefined;
+    this.invalidate('Bridge closed');
   }
 
   has(method: string, version?: number): boolean {
@@ -157,6 +170,7 @@ class WebBridge implements Bridge {
       return Promise.reject(new BridgeError(ErrorCode.InvalidParams, 'Expected a string method', { traceId }));
     }
     const context = { method, traceId };
+    if (this.closed) return Promise.reject(new BridgeError(ErrorCode.Cancelled, 'Bridge closed', context));
     if (signal?.aborted) return Promise.reject(new BridgeError(ErrorCode.Cancelled, 'Call cancelled', context));
     if (this.state === 'unavailable') {
       return Promise.reject(new BridgeError(ErrorCode.Unavailable, 'Bridge unavailable', context));
@@ -187,9 +201,15 @@ class WebBridge implements Bridge {
       return Promise.reject(new BridgeError(ErrorCode.NotReady, 'Pending call queue is full', context));
     }
 
+    let snapshot: JsonObject | undefined;
+    try {
+      if (params !== undefined) snapshot = snapshotJson(params) as JsonObject;
+    } catch {
+      return Promise.reject(new BridgeError(ErrorCode.InvalidParams, 'Expected JSON params', context));
+    }
     const id = this.createId();
     const request: RpcRequest = {
-      jsonrpc: '2.0', id, method: wireMethod, ...(params === undefined ? {} : { params }),
+      jsonrpc: '2.0', id, method: wireMethod, ...(snapshot === undefined ? {} : { params: snapshot }),
     };
     const deadline = waitForSlot ? undefined : performance.now() + timeout;
     return new Promise<T>((resolve, reject) => {
@@ -213,6 +233,10 @@ class WebBridge implements Bridge {
   }
 
   private connectForEvents(): void {
+    if (this.closed) {
+      this.events.rejectWaiting(new BridgeError(ErrorCode.Cancelled, 'Bridge closed'));
+      return;
+    }
     if (this.suspended) return;
     if (this.state === 'unavailable') {
       this.events.rejectWaiting(new BridgeError(ErrorCode.Unavailable, 'Bridge unavailable'));
@@ -221,30 +245,36 @@ class WebBridge implements Bridge {
 
   private createId(): string { return `${this.idPrefix}-${++this.nextId}`; }
 
+  private readonly onPageHide = () => this.invalidate('Page hidden');
+
+  private readonly onPageShow = (event: PageTransitionEvent) => {
+    if (!event.persisted || this.closed) return;
+    this.invalidate('Page restored');
+    this.suspended = false;
+    void this.ready().catch(() => {});
+  };
+
   private bindBrowserLifecycle(): void {
-    if (this.lifecycleBound || typeof window === 'undefined') return;
-    this.lifecycleBound = true;
-    window.addEventListener('pagehide', () => this.invalidate());
-    window.addEventListener('pageshow', (event) => {
-      if (!event.persisted) return;
-      this.invalidate();
-      this.suspended = false;
-      void this.ready().catch(() => {});
-    });
+    if (this.lifecycleWindow || typeof window === 'undefined') return;
+    this.lifecycleWindow = window;
+    window.addEventListener('pagehide', this.onPageHide);
+    window.addEventListener('pageshow', this.onPageShow);
   }
 
-  private invalidate(): void {
+  private invalidate(message: string): void {
+    const oldSession = this.session;
     this.suspended = true;
     this.currentState = 'unavailable';
     this.session = undefined;
     this.connection = undefined;
-    this.events.reset();
+    if (this.closed) this.events.close();
+    else this.events.reset();
     this.lifetime?.abort();
     this.lifetime = undefined;
     const hello = this.hello;
     this.hello = undefined;
     hello?.reject(new BridgeError(ErrorCode.Cancelled, 'Handshake cancelled'));
-    for (const id of this.pending.keys()) this.fail(id, ErrorCode.Cancelled, 'Page hidden');
+    for (const id of this.pending.keys()) this.fail(id, ErrorCode.Cancelled, message, true, oldSession);
     this.detach();
   }
 
@@ -436,7 +466,7 @@ class WebBridge implements Bridge {
 
   private receive(raw: string, replyId?: string): void {
     const activeSession = this.session;
-    if (typeof raw !== 'string' || (activeSession && exceedsMessageLimit(raw, activeSession.maxMessageBytes))) return;
+    if (typeof raw !== 'string' || exceedsMessageLimit(raw, activeSession?.maxMessageBytes ?? handshakeMaxMessageBytes)) return;
     let envelope: Envelope;
     try { envelope = decodeEnvelope(raw); } catch { return; }
     const { rpc, meta } = envelope;
@@ -486,12 +516,12 @@ class WebBridge implements Bridge {
     return call;
   }
 
-  private fail(id: string, code: number, message: string, cancel = false): void {
+  private fail(id: string, code: number, message: string, cancel = false, cancelSession = this.session): void {
     const call = this.take(id);
     if (!call) return;
     call.reject(new BridgeError(code, message, { method: call.request.method, traceId: call.traceId }));
     const session = call.session;
-    if (cancel && session === this.session && session?.features.includes('cancel')) {
+    if (cancel && session === cancelSession && session?.features.includes('cancel')) {
       this.postCancel(id, session);
     }
     this.drain();

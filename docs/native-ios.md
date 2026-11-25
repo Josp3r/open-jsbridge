@@ -34,6 +34,7 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
   var h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ojsb;
   if (!h) return;
   var buf = [], recv;
+  function deliver(m) { recv ? recv(m) : (buf.length < 256 && buf.push(m)); }
   var transport = Object.freeze({
     name: 'ios-wk',
     protocols: Object.freeze([1]),
@@ -43,8 +44,15 @@ shim 是一段几百字节的 JS，实现 [protocol.md §2](protocol.md#2-host-s
   Object.defineProperty(window, '__OJSB_TRANSPORT__', { value: transport, writable: false, configurable: false });
   Object.defineProperty(window, '__OJSB_RECEIVE__', {
     configurable: false,
-    get: function () { return function (m) { recv ? recv(m) : (buf.length < 256 && buf.push(m)); }; },
-    set: function (fn) { recv = fn; var q = buf; buf = []; q.forEach(function (m) { try { fn(m); } catch (e) { setTimeout(function () { throw e; }); } }); }
+    get: function () { return deliver; },
+    set: function (fn) {
+      recv = typeof fn === 'function' ? fn : undefined;
+      if (!recv) return;
+      var q = buf; buf = [];
+      q.forEach(function (m) {
+        try { deliver(m); } catch (e) { setTimeout(function () { throw e; }); }
+      });
+    }
   });
   window.dispatchEvent(new CustomEvent('ojsb:transportready'));
 })();

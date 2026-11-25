@@ -78,9 +78,18 @@ Android shim（WML 版）：
   var t = Object.freeze({ name: 'android-wml', protocols: Object.freeze([1]),
                           postMessage: function (s) { o.postMessage(s); } });
   Object.defineProperty(window, '__OJSB_TRANSPORT__', { value: t, writable: false, configurable: false });
-  Object.defineProperty(window, '__OJSB_RECEIVE__', { configurable: false,
+  Object.defineProperty(window, '__OJSB_RECEIVE__', {
+    configurable: false,
     get: function () { return deliver; },
-    set: function (fn) { recv = fn; var q = buf; buf = []; q.forEach(function (m) { fn(m); }); } });
+    set: function (fn) {
+      recv = typeof fn === 'function' ? fn : undefined;
+      if (!recv) return;
+      var q = buf; buf = [];
+      q.forEach(function (m) {
+        try { deliver(m); } catch (e) { setTimeout(function () { throw e; }); }
+      });
+    }
+  });
   window.dispatchEvent(new CustomEvent('ojsb:transportready'));
 })();
 ```
