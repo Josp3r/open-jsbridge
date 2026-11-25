@@ -5,7 +5,7 @@
 ## 安装
 
 ```sh
-npm install /path/to/open-jsbridge-0.1.0.tgz
+npm install open-jsbridge
 ```
 
 ## App WebView

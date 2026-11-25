@@ -124,9 +124,15 @@ console.log(await bridge.call('conformance.echo', { text: '你好' }));
 JS
 ```
 
-### Web SDK 本地 npm 包
+### 安装 Web SDK
 
-在仓库根目录运行 `npm run pack:web`，生成 `dist/open-jsbridge-0.1.0.tgz`。在独立项目安装该 tarball 后，从 `open-jsbridge` 导入 SDK。浏览器联调时可以通过 `open-jsbridge/mock` 显式安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
+```sh
+npm install open-jsbridge
+```
+
+在 App WebView 中从 `open-jsbridge` 导入 `bridge` 单例。浏览器联调时，从同一个包的 `open-jsbridge/mock` 入口安装 Mock 通道。 [独立项目接入](examples/web-demo/README.md#在独立-web-项目安装)
+
+验证仓库里的改动时，可运行 `npm run pack:web` 并安装生成的本地 tarball。 [本地打包与安装](examples/web-demo/README.md#从源码打包安装)
 
 ## 5. 版本策略
 
