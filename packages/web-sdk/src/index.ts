@@ -30,6 +30,7 @@ export interface Bridge {
   readonly state: BridgeState;
   readonly host: HostInfo | undefined;
   ready(): Promise<HostInfo>;
+  reconnect(): Promise<HostInfo>;
   has(method: string, version?: number): boolean;
   call<T = unknown>(method: string, params?: JsonObject, options?: CallOptions): Promise<T>;
   hasEvent(name: string): boolean;
@@ -113,6 +114,14 @@ class WebBridge implements Bridge {
       this.connection = this.connect(lifetime.signal);
     }
     return this.connection;
+  }
+
+  reconnect(): Promise<HostInfo> {
+    if (!this.suspended && this.currentState === 'unavailable') {
+      this.lifetime?.abort();
+      this.connection = undefined;
+    }
+    return this.ready();
   }
 
   has(method: string, version?: number): boolean {
@@ -268,7 +277,14 @@ class WebBridge implements Bridge {
       requireActive();
       this.adapter = adapter;
       this.unlisten = unlisten;
-      const session = await this.handshake();
+      let session: Session;
+      try {
+        session = await this.handshake();
+      } catch (error) {
+        requireActive();
+        if (!(error instanceof BridgeError) || error.code !== ErrorCode.Timeout) throw error;
+        session = await this.handshake();
+      }
       requireActive();
       this.session = session;
       this.currentState = 'ready';
@@ -306,7 +322,7 @@ class WebBridge implements Bridge {
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
-      if (this.hello?.id === id) this.hello.reject(new BridgeError(ErrorCode.Unavailable, 'Handshake timed out'));
+      if (this.hello?.id === id) this.hello.reject(new BridgeError(ErrorCode.Timeout, 'Handshake timed out'));
     });
     try {
       return await new Promise<Session>((resolve, reject) => {
@@ -433,14 +449,13 @@ class WebBridge implements Bridge {
     const attempt = this.hello;
     if (attempt?.id === rpc.id) {
       if (performance.now() >= attempt.deadline) return;
+      this.hello = undefined;
       if ('error' in rpc) {
-        this.hello = undefined;
         attempt.reject(new BridgeError(rpc.error.code, rpc.error.message, { data: rpc.error.data }));
       } else {
         const session = readSession(rpc.result, meta?.sid);
-        if (!session) return;
-        this.hello = undefined;
-        attempt.resolve(session);
+        if (session) attempt.resolve(session);
+        else attempt.reject(new BridgeError(ErrorCode.InvalidRequest, 'Invalid handshake result'));
       }
       return;
     }

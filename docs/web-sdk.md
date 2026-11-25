@@ -8,6 +8,8 @@
 
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
 
+未发现注入通道时，`ready()` 返回 `-32000`。已发送的握手超时会换新 ID 自动重试一次，再次超时返回 `-32001`。非法握手结果返回 `-32600`。握手失败后可以调用 `bridge.reconnect()` 重新探测与握手，连接正常时返回当前宿主信息。
+
 ```ts
 import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
 
@@ -65,6 +67,7 @@ export interface Bridge {
   readonly state: 'idle' | 'connecting' | 'ready' | 'unavailable';
   readonly host?: HostInfo;
   ready(): Promise<HostInfo>;
+  reconnect(): Promise<HostInfo>;
   has(method: string, version?: number): boolean;
 
   call<M extends keyof MethodMap>(method: M, params?: MethodMap[M]['params'], opts?: CallOptions): Promise<MethodMap[M]['result']>;
