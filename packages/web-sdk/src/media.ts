@@ -1,6 +1,6 @@
 import { ErrorCode } from '../../protocol/src/index.js';
 import { BridgeError } from './errors.js';
-import type { Bridge, CallOptions } from './index.js';
+import type { Bridge, CallOptions } from './bridge.js';
 import { isObject } from './session.js';
 
 const chooseMethod = 'media.chooseMedia@1';

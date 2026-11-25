@@ -49,3 +49,7 @@ stop()
 ```
 
 [项目仓库和宿主接入方式](https://github.com/Josp3r/open-jsbridge)
+
+## 按需引入
+
+可通过 `@open-jsbridge/web/device`、`/network`、`/app`、`/ui` 和 `/media` 单独导入能力。模块共用一个连接。应用用 `bridge.has()` 和 `bridge.hasEvent()` 检测当前宿主声明的能力。

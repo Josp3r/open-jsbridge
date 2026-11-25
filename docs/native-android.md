@@ -215,7 +215,7 @@ webView.loadUrl("https://m.acme.com/home")       // 必须在 attach 之后
 以下 Native → Web API 由宿主按已验证、已广告的能力开放。
 
 ```kotlin
-bridge.emit("network.changed", buildJsonObject { put("type", "wifi") })
+bridge.emit("network.statusChanged", buildJsonObject { put("type", "wifi") })
 val share = bridge.callWeb("page.getShareInfo", ShareInfo.serializer(), timeoutMs = 3_000)
 ```
 
@@ -250,7 +250,7 @@ internal fun push(env: Envelope, target: FrameTarget.Proxy) {
 
 WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，这也是首选它的理由之一。
 
-参考宿主通过文档确认时取得的 reply proxy 投递 `network.changed`。在投递前检查当前会话与订阅，shim 校验同一个文档标记。Android Emulator 中的 WebView 测试覆盖退订、会话失效和同源文档替换。开放其他通知或反向请求时，沿用文档定向并验证对应的生命周期。
+参考宿主通过文档确认时取得的 reply proxy 投递 `network.statusChanged`。在投递前检查当前会话与订阅，shim 校验同一个文档标记。Android Emulator 中的 WebView 测试覆盖退订、会话失效和同源文档替换。开放其他通知或反向请求时，沿用文档定向并验证对应的生命周期。
 
 [参考宿主](../examples/native-android/host/src/main/java/dev/openjsbridge/host/DocumentTransport.kt) · [原生基础能力](native-profiles.md)
 

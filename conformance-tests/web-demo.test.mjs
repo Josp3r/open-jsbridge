@@ -33,7 +33,7 @@ test('shared demo uses the injected Native transport for calls and events', asyn
   const adapter = createMockAdapter({
     deviceInfo: { os: 'ios', osVersion: '27.2' },
     getNetworkStatus: () => ({ type: 'wifi' }),
-    events: ['network.changed'],
+    events: ['network.statusChanged'],
   });
   const unlisten = adapter.listen((raw) => window.__OJSB_RECEIVE__(raw));
   t.after(unlisten);
@@ -76,11 +76,11 @@ test('shared demo uses the injected Native transport for calls and events', asyn
   element('#toggle-event').dispatchEvent(new Event('click'));
   await setImmediate();
   assert.equal(element('#event-status').textContent, '已订阅');
-  assert.equal(adapter.emit('network.changed', { type: 'cellular' }), true);
+  assert.equal(adapter.emit('network.statusChanged', { type: 'cellular' }), true);
   assert.deepEqual(JSON.parse(element('#event-result').textContent), { type: 'cellular' });
   element('#toggle-event').dispatchEvent(new Event('click'));
   await setImmediate();
-  assert.equal(adapter.emit('network.changed', { type: 'none' }), false);
+  assert.equal(adapter.emit('network.statusChanged', { type: 'none' }), false);
   assert.deepEqual(methods, [
     'bridge.hello', 'conformance.echo', 'device.getInfo', 'network.getStatus',
     'bridge.subscribe', 'bridge.unsubscribe',

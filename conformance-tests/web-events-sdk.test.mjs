@@ -3,7 +3,7 @@ import { setImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import { BridgeError, createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
 
-const name = 'network.changed';
+const name = 'network.statusChanged';
 const subscribed = { subscribed: [name], denied: [] };
 const unsubscribed = { unsubscribed: [name] };
 

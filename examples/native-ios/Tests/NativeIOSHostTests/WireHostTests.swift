@@ -122,19 +122,19 @@ final class WireHostTests: XCTestCase {
     func testSubscriptionControlsDenyUnavailableEventsAndValidateNames() throws {
         let host = WireHost(platform: "ios")
         let sid = try session(host)
-        let events = #"{"events":["network.changed","app.didBecomeActive"]}"#
+        let events = #"{"events":["network.statusChanged","app.didBecomeActive"]}"#
         let subscribe = try unpack(host.receive(echo(id: "subscribe", sid: sid, params: events, method: "bridge.subscribe@1")))
         XCTAssertEqual(subscribe.rpc["result"] as? [String: [String]], [
-            "subscribed": [], "denied": ["network.changed", "app.didBecomeActive"]
+            "subscribed": [], "denied": ["network.statusChanged", "app.didBecomeActive"]
         ])
         let unsubscribe = try unpack(host.receive(echo(id: "unsubscribe", sid: sid, params: events, method: "bridge.unsubscribe")))
         XCTAssertEqual(unsubscribe.rpc["result"] as? [String: [String]], [
-            "unsubscribed": ["network.changed", "app.didBecomeActive"]
+            "unsubscribed": ["network.statusChanged", "app.didBecomeActive"]
         ])
 
-        for (index, invalid) in ["{}", #"{"events":[]}"#, #"{"events":["network.changed","network.changed"]}"#,
-                                 #"{"events":["rpc.event"]}"#, #"{"events":["network.changed@1"]}"#,
-                                 #"{"events":["network.changed\n"]}"#, #"{"events":["network.changed",1]}"#].enumerated() {
+        for (index, invalid) in ["{}", #"{"events":[]}"#, #"{"events":["network.statusChanged","network.statusChanged"]}"#,
+                                 #"{"events":["rpc.event"]}"#, #"{"events":["network.statusChanged@1"]}"#,
+                                 #"{"events":["network.statusChanged\n"]}"#, #"{"events":["network.statusChanged",1]}"#].enumerated() {
             for method in ["bridge.subscribe", "bridge.unsubscribe"] {
                 let result = try unpack(host.receive(echo(id: "\(method)-\(index)", sid: sid, params: invalid, method: method)))
                 XCTAssertEqual(result.error?["code"] as? Int, -32602)
@@ -155,7 +155,7 @@ final class WireHostTests: XCTestCase {
         let payload: [Any] = [true, "system", NSNull()]
         XCTAssertNil(host.businessEvent(config, payload: payload, for: sid))
         var acknowledgements = [() -> Void]()
-        let params = #"{"events":["\#(config)","\#(account)","\#(unknown)","network.changed"]}"#
+        let params = #"{"events":["\#(config)","\#(account)","\#(unknown)","network.statusChanged"]}"#
         let subscribe = try unpack(host.receive(echo(id: "initial", sid: sid, params: params, method: "bridge.subscribe"),
                                                 afterReply: { acknowledgements.append($0) }))
         XCTAssertEqual(subscribe.rpc["result"] as? [String: [String]], [
@@ -224,8 +224,8 @@ final class WireHostTests: XCTestCase {
         let status = try unpack(network.receive(echo(id: "status", sid: networkSID, method: "network.getStatus@1")))
         XCTAssertEqual(status.rpc["result"] as? [String: String], ["type": "ethernet"])
         XCTAssertEqual(try unpack(network.receive(echo(id: "disabled", sid: networkSID, method: "device.getInfo"))).error?["code"] as? Int, -32601)
-        let controls = try unpack(network.receive(echo(id: "events", sid: networkSID, params: #"{"events":["network.changed"]}"#, method: "bridge.subscribe")))
-        XCTAssertEqual(controls.rpc["result"] as? [String: [String]], ["subscribed": [], "denied": ["network.changed"]])
+        let controls = try unpack(network.receive(echo(id: "events", sid: networkSID, params: #"{"events":["network.statusChanged"]}"#, method: "bridge.subscribe")))
+        XCTAssertEqual(controls.rpc["result"] as? [String: [String]], ["subscribed": [], "denied": ["network.statusChanged"]])
     }
 
     func testProfileMethodsRejectUnexpectedParamsAndUnsupportedVersions() throws {
@@ -593,19 +593,19 @@ final class WireHostTests: XCTestCase {
         let session = try XCTUnwrap(hello.rpc["result"] as? [String: Any])
         let sid = try XCTUnwrap(session["sid"] as? String)
         let capabilities = try XCTUnwrap(session["capabilities"] as? [String: Any])
-        XCTAssertEqual(capabilities["events"] as? [String], ["network.changed"])
+        XCTAssertEqual(capabilities["events"] as? [String], ["network.statusChanged"])
         XCTAssertEqual(capabilities["features"] as? [String], [])
         XCTAssertEqual(try unpack(host.receive(echo(id: "status-disabled", sid: sid, method: "network.getStatus"))).error?["code"] as? Int, -32601)
         XCTAssertNil(host.networkEvent(.wifi, for: sid))
 
-        let events = #"{"events":["network.changed","app.didBecomeActive"]}"#
+        let events = #"{"events":["network.statusChanged","app.didBecomeActive"]}"#
         var firstAcknowledgement: (() -> Void)?
         let subscription = try unpack(host.receive(
             echo(id: "subscribe", sid: sid, params: events, method: "bridge.subscribe"),
             afterReply: { firstAcknowledgement = $0 }
         ))
         XCTAssertEqual(subscription.rpc["result"] as? [String: [String]], [
-            "subscribed": ["network.changed"], "denied": ["app.didBecomeActive"]
+            "subscribed": ["network.statusChanged"], "denied": ["app.didBecomeActive"]
         ])
         XCTAssertNil(host.networkEvent(.wifi, for: sid))
 
@@ -623,7 +623,7 @@ final class WireHostTests: XCTestCase {
         XCTAssertEqual(event.rpc["method"] as? String, "bridge.event")
         XCTAssertNil(event.rpc["id"])
         let params = try XCTUnwrap(event.rpc["params"] as? [String: Any])
-        XCTAssertEqual(params["name"] as? String, "network.changed")
+        XCTAssertEqual(params["name"] as? String, "network.statusChanged")
         XCTAssertEqual(params["payload"] as? [String: String], ["type": "wifi"])
         XCTAssertNil(host.networkEvent(.wifi, for: "other-session"))
 
@@ -632,6 +632,64 @@ final class WireHostTests: XCTestCase {
         XCTAssertNil(host.networkEvent(.wifi, for: sid))
         let newSID = try self.session(host)
         XCTAssertNil(host.networkEvent(.wifi, for: newSID))
+    }
+
+    func testOldNetworkEventIsUnavailableAlongsideTheCanonicalEvent() throws {
+        let host = WireHost(platform: "ios", options: .init(networkChanges: true))
+        let hello = try XCTUnwrap(unpack(host.receive(hello(id: "hello"))).rpc["result"] as? [String: Any])
+        let sid = try XCTUnwrap(hello["sid"] as? String)
+        let capabilities = try XCTUnwrap(hello["capabilities"] as? [String: Any])
+        XCTAssertEqual(capabilities["events"] as? [String], ["network.statusChanged"])
+        let subscribe = echo(id: "sub", sid: sid, params: #"{"events":["network.changed","network.statusChanged"]}"#,
+                             method: "bridge.subscribe")
+        let reply = try unpack(host.receive(subscribe))
+        XCTAssertEqual(reply.rpc["result"] as? [String: [String]], [
+            "subscribed": ["network.statusChanged"], "denied": ["network.changed"]
+        ])
+        XCTAssertNil(host.businessEvent("network.changed", payload: ["type": "wifi"], for: sid))
+        let notification = try unpack(host.networkEvent(.wifi, for: sid))
+        let payload = try XCTUnwrap(notification.rpc["params"] as? [String: Any])
+        XCTAssertEqual(payload["name"] as? String, "network.statusChanged")
+        XCTAssertEqual(payload["payload"] as? [String: String], ["type": "wifi"])
+    }
+
+    func testAppLifecycleIsOptInAndOnlyDeliversAcknowledgedEventWithNullPayload() throws {
+        let names = ["app.foregrounded", "app.backgrounded"]
+        let disabled = WireHost(platform: "ios")
+        let disabledSID = try session(disabled)
+        let params = #"{"events":["app.foregrounded"]}"#
+        let unavailable = try unpack(disabled.receive(echo(id: "sub", sid: disabledSID, params: params,
+                                                            method: "bridge.subscribe")))
+        XCTAssertEqual(unavailable.rpc["result"] as? [String: [String]], [
+            "subscribed": [], "denied": ["app.foregrounded"]
+        ])
+        XCTAssertFalse(disabled.watchesAppLifecycle)
+
+        let host = WireHost(platform: "ios", options: .init(appLifecycle: true))
+        let hello = try XCTUnwrap(unpack(host.receive(hello(id: "hello"))).rpc["result"] as? [String: Any])
+        let sid = try XCTUnwrap(hello["sid"] as? String)
+        let capabilities = try XCTUnwrap(hello["capabilities"] as? [String: Any])
+        XCTAssertEqual(capabilities["events"] as? [String], names)
+        XCTAssertFalse(host.watchesAppLifecycle)
+        XCTAssertNil(host.appLifecycleEvent(.foregrounded, for: sid))
+        var acknowledge: (() -> Void)?
+        let request = echo(id: "sub", sid: sid, params: params, method: "bridge.subscribe")
+        XCTAssertNotNil(host.receive(request, afterReply: { acknowledge = $0 }))
+        XCTAssertNil(host.appLifecycleEvent(.foregrounded, for: sid))
+        acknowledge?()
+        XCTAssertTrue(host.watchesAppLifecycle)
+        XCTAssertNil(host.appLifecycleEvent(.backgrounded, for: sid))
+        let result = try unpack(host.appLifecycleEvent(.foregrounded, for: sid))
+        let event = try XCTUnwrap(result.rpc["params"] as? [String: Any])
+        XCTAssertEqual(event["name"] as? String, "app.foregrounded")
+        XCTAssertTrue(event["payload"] is NSNull)
+
+        _ = host.receive(echo(id: "off", sid: sid, params: params, method: "bridge.unsubscribe"))
+        XCTAssertFalse(host.watchesAppLifecycle)
+        XCTAssertNil(host.appLifecycleEvent(.foregrounded, for: sid))
+        host.reset()
+        _ = try session(host)
+        XCTAssertNil(host.appLifecycleEvent(.foregrounded, for: sid))
     }
 
     func testMissingSessionGetsCorrelatedErrorOnlyAfterHandshake() throws {

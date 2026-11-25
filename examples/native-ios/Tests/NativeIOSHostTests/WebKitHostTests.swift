@@ -87,7 +87,7 @@ final class WebKitHostTests: XCTestCase {
             window.networkFrames = [];
             window.__OJSB_RECEIVE__ = raw => window.networkFrames.push(JSON.parse(raw));
             void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({jsb: '1.0', meta: {sid}, rpc: {
-                jsonrpc: '2.0', id: 'hold-subscribe', method: 'bridge.subscribe', params: {events: ['network.changed']}
+                jsonrpc: '2.0', id: 'hold-subscribe', method: 'bridge.subscribe', params: {events: ['network.statusChanged']}
             }})).then(raw => window.networkReplies.subscribe = JSON.parse(raw));
             return true;
             """, in: webView, arguments: ["sid": sid])
@@ -96,7 +96,7 @@ final class WebKitHostTests: XCTestCase {
         let beforeAcknowledgement = try await javascript("return window.networkFrames.length;", in: webView) as? Int
         XCTAssertEqual(beforeAcknowledgement, 0)
         XCTAssertTrue(try XCTUnwrap(acknowledge)())
-        try await poll(webView, predicate: "window.networkReplies.subscribe?.rpc.result.subscribed[0] === 'network.changed'")
+        try await poll(webView, predicate: "window.networkReplies.subscribe?.rpc.result.subscribed[0] === 'network.statusChanged'")
 
         _ = try await javascript("window.__OJSB_RECEIVE__ = undefined; return true;", in: webView)
         update(.cellular)
@@ -107,20 +107,20 @@ final class WebKitHostTests: XCTestCase {
             return window.networkFrames.map(frame => [frame.meta.sid, frame.rpc.method, frame.rpc.params.name, frame.rpc.params.payload.type]);
             """, in: webView) as? [[String]]
         XCTAssertEqual(frames, [
-            [sid, "bridge.event", "network.changed", "cellular"],
-            [sid, "bridge.event", "network.changed", "ethernet"]
+            [sid, "bridge.event", "network.statusChanged", "cellular"],
+            [sid, "bridge.event", "network.statusChanged", "ethernet"]
         ])
         let status = try await request(in: webView, sid: sid, id: "status", method: "network.getStatus@1")
         XCTAssertEqual(status["result"] as? [String: String], ["type": "ethernet"])
         let unsubscribe = try await request(in: webView, sid: sid, id: "unsubscribe", method: "bridge.unsubscribe@1",
-                                            params: ["events": ["network.changed"]])
-        XCTAssertEqual(unsubscribe["result"] as? [String: [String]], ["unsubscribed": ["network.changed"]])
+                                            params: ["events": ["network.statusChanged"]])
+        XCTAssertEqual(unsubscribe["result"] as? [String: [String]], ["unsubscribed": ["network.statusChanged"]])
         update(.other)
         let afterUnsubscribe = try await javascript("return window.networkFrames.length;", in: webView) as? Int
         XCTAssertEqual(afterUnsubscribe, 2)
 
         _ = try await request(in: webView, sid: sid, id: "subscribe-again", method: "bridge.subscribe@1",
-                              params: ["events": ["network.changed"]])
+                              params: ["events": ["network.statusChanged"]])
         let nextURL = URL(string: "http://127.0.0.1:4173/?host=native&navigation=network")!
         webView.load(URLRequest(url: nextURL))
         try await waitForPage(webView, url: nextURL)
@@ -138,7 +138,7 @@ final class WebKitHostTests: XCTestCase {
         let beforeNewSubscription = try await javascript("return window.networkFrames.length;", in: webView) as? Int
         XCTAssertEqual(beforeNewSubscription, 0)
         _ = try await request(in: webView, sid: nextSID, id: "subscribe", method: "bridge.subscribe",
-                              params: ["events": ["network.changed"]])
+                              params: ["events": ["network.statusChanged"]])
         update(.other)
         nextUpdate(.none)
         try await poll(webView, predicate: "window.networkFrames.length === 1")
@@ -162,7 +162,7 @@ final class WebKitHostTests: XCTestCase {
         try await waitForPage(webView, url: url)
         let sid = try await hello(in: webView, id: "pagehide-hello")
         _ = try await request(in: webView, sid: sid, id: "subscribe", method: "bridge.subscribe",
-                              params: ["events": ["network.changed"]])
+                              params: ["events": ["network.statusChanged"]])
         let send = try XCTUnwrap(update)
         _ = try await javascript("window.__OJSB_RECEIVE__ = undefined; return true;", in: webView)
         send(.wifi)

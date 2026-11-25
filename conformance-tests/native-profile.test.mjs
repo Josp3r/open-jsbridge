@@ -52,7 +52,7 @@ test('network snapshots follow the provider independently of event registration'
 test('native profile schemas share the same network statuses', () => {
   const device = load('methods/device/getInfo.json');
   const snapshot = load('methods/network/getStatus.json');
-  const event = load('methods/network/changed.json');
+  const event = load('methods/network/statusChanged.json');
   ajv.addSchema(load('schemas/network-status.json'));
   const queryResult = ajv.compile(snapshot.result);
   const eventPayload = ajv.compile(event.payload);

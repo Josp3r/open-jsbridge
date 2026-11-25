@@ -29,8 +29,8 @@ internal fun attachExampleBridge(webView: WebView): AndroidBridge? {
     }
     return AndroidBridge.attach(
         webView,
-        allowedOrigin = TRUSTED_ORIGIN,
-        options = AndroidBridge.Options(deviceInfo = true),
+        allowedOrigins = listOf(TRUSTED_ORIGIN),
+        options = AndroidBridge.Options(deviceInfo = true, appLifecycle = true),
         methods = listOf(getConfig),
         events = listOf(CONFIG_CHANGED),
     )

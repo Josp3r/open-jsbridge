@@ -8,6 +8,7 @@ internal data class BridgeModules(
     val networkEvents: NetworkEvents? = null,
     val toast: ToastModule? = null,
     val media: MediaModule? = null,
+    val appLifecycle: AppLifecycleEvents? = null,
 )
 
 internal class DeviceModule(private val osVersion: String) {
@@ -28,6 +29,16 @@ internal fun interface NetworkModule {
 internal fun interface NetworkEvents {
     /** Observe changes on the WebView thread. Return cleanup, or null if observation is unavailable. */
     fun observe(onChange: (NetworkType) -> Unit): (() -> Unit)?
+}
+
+internal fun interface AppLifecycleEvents {
+    /** Observe process transitions on the WebView thread and return cleanup. */
+    fun observe(onTransition: (AppLifecycleEvent) -> Unit): () -> Unit
+}
+
+internal enum class AppLifecycleEvent(val wireName: String) {
+    FOREGROUNDED("app.foregrounded"),
+    BACKGROUNDED("app.backgrounded"),
 }
 
 internal fun interface ToastModule {

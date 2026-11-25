@@ -13,6 +13,26 @@
     "./mock": {
       "types": "./packages/web-mock/src/index.d.ts",
       "import": "./packages/web-mock/src/index.js"
+    },
+    "./app": {
+      "types": "./packages/web-sdk/src/app.d.ts",
+      "import": "./packages/web-sdk/src/app.js"
+    },
+    "./device": {
+      "types": "./packages/web-sdk/src/device.d.ts",
+      "import": "./packages/web-sdk/src/device.js"
+    },
+    "./network": {
+      "types": "./packages/web-sdk/src/network.d.ts",
+      "import": "./packages/web-sdk/src/network.js"
+    },
+    "./ui": {
+      "types": "./packages/web-sdk/src/ui.d.ts",
+      "import": "./packages/web-sdk/src/ui.js"
+    },
+    "./media": {
+      "types": "./packages/web-sdk/src/media-profile.d.ts",
+      "import": "./packages/web-sdk/src/media-profile.js"
     }
   },
   "files": [
@@ -23,5 +43,6 @@
   "repository": "https://github.com/Josp3r/open-jsbridge",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "sideEffects": false
 }

@@ -19,10 +19,10 @@ if (bridge.has('device.getInfo', 1)) {
   const info = await bridge.call<{ os: string; osVersion: string }>('device.getInfo', {}, { timeout: 3000 });
 }
 
-if (bridge.hasEvent('network.changed')) {
-  const off = bridge.on<{ type: string }>('network.changed', (e) => console.log(e.type));
+if (bridge.hasEvent('network.statusChanged')) {
+  const off = bridge.on<{ type: string }>('network.statusChanged', (e) => console.log(e.type));
   await off.ready;
-  off();                                                 // 或 bridge.off('network.changed', handler)
+  off();                                                 // 或 bridge.off('network.statusChanged', handler)
 }
 
 // 取消
@@ -46,8 +46,9 @@ export interface MethodMap {
   // ...
 }
 export interface EventMap {
-  'network.changed': NetworkChangedEvent;
-  'app.didEnterBackground': Record<string, never>;
+  'network.statusChanged': NetworkChangedEvent;
+  'app.foregrounded': null;
+  'app.backgrounded': null;
 }
 
 export interface CallOptions<C = unknown> {
@@ -179,7 +180,7 @@ sequenceDiagram
 ### 2.4 事件多路复用
 
 ```ts
-const off = bridge.on<{ type: string }>('network.changed', ({ type }) => {
+const off = bridge.on<{ type: string }>('network.statusChanged', ({ type }) => {
   console.log(type);
 });
 
@@ -255,6 +256,8 @@ declare module '@open-jsbridge/web' {
 
 [独立项目接入示例](../examples/web-demo/README.md#在独立-web-项目安装)
 
+从当前源码打包后，按需引入可使用 `@open-jsbridge/web/app`、`/device`、`/network`、`/ui` 和 `/media`。各入口复用一个连接，导入 Web 模块只提供调用接口。运行时使用 `bridge.has()` 和 `bridge.hasEvent()` 读取握手能力。构建器可以移除未使用的模块。
+
 ## 6. Mock 与调试工具
 
 ### 6.1 `@open-jsbridge/web/mock`
@@ -273,7 +276,7 @@ const host = installMockHost({
 });
 host.register('device.getInfo', () => ({ os: 'ios', osVersion: '27.2' }));
 host.register('acme.photos.prepare', async (_p, ctx) => { ctx.callback({ selected: 1 }); return { images: [] }; });
-host.emit('network.changed', { type: 'wifi' });
+host.emit('network.statusChanged', { type: 'wifi' });
 host.failNext('acme.pay.create', { code: -32007, message: 'User denied' });
 ```
 

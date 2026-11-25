@@ -4,7 +4,7 @@ import { installMockTransport } from '../../dist/packages/web-mock/src/index.js'
 const echoMethod = 'conformance.echo';
 const deviceMethod = 'device.getInfo';
 const networkMethod = 'network.getStatus';
-const networkEvent = 'network.changed';
+const networkEvent = 'network.statusChanged';
 const connectButton = document.querySelector('#connect');
 const sendButton = document.querySelector('#send');
 const errorButton = document.querySelector('#try-error');

@@ -81,7 +81,8 @@ const deviceGetInfo: HostHandler<'device.getInfo'> = async (params, ctx) => ({
 });
 
 const host = createHostBridge({
-  acl: require('./ojsb-acl.json'),            // 与 iOS/Android/Flutter 同一格式
+  allowedOrigins: ['https://m.acme.com'],
+  events: ['network.statusChanged', 'app.foregrounded', 'app.backgrounded'],
   handlers: {
     'device.getInfo': deviceGetInfo,
     'ui.toast.show': async ({ text }) => { Toast.show(text); },
@@ -106,7 +107,10 @@ export function HybridScreen() {
 }
 
 // RN → Web
-host.emit('network.changed', { type: 'wifi' });
+host.emit('network.statusChanged', { type: 'wifi' });
+// 原生进程生命周期回调收到变化时分别调用。
+host.emit('app.foregrounded', null);
+host.emit('app.backgrounded', null);
 const share = await host.callWeb('page.getShareInfo', {}, { timeout: 3000 });
 ```
 

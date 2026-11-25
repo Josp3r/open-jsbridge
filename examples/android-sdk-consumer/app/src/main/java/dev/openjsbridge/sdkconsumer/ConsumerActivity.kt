@@ -51,7 +51,7 @@ class ConsumerActivity : ComponentActivity() {
         }
         mediaPicker = picker
         bridge = AndroidBridge.attach(
-            view, allowedOrigin = ORIGIN,
+            view, allowedOrigins = listOf(ORIGIN),
             options = AndroidBridge.Options(deviceInfo = true, toast = true, media = picker != null),
             mediaPicker = picker,
         )

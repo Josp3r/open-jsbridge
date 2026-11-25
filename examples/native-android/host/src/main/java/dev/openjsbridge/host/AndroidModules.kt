@@ -10,6 +10,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 
 internal fun androidDeviceModule(): DeviceModule = DeviceModule(
     Build.VERSION.RELEASE?.takeIf { it.isNotBlank() } ?: Build.VERSION.SDK_INT.toString(),
@@ -21,6 +24,27 @@ internal fun androidToastModule(context: Context): ToastModule {
         check(Looper.myLooper() === Looper.getMainLooper()) { "Present the toast on the WebView UI thread" }
         Toast.makeText(app, text, Toast.LENGTH_SHORT).show()
     }
+}
+
+internal fun androidAppLifecycleEvents() = AppLifecycleEvents { onTransition ->
+    val lifecycle = ProcessLifecycleOwner.get().lifecycle
+    var observing = false
+    val observer = LifecycleEventObserver { _, event ->
+        // addObserver synchronously catches up to the current state. Only later transitions count.
+        if (observing) {
+            when (event) {
+                Lifecycle.Event.ON_START -> onTransition(AppLifecycleEvent.FOREGROUNDED)
+                Lifecycle.Event.ON_STOP -> onTransition(AppLifecycleEvent.BACKGROUNDED)
+                else -> Unit
+            }
+        }
+    }
+    lifecycle.addObserver(observer)
+    observing = true
+    ({
+        observing = false
+        lifecycle.removeObserver(observer)
+    })
 }
 
 internal class AndroidNetwork(context: Context) : NetworkModule {

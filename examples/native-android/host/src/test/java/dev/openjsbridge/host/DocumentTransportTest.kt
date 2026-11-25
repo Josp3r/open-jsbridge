@@ -13,13 +13,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DocumentTransportTest {
-    private val transport = DocumentTransport(ORIGIN, enableEcho = true)
+    private val transport = DocumentTransport(listOf(ORIGIN), enableEcho = true)
     private val proxy = Any()
     private val token = "a".repeat(32)
 
     @Test
     fun onlyTrustedMainFrameCanConfirmCommit() {
-        val challenge = transport.onPageCommitVisible("$ORIGIN/demo")!!
+        val challenge = transport.onPageCommitVisible("$ORIGIN/demo")!!.nonce
         val confirmation = "commit:$challenge:$token"
 
         assertNull(transport.exchange(confirmation, "http://10.0.2.2:4174", true, proxy))
@@ -28,6 +28,48 @@ class DocumentTransportTest {
         assertEquals("ready:$challenge:$token", transport.exchange(confirmation, ORIGIN, true, proxy))
         assertNull(transport.exchange(confirmation, ORIGIN, true, Any()))
         assertNull(transport.exchange(frame(token, hello("different-proxy")), ORIGIN, true, Any()))
+    }
+
+    @Test
+    fun allowlistedOriginsNeverShareAChallengeProxyOrSession() {
+        val first = "https://first.example.test"
+        val second = "https://second.example.test:8443"
+        val excluded = "https://second.example.test"
+        val host = DocumentTransport(listOf("HTTPS://FIRST.EXAMPLE.TEST:443/", second), enableEcho = true)
+        fun helloAt(origin: String, id: String): String {
+            val response = host.exchange(frame(token, hello(id)), origin, true, proxy)!!
+            return envelope(response).getAsJsonObject("rpc").getAsJsonObject("result").get("sid").asString
+        }
+
+        val firstChallenge = host.onPageCommitVisible("$first/old")!!
+        assertEquals(first, firstChallenge.origin)
+        val firstCommit = "commit:${firstChallenge.nonce}:$token"
+        assertNull(host.exchange(firstCommit, second, true, proxy))
+        assertEquals("ready:${firstChallenge.nonce}:$token", host.exchange(firstCommit, first, true, proxy))
+        val oldSid = helloAt(first, "first")
+
+        val nextChallenge = host.onPageCommitVisible("$second/new")!!
+        assertEquals(second, nextChallenge.origin)
+        val nextCommit = "commit:${nextChallenge.nonce}:$token"
+        assertNull(host.exchange(nextCommit, excluded, true, proxy))
+        assertNull(host.exchange(nextCommit, first, true, proxy))
+        assertNull(host.exchange(nextCommit, second, false, proxy))
+        assertNull(host.exchange(frame(token, request("before-confirm", oldSid)), first, true, proxy))
+        assertEquals("ready:${nextChallenge.nonce}:$token", host.exchange(nextCommit, second, true, proxy))
+        assertNull(host.exchange(frame(token, request("different-origin", oldSid)), first, true, proxy))
+        assertNull(host.exchange(frame(token, request("old-sid", oldSid)), second, true, proxy))
+        val newSid = helloAt(second, "first")
+        assertNotEquals(oldSid, newSid)
+        assertNull(host.exchange(frame(token, request("active-sid-wrong-origin", newSid)), first, true, proxy))
+        assertNotNull(host.exchange(frame(token, request("active", newSid)), second, true, proxy))
+
+        val delayed = host.onPageCommitVisible("$first/delayed", currentUrl = "$second/new")!!
+        assertEquals(second, delayed.origin)
+        assertEquals("ready:${delayed.nonce}:$token", host.exchange("commit:${delayed.nonce}:$token", second, true, proxy))
+        assertEquals(newSid, helloAt(second, "reconfirm"))
+
+        assertNull(host.onPageCommitVisible("$excluded/unlisted"))
+        assertNull(host.exchange(frame(token, request("retired", newSid)), second, true, proxy))
     }
 
     @Test
@@ -69,7 +111,7 @@ class DocumentTransportTest {
         val previousSid = sid("first")
         val nextToken = "b".repeat(32)
         val nextProxy = Any()
-        val nextChallenge = transport.onPageCommitVisible("$ORIGIN/demo")!!
+        val nextChallenge = transport.onPageCommitVisible("$ORIGIN/demo")!!.nonce
 
         val oldReplies = mutableListOf<String>()
         transport.receive(frame(token, request("old", sid = previousSid)), ORIGIN, true, proxy) {
@@ -103,11 +145,11 @@ class DocumentTransportTest {
     fun supersedingAChallengePreservesRequestsForTheSameConfirmedDocument() {
         activate()
         val sid = sid("first")
-        val firstChallenge = transport.onPageCommitVisible("$ORIGIN/same-reply-proxy")!!
+        val firstChallenge = transport.onPageCommitVisible("$ORIGIN/same-reply-proxy")!!.nonce
         val call = request("waiting", sid = sid)
         val replies = mutableListOf<String>()
         transport.receive(frame(token, call), ORIGIN, true, proxy) { replies.add(it) }
-        val nextChallenge = transport.onPageCommitVisible("$ORIGIN/same-reply-proxy")!!
+        val nextChallenge = transport.onPageCommitVisible("$ORIGIN/same-reply-proxy")!!.nonce
         transport.receive(frame(token, call), ORIGIN, true, proxy) { replies.add(it) }
         transport.receive(frame(token, request("next", sid = sid)), ORIGIN, true, proxy) { replies.add(it) }
 
@@ -124,7 +166,7 @@ class DocumentTransportTest {
         activate()
         val sid = sid("hello")
         val unlisted = "https://untrusted.test/"
-        val challenge = transport.onPageCommitVisible(unlisted, currentUrl = "$ORIGIN/current")!!
+        val challenge = transport.onPageCommitVisible(unlisted, currentUrl = "$ORIGIN/current")!!.nonce
         val confirmation = "commit:$challenge:$token"
         assertNull(transport.exchange(confirmation, unlisted, true, proxy))
         assertEquals("ready:$challenge:$token", transport.exchange(confirmation, ORIGIN, true, proxy))
@@ -135,7 +177,7 @@ class DocumentTransportTest {
     fun keepsTheUnconfirmedDocumentQueueBounded() {
         activate()
         val sid = sid("hello")
-        val challenge = transport.onPageCommitVisible(ORIGIN)!!
+        val challenge = transport.onPageCommitVisible(ORIGIN)!!.nonce
         val replies = mutableListOf<String>()
         repeat(9) { index ->
             transport.receive(frame(token, request("call-$index", sid = sid)), ORIGIN, true, proxy) {
@@ -152,8 +194,8 @@ class DocumentTransportTest {
     @Test
     fun deferredCompletionFromThePreviousDocumentNeverPostsToAProxy() {
         val completions = ArrayDeque<() -> Unit>()
-        val host = DocumentTransport(ORIGIN, enableEcho = true) { completions.addLast(it) }
-        val challenge = host.onPageCommitVisible(ORIGIN)!!
+        val host = DocumentTransport(listOf(ORIGIN), enableEcho = true) { completions.addLast(it) }
+        val challenge = host.onPageCommitVisible(ORIGIN)!!.nonce
         host.exchange("commit:$challenge:$token", ORIGIN, true, proxy)
         val oldReplies = mutableListOf<String>()
         host.receive(frame(token, hello("hello")), ORIGIN, true, proxy) { oldReplies.add(it) }
@@ -163,7 +205,7 @@ class DocumentTransportTest {
         val oldEcho = completions.removeFirst()
 
         val nextToken = "b".repeat(32)
-        val nextChallenge = host.onPageCommitVisible(ORIGIN)!!
+        val nextChallenge = host.onPageCommitVisible(ORIGIN)!!.nonce
         host.exchange("commit:$nextChallenge:$nextToken", ORIGIN, true, proxy)
         oldEcho()
         assertEquals(emptyList<String>(), oldReplies)
@@ -188,7 +230,7 @@ class DocumentTransportTest {
             replies.add(it)
         }
         val complete = runner.completions.single()
-        val challenge = host.onPageCommitVisible(ORIGIN)!!
+        val challenge = host.onPageCommitVisible(ORIGIN)!!.nonce
 
         complete(Result.success(JsonPrimitive("system")))
         assertEquals(emptyList<String>(), replies)
@@ -404,8 +446,8 @@ class DocumentTransportTest {
 
     @Test
     fun echoIsAbsentWhenConformanceMethodsAreDisabled() {
-        val host = DocumentTransport(ORIGIN, enableEcho = false)
-        val challenge = host.onPageCommitVisible(ORIGIN)!!
+        val host = DocumentTransport(listOf(ORIGIN), enableEcho = false)
+        val challenge = host.onPageCommitVisible(ORIGIN)!!.nonce
         host.exchange("commit:$challenge:$token", ORIGIN, true, proxy)
         val reply = host.exchange(frame(token, hello("hello")), ORIGIN, true, proxy)!!
         val result = envelope(reply).getAsJsonObject("rpc").getAsJsonObject("result")
@@ -415,13 +457,13 @@ class DocumentTransportTest {
     }
 
     private fun activate(): String {
-        val challenge = transport.onPageCommitVisible("$ORIGIN/demo")!!
+        val challenge = transport.onPageCommitVisible("$ORIGIN/demo")!!.nonce
         assertEquals("ready:$challenge:$token", transport.exchange("commit:$challenge:$token", ORIGIN, true, proxy))
         return challenge
     }
 
     private fun DocumentTransport.confirmAndGetSid(documentToken: String = token, documentProxy: Any = proxy): String {
-        val challenge = onPageCommitVisible(ORIGIN)!!
+        val challenge = onPageCommitVisible(ORIGIN)!!.nonce
         assertEquals("ready:$challenge:$documentToken",
             exchange("commit:$challenge:$documentToken", ORIGIN, true, documentProxy))
         val response = exchange(frame(documentToken, hello("hello")), ORIGIN, true, documentProxy)!!
@@ -433,7 +475,7 @@ class DocumentTransportTest {
         var cancellations = 0
 
         fun host(scheduleReply: (() -> Unit) -> Unit = { it() }) = DocumentTransport(
-            ORIGIN,
+            listOf(ORIGIN),
             enableEcho = false,
             businessMethods = listOf(BusinessMethod(BUSINESS_METHOD) { JsonPrimitive("system") }),
             runBusiness = { _, complete ->

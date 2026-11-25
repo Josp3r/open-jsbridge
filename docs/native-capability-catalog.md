@@ -14,15 +14,15 @@
 
 ## 首批契约命名核对
 
-标准方法优先使用 `domain.action`。动作需要交代对象时使用 lowerCamelCase 的动宾结构。拥有独立契约和启用条件的内聚模块可以加一层子域。事件描述已发生的变化。[命名与版本规则](protocol.md#34-method-命名)
+标准方法优先使用 `domain.action`。动作需要交代对象时使用 lowerCamelCase 的动宾结构。拥有独立契约和启用条件的内聚模块可以加一层子域。标准事件使用「名词 + 过去分词」，如 `network.statusChanged`。命名空间已经指明主语时可只保留过去分词，如 `app.foregrounded`。[命名与版本规则](protocol.md#34-method-命名)
 
 - [`device.getInfo@1`](../spec/methods/device/getInfo.json) 使用 `getInfo` 表达查询设备信息。
 - [`network.getStatus@1`](../spec/methods/network/getStatus.json) 使用 `getStatus` 表达查询宿主网络路径状态。
-- [`network.changed`](../spec/methods/network/changed.json) 表达网络路径状态已发生变化，按事件名称单独声明和订阅。
+- [`network.statusChanged`](../spec/methods/network/statusChanged.json) 表达网络路径状态已发生变化，按事件名称单独声明和订阅。
 - [`ui.toast.show@1`](../spec/methods/ui/toast/show.json) 使用 `toast` 子域表示独立启用的原生反馈模块，`show` 表示展示请求。
 - [`media.chooseMedia@1`](../spec/methods/media/chooseMedia.json) 使用 `chooseMedia` 表达系统媒体选择。v1 的来源、类型与选择数量由媒体契约约束。
 
-这五个名称沿用现有契约。媒体字节通过协议层的 `bridge.blob.read@1` 和 `bridge.blob.release@1` 读取和释放。[原生能力接入](native-profiles.md) · [Blob 协议](protocol.md#102-分片读取与释放)
+首批方法沿用现有命名。生命周期标准补充 `app.foregrounded` 和 `app.backgrounded` 两个事件。媒体字节通过协议层的 `bridge.blob.read@1` 和 `bridge.blob.release@1` 读取和释放。[原生能力接入](native-profiles.md) · [Blob 协议](protocol.md#102-分片读取与释放)
 
 ## 1. 宿主与运行环境
 

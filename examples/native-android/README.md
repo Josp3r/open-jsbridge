@@ -4,7 +4,7 @@ Debug App 加载仓库的 [Web Demo](../web-demo/README.md)，用于验证握手
 
 ## 接入 App 自己的 WebView
 
-将本目录的 `host` 纳入 App 的 Gradle 工程，并在 App 模块添加 `implementation(project(":host"))`。在主线程创建 WebView、启用 JavaScript，并在首次导航前传入一个精确的 HTTPS origin。使用非默认端口时，在 origin 中写明端口。
+将本目录的 `host` 纳入 App 的 Gradle 工程，并在 App 模块添加 `implementation(project(":host"))`。在主线程创建 WebView、启用 JavaScript，并在首次导航前通过 `allowedOrigins` 传入需要接入的精确 HTTPS origin。使用非默认端口时，在 origin 中写明端口。切换到另一允许来源的文档后，页面重新握手和订阅。
 
 ```kotlin
 import android.webkit.RenderProcessGoneDetail
@@ -27,8 +27,8 @@ val getConfig = BusinessMethod("acme.app.getConfig") { params ->
 }
 val attachment = AndroidBridge.attach(
     webView = browser,
-    allowedOrigin = origin,
-    options = AndroidBridge.Options(deviceInfo = true),
+    allowedOrigins = listOf(origin, "https://support.example.com"),
+    options = AndroidBridge.Options(deviceInfo = true, appLifecycle = true),
     methods = listOf(getConfig),
     events = listOf("acme.app.configChanged"),
 )
@@ -64,7 +64,9 @@ const device = await bridge.call('device.getInfo')
 const config = await bridge.call('acme.app.getConfig')
 ```
 
-`deviceInfo`、`networkStatus` 和 `networkChanges` 分别开启设备查询、默认网络查询和网络变化事件。使用网络能力的 App 在 manifest 声明 `ACCESS_NETWORK_STATE`。观察器在订阅时注册，会话退订或销毁时释放。 [设备和网络 Profiles](../../docs/native-profiles.md)
+`deviceInfo`、`networkStatus` 和 `networkChanges` 分别开启设备查询、默认网络查询和 `network.statusChanged`。使用网络能力的 App 在 manifest 声明 `ACCESS_NETWORK_STATE`。观察器在订阅时注册，会话退订或销毁时释放。 [设备和网络 Profiles](../../docs/native-profiles.md)
+
+`appLifecycle` 开启 `app.foregrounded` 和 `app.backgrounded`，负载为 JSON `null`。订阅后，进程前后台切换时发送事件。 [AndroidX ProcessLifecycleOwner](https://developer.android.com/reference/androidx/lifecycle/ProcessLifecycleOwner)
 
 示例的 `currentTheme` 由 App 持有。配置更新回调在主线程修改状态，再发出已注册的事件。
 

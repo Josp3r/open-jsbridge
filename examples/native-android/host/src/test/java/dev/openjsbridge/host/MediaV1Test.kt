@@ -308,7 +308,7 @@ class MediaV1Test {
 
     private class Client(module: MediaModule? = null, async: Boolean = true) {
         val replies = mutableListOf<String>()
-        val transport = DocumentTransport(ORIGIN, enableEcho = false, modules = BridgeModules(media = module),
+        val transport = DocumentTransport(listOf(ORIGIN), enableEcho = false, modules = BridgeModules(media = module),
             runBusiness = if (async) ({ call, finish ->
                 val job = CoroutineScope(Job() + Dispatchers.Unconfined).launch {
                     finish(runCatching {
@@ -325,7 +325,7 @@ class MediaV1Test {
 
         fun confirm(docToken: String = token): JsonObject {
             token = docToken
-            val challenge = checkNotNull(transport.onPageCommitVisible("$ORIGIN/test"))
+            val challenge = checkNotNull(transport.onPageCommitVisible("$ORIGIN/test")).nonce
             val controls = mutableListOf<String>()
             transport.receive("commit:$challenge:$token", ORIGIN, true, originalProxy, controls::add)
             assertEquals(listOf("ready:$challenge:$token"), controls)

@@ -91,7 +91,7 @@ class NativeModulesTest {
         val client = Client(BridgeModules(networkEvents = network))
         client.commit()
         assertEquals("[]", client.hello().getAsJsonArray("events").toString())
-        assertEquals(obj("""{"subscribed":[],"denied":["network.changed"]}"""), client.subscribe().result())
+        assertEquals(obj("""{"subscribed":[],"denied":["network.statusChanged"]}"""), client.subscribe().result())
         assertEquals(0, network.callbacks.size)
 
         client.confirm(proxy = Any())
@@ -99,8 +99,12 @@ class NativeModulesTest {
         assertEquals("[]", client.hello().getAsJsonArray("events").toString())
         client.confirm()
         val capabilities = client.hello()
-        assertEquals("[\"network.changed\"]", capabilities.getAsJsonArray("events").toString())
+        assertEquals("[\"network.statusChanged\"]", capabilities.getAsJsonArray("events").toString())
         assertTrue(capabilities.getAsJsonObject("methods").keySet().isEmpty())
+        assertEquals(0, network.callbacks.size)
+        val oldName = """{"events":["network.changed"]}"""
+        assertEquals(obj("""{"subscribed":[],"denied":["network.changed"]}"""),
+            client.call("bridge.subscribe", oldName).result())
         assertEquals(0, network.callbacks.size)
 
         val disabled = Client(BridgeModules(network = NetworkModule { NetworkType.NONE }))
@@ -118,20 +122,20 @@ class NativeModulesTest {
         client.hello()
 
         for (method in listOf("bridge.subscribe", "bridge.unsubscribe@1")) {
-            for (params in listOf("{}", """{"events":[]}""", """{"events":["network.changed","network.changed"]}""",
+            for (params in listOf("{}", """{"events":[]}""", """{"events":["network.statusChanged","network.statusChanged"]}""",
                 """{"events":["unqualified"]}""", """{"events":["rpc.reserved"]}""",
-                """{"events":["network.changed@1"]}""", """{"events":[1]}""")) {
+                """{"events":["network.statusChanged@1"]}""", """{"events":[1]}""")) {
                 assertEquals("$method $params", -32602, client.call(method, params).errorCode())
             }
         }
         assertEquals(0, network.callbacks.size)
-        val names = """{"events":["acme.pay.orderChanged","network.changed","app.ready"]}"""
-        assertEquals(obj("""{"subscribed":["network.changed"],"denied":["acme.pay.orderChanged","app.ready"]}"""),
+        val names = """{"events":["acme.pay.orderChanged","network.statusChanged","app.ready"]}"""
+        assertEquals(obj("""{"subscribed":["network.statusChanged"],"denied":["acme.pay.orderChanged","app.ready"]}"""),
             client.call("bridge.subscribe@1", names).result())
         client.subscribe()
         assertEquals(1, network.callbacks.size)
         repeat(2) {
-            assertEquals(obj("""{"unsubscribed":["acme.pay.orderChanged","network.changed","app.ready"]}"""),
+            assertEquals(obj("""{"unsubscribed":["acme.pay.orderChanged","network.statusChanged","app.ready"]}"""),
                 client.call("bridge.unsubscribe@1", names).result())
         }
         assertEquals(listOf(0), network.stopped)
@@ -150,7 +154,7 @@ class NativeModulesTest {
         assertTrue(client.notifications.isEmpty())
         delayed.removeFirst()()
         network.callbacks[0](NetworkType.ETHERNET)
-        assertEquals(obj("""{"jsb":"1.0","meta":{"sid":"${client.sid}"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"network.changed","payload":{"type":"ethernet"}}}}"""),
+        assertEquals(obj("""{"jsb":"1.0","meta":{"sid":"${client.sid}"},"rpc":{"jsonrpc":"2.0","method":"bridge.event","params":{"name":"network.statusChanged","payload":{"type":"ethernet"}}}}"""),
             client.notifications.single())
 
         client.call("bridge.unsubscribe", EVENTS)
@@ -192,6 +196,40 @@ class NativeModulesTest {
     }
 
     @Test
+    fun lifecycleEventsHaveNullPayloadAndRequireAnAcknowledgedSubscription() {
+        val lifecycle = FakeAppLifecycle()
+        val delayed = ArrayDeque<() -> Unit>()
+        val client = Client(BridgeModules(appLifecycle = lifecycle), delayed)
+        client.commit()
+        assertEquals("[]", client.hello().getAsJsonArray("events").toString())
+        client.confirm()
+        assertEquals(setOf("app.foregrounded", "app.backgrounded"),
+            client.hello().getAsJsonArray("events").map { it.asString }.toSet())
+        assertTrue(lifecycle.callbacks.isEmpty())
+
+        client.request("bridge.subscribe", """{"events":["app.foregrounded","app.backgrounded"]}""")
+        lifecycle.send(AppLifecycleEvent.BACKGROUNDED)
+        assertTrue(client.notifications.isEmpty())
+        delayed.removeFirst()()
+        lifecycle.send(AppLifecycleEvent.FOREGROUNDED)
+        lifecycle.send(AppLifecycleEvent.BACKGROUNDED)
+        assertEquals(listOf("app.foregrounded", "app.backgrounded"), client.notifications.map { event ->
+            assertEquals(client.sid, event.getAsJsonObject("meta").get("sid").asString)
+            val params = event.getAsJsonObject("rpc").getAsJsonObject("params")
+            assertTrue(params.get("payload").isJsonNull)
+            params.get("name").asString
+        })
+
+        client.call("bridge.unsubscribe", """{"events":["app.foregrounded"]}""")
+        lifecycle.send(AppLifecycleEvent.FOREGROUNDED)
+        assertEquals(2, client.notifications.size)
+        client.commit(token = "b".repeat(32))
+        assertEquals(lifecycle.callbacks.indices.toSet(), lifecycle.stopped.toSet())
+        lifecycle.send(AppLifecycleEvent.BACKGROUNDED)
+        assertEquals(2, client.notifications.size)
+    }
+
+    @Test
     fun observerRegistrationFailureDeniesTheEventWithoutLeavingASubscription() {
         val network = FakeNetworkEvents().apply { available = false }
         val client = Client(BridgeModules(networkEvents = network))
@@ -199,10 +237,10 @@ class NativeModulesTest {
         client.confirm()
         client.hello()
 
-        assertEquals(obj("""{"subscribed":[],"denied":["network.changed"]}"""), client.subscribe().result())
+        assertEquals(obj("""{"subscribed":[],"denied":["network.statusChanged"]}"""), client.subscribe().result())
         assertTrue(network.callbacks.isEmpty())
         network.available = true
-        assertEquals(obj("""{"subscribed":["network.changed"],"denied":[]}"""), client.subscribe().result())
+        assertEquals(obj("""{"subscribed":["network.statusChanged"],"denied":[]}"""), client.subscribe().result())
         assertFalse(network.callbacks.isEmpty())
     }
 
@@ -216,7 +254,7 @@ class NativeModulesTest {
 
         // A literal Unicode line separator takes three bytes on input and six
         // when Gson escapes it in a reply. The request fits the envelope limit.
-        val params = """{"events":["network.changed","acme.${"a".repeat(64_970)}"]}"""
+        val params = """{"events":["network.statusChanged","acme.${"a".repeat(64_970)}"]}"""
         val separators = "\u2028".repeat(127)
         assertEquals(-32006, client.call("bridge.subscribe", params, id = "s$separators").errorCode())
         assertTrue(network.callbacks.isEmpty())
@@ -226,6 +264,22 @@ class NativeModulesTest {
         assertTrue(network.stopped.isEmpty())
         network.callbacks.single()(NetworkType.WIFI)
         assertEquals(1, client.notifications.size)
+    }
+
+    private class FakeAppLifecycle : AppLifecycleEvents {
+        val callbacks = mutableListOf<(AppLifecycleEvent) -> Unit>()
+        val stopped = mutableListOf<Int>()
+
+        override fun observe(onTransition: (AppLifecycleEvent) -> Unit): () -> Unit {
+            val index = callbacks.size
+            callbacks.add(onTransition)
+            onTransition(AppLifecycleEvent.FOREGROUNDED)
+            return { stopped.add(index) }
+        }
+
+        fun send(event: AppLifecycleEvent) {
+            callbacks.forEach { it(event) } // A late callback may outlive its registration.
+        }
     }
 
     private class FakeNetworkEvents : NetworkEvents {
@@ -242,7 +296,7 @@ class NativeModulesTest {
     }
 
     private class Client(modules: BridgeModules, private val delayed: ArrayDeque<() -> Unit>? = null) {
-        val transport = DocumentTransport(ORIGIN, enableEcho = false, modules = modules) { reply ->
+        val transport = DocumentTransport(listOf(ORIGIN), enableEcho = false, modules = modules) { reply ->
             if (delayed == null) reply() else delayed.addLast(reply)
         }
         val proxy = Any()
@@ -257,7 +311,7 @@ class NativeModulesTest {
 
         fun commit(token: String = this.token) {
             this.token = token
-            challenge = checkNotNull(transport.onPageCommitVisible(ORIGIN))
+            challenge = checkNotNull(transport.onPageCommitVisible(ORIGIN)).nonce
             val messages = mutableListOf<String>()
             transport.receive("commit:$challenge:$token", ORIGIN, true, proxy) { messages.add(it) }
             assertEquals(listOf("ready:$challenge:$token"), messages)
@@ -301,7 +355,7 @@ class NativeModulesTest {
 
     private companion object {
         const val ORIGIN = "https://example.test"
-        const val EVENTS = """{"events":["network.changed"]}"""
+        const val EVENTS = """{"events":["network.statusChanged"]}"""
         fun obj(raw: String): JsonObject = JsonParser.parseString(raw).asJsonObject
         fun JsonObject.result(): JsonObject = getAsJsonObject("result")
         fun JsonObject.errorCode(): Int = getAsJsonObject("error").get("code").asInt

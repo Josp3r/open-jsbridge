@@ -142,7 +142,8 @@ class MainActivityTest {
             assertEquals("true", evaluate(scenario, """
                 nativeReplies.hello.result.capabilities.methods['device.getInfo'].versions.join() === '1' &&
                   nativeReplies.hello.result.capabilities.methods['network.getStatus'].versions.join() === '1' &&
-                  nativeReplies.hello.result.capabilities.events.includes('network.changed')
+                  nativeReplies.hello.result.capabilities.events.includes('network.statusChanged') &&
+                  !nativeReplies.hello.result.capabilities.events.includes('network.changed')
             """.trimIndent()))
             evaluate(scenario, """
                 window.sendNative('device', 'device.getInfo@1');
@@ -153,9 +154,14 @@ class MainActivityTest {
                 nativeReplies.device.result.os === 'android' && !!nativeReplies.device.result.osVersion &&
                   ['wifi', 'cellular', 'ethernet', 'other', 'none', 'unknown'].includes(nativeReplies.network.result.type)
             """.trimIndent()))
+            evaluate(scenario, "window.sendNative('legacy', 'bridge.subscribe', { events: ['network.changed'] })")
+            awaitScript(scenario, """
+                nativeReplies.legacy?.result?.subscribed?.length === 0 &&
+                  nativeReplies.legacy?.result?.denied?.join() === 'network.changed'
+            """.trimIndent())
             subscribeWireProbe(scenario)
-            evaluate(scenario, "window.sendNative('off', 'bridge.unsubscribe', { events: ['network.changed'] })")
-            awaitScript(scenario, "nativeReplies.off?.result?.unsubscribed.includes('network.changed') === true")
+            evaluate(scenario, "window.sendNative('off', 'bridge.unsubscribe', { events: ['network.statusChanged'] })")
+            awaitScript(scenario, "nativeReplies.off?.result?.unsubscribed.includes('network.statusChanged') === true")
         }
     }
 
@@ -189,12 +195,12 @@ class MainActivityTest {
                 scenario.onActivity { callbacks.single()("ethernet") }
                 awaitScript(scenario, """
                     nativeEvents.some(frame => frame.meta.sid === nativeReplies.hello.result.sid &&
-                      frame.rpc.method === 'bridge.event' && frame.rpc.params.name === 'network.changed' &&
+                      frame.rpc.method === 'bridge.event' && frame.rpc.params.name === 'network.statusChanged' &&
                       frame.rpc.params.payload.type === 'ethernet' && !('id' in frame.rpc))
                 """.trimIndent())
 
-                evaluate(scenario, "window.sendNative('off', 'bridge.unsubscribe', { events: ['network.changed'] })")
-                awaitScript(scenario, "nativeReplies.off?.result?.unsubscribed.includes('network.changed') === true")
+                evaluate(scenario, "window.sendNative('off', 'bridge.unsubscribe', { events: ['network.statusChanged'] })")
+                awaitScript(scenario, "nativeReplies.off?.result?.unsubscribed.includes('network.statusChanged') === true")
                 scenario.onActivity {
                     callbacks.single()("none")
                     assertEquals(1, stops)
@@ -214,7 +220,7 @@ class MainActivityTest {
                 awaitScript(scenario, "nativeEvents.some(frame => frame.rpc.params.payload.type === 'wifi')")
                 assertEquals("true", evaluate(scenario, """
                     nativeEvents.length === 1 && nativeEvents[0].meta.sid === nativeReplies.hello.result.sid &&
-                      nativeFrames.filter(frame => frame.includes('network.changed') && frame.includes('bridge.event')).length === 1
+                      nativeFrames.filter(frame => frame.includes('network.statusChanged') && frame.includes('bridge.event')).length === 1
                 """.trimIndent()))
                 scenario.onActivity {
                     bridge.detach()
@@ -252,8 +258,8 @@ class MainActivityTest {
     }
 
     private fun subscribeWireProbe(scenario: ActivityScenario<MainActivity>, id: String = "subscribe") {
-        evaluate(scenario, "window.sendNative('$id', 'bridge.subscribe@1', { events: ['network.changed'] })")
-        awaitScript(scenario, "nativeReplies['$id']?.result?.subscribed.includes('network.changed') === true")
+        evaluate(scenario, "window.sendNative('$id', 'bridge.subscribe@1', { events: ['network.statusChanged'] })")
+        awaitScript(scenario, "nativeReplies['$id']?.result?.subscribed.includes('network.statusChanged') === true")
     }
 
     private fun echo(scenario: ActivityScenario<MainActivity>, text: String) {
