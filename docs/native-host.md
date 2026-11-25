@@ -12,7 +12,7 @@
 
 联调构建注册 `conformance.echo` v1，原样返回对象参数，省略参数时返回 `{}`。示例还启用可选的设备查询、网络查询和网络事件。宿主握手时分别声明可用的方法和事件。客户端执行本地超时与取消。远端取消、反向调用或 iframe 需要宿主实现对应契约后再声明能力。[echo Schema](../spec/methods/conformance/echo.json) · [原生基础能力](native-profiles.md)
 
-参考宿主接受一组精确 HTTPS origin。来源白名单适用于 bridge 注入和后续消息，主 frame、文档和 sid 检查仍适用。方法与事件通过显式注册及握手声明。协议的 `rules` JSON 为可选提案，参考宿主尚未实现。SwiftPM 宿主最低为 iOS 14，iOS 示例最低为 15。Android 宿主最低为 API 24，并要求 WebMessageListener 和 document-start，系统选图要求 API 33。
+参考宿主接受一组精确 HTTPS origin。来源白名单适用于 bridge 注入和后续消息，主 frame、文档和 sid 检查仍适用。方法与事件通过显式注册及握手声明。协议的 `rules` JSON 为可选提案，参考宿主尚未实现。SwiftPM 宿主最低为 iOS 14，iOS 示例最低为 15。Android 宿主最低为 API 24，并要求 WebMessageListener 和 document-start。选图取决于设备上是否有可用的系统 Photo Picker。[选图能力](native-profiles.md#media)
 
 ## App 自定义事件
 

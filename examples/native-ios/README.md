@@ -86,7 +86,9 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 
 向 options 加上 `media: true` 可开启 `media.chooseMedia@1` 的系统相册单张图片选择。`media` 默认关闭。iOS 使用 PHPicker，仅访问用户选中的图片。点击 H5 的 **Choose image** 打开系统选择器。选中后，页面解码 JPEG 缩略图并显示 **Preview ready**。取消时显示 **Selection cancelled**。
 
-宿主在后台生成最长边 256 像素、原始 JPEG 不超过 32 KiB 的缩略图。返回值包含原图的 MIME、字节数和按显示方向计算的像素尺寸，以及缩略图 Base64。宿主为当前文档最多暂存 20 MiB 原图，超过单图上限或当前会话额度时返回 `-32006`。已有选择请求时返回 `-32010`。原图 ID 在五分钟后过期，跨文档导航、Web 内容进程退出或附件拆卸会提前使其失效。
+宿主在后台生成最长边 256 像素、原始 JPEG 不超过 32 KiB 的缩略图。返回值包含原图的 MIME、字节数和按显示方向计算的像素尺寸，以及缩略图 Base64。宿主为当前文档最多暂存 20 MiB 原图，超过单图上限或当前会话额度时返回 `-32006`。原图 ID 在五分钟后过期，跨文档导航、Web 内容进程退出或附件拆卸会提前使其失效。
+
+同一 WebView 已有选择请求在进行时，新的选择请求返回 `-32010`。选择器无法打开、所选图片无法读取或解码时返回 `-32003`。用户关闭选择器时，结果为 `{ status: 'cancelled', files: [] }`。H5 通过 `AbortSignal` 中止本次 RPC 时，SDK 以 `-32002` 拒绝该调用。
 
 ## 宿主的关键代码
 

@@ -128,15 +128,35 @@ class MediaV1Test {
         assertEquals(-32006, client.call(CHOOSE).errorCode())
         assertEquals(0, fixture.fileCount())
         fixture.image(0)
-        assertEquals(-32603, client.call(CHOOSE).errorCode())
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
         fixture.image(4, "text/plain")
-        assertEquals(-32603, client.call(CHOOSE).errorCode())
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
         fixture.image(4, "image/" + "a".repeat(123))
-        assertEquals(-32603, client.call(CHOOSE).errorCode())
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
         assertEquals(0, fixture.fileCount())
         fixture.image(LIMIT)
         assertEquals(LIMIT, client.call(CHOOSE).selectedFile().get("size").asInt)
         client.transport.invalidate()
+        assertEquals(0, fixture.fileCount())
+    }
+
+    @Test fun pickerProviderAndDecoderFailuresArePermissionDenied() {
+        val fixture = Fixture()
+        val client = Client(fixture.module)
+        client.confirm()
+
+        fixture.next = { throw IllegalStateException("Launcher lost its Activity") }
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
+        fixture.next = { MediaImage({ throw SecurityException("Private URI") }) { error("Provider denied metadata") } }
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
+        fixture.next = { MediaImage({ "image/png" }) { throw java.io.IOException("Private URI") } }
+        val denied = client.call(CHOOSE)
+        assertEquals(-32003, denied.errorCode())
+        assertEquals("Permission denied", denied.getAsJsonObject("error").get("message").asString)
+
+        fixture.image(4)
+        fixture.thumbnail = { throw java.io.IOException("Decoder cannot load selected image") }
+        assertEquals(-32003, client.call(CHOOSE).errorCode())
         assertEquals(0, fixture.fileCount())
     }
 
@@ -146,7 +166,7 @@ class MediaV1Test {
         client.confirm()
         for (thumbnail in listOf(MediaThumbnail(0, 1, JPEG), MediaThumbnail(1, -1, JPEG), MediaThumbnail(1, 1, byteArrayOf()))) {
             fixture.thumbnail = { thumbnail }
-            assertEquals(-32603, client.call(CHOOSE).errorCode())
+            assertEquals(-32003, client.call(CHOOSE).errorCode())
             assertEquals(0, fixture.fileCount())
         }
         fixture.thumbnail = { MediaThumbnail(1, 1, ByteArray(THUMBNAIL_LIMIT + 1)) }
@@ -214,7 +234,7 @@ class MediaV1Test {
         client.confirm()
         assertNull(client.send(client.request("pick", CHOOSE)))
         val first = checkNotNull(late)
-        assertEquals(-32008, client.call(CHOOSE).errorCode())
+        assertEquals(-32010, client.call(CHOOSE).errorCode())
         client.cancel("pick")
         assertEquals(-32002, client.last().errorCode())
         val count = client.replies.size

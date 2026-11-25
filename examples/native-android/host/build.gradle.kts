@@ -30,6 +30,8 @@ kotlin {
 
 dependencies {
     api("com.google.code.gson:gson:2.12.1")
+    implementation("androidx.activity:activity:1.9.3")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-process:2.6.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.1")

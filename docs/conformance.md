@@ -210,7 +210,7 @@ steps:
 | `mock` | full（模拟） | 模拟 | 测试 transport | 可切换 | Web SDK 单测与 runner 自检 |
 | `ios-wk`（iOS 14+） | full | M1 关闭，开放须通过 F5 | 按需启用 PHPicker | ✅ WithReply | 主 frame |
 | `ios-wk-legacy`（iOS 13） | full | ❌ | 需验证 | ❌ | 验证 document 隔离后再启用 |
-| `android-wml` | full | M1 关闭，开放须通过 F5 | Android 13+ 按需启用 Photo Picker | ❌ | 主 frame |
+| `android-wml` | full | M1 关闭，开放须通过 F5 | 按需启用，要求设备提供系统 Photo Picker 或回移版本 | ❌ | 主 frame |
 | `android-jsi` | degraded | ❌ | 待评估 | ❌ | 默认停用，仅在 S2 的受控配置下评估 |
 | `flutter-inappwebview` | 由可信元数据决定 | 须通过 F5 | 视实现 | ✅ callHandler | 方案 A；无可信来源时按 S2 启用 |
 | `flutter-webview_flutter` | degraded | ❌ | ❌ | ❌ | 须满足 S2 |
