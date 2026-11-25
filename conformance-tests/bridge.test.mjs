@@ -519,9 +519,7 @@ test('only a correlated, session-matching response settles the call', async () =
   const client = createBridge({ adapter: transport.adapter });
   const ready = client.ready();
   await setImmediate();
-  const helloId = transport.sent[0].rpc.id;
   transport.push(frame({ id: 'previous-hello', result: hello }, { sid: 'test-session' }));
-  transport.push(frame({ id: helloId, result: hello }, { sid: 'different-session' }));
   assert.equal(client.state, 'connecting');
   connect(transport);
   await ready;
@@ -537,13 +535,72 @@ test('only a correlated, session-matching response settles the call', async () =
   assert.equal(await result, 'first valid reply');
 });
 
-test('an expired hello response cannot establish a session', async () => {
+test('a semantically invalid hello success ends its attempt before a duplicate success', async () => {
   const transport = controlledTransport();
-  const client = createBridge({ adapter: transport.adapter, handshakeTimeout: 10 });
-  await assert.rejects(client.ready(), { code: ErrorCode.Unavailable });
-  connect(transport);
+  const client = createBridge({ adapter: transport.adapter, handshakeTimeout: 100 });
+  const ready = assert.rejects(client.ready(), { code: ErrorCode.InvalidRequest });
+  await setImmediate();
+  const id = transport.sent[0].rpc.id;
+  transport.push(frame({ id, result: hello }, { sid: 'different-session' }));
+  transport.push(frame({ id, result: hello }, { sid: hello.sid }));
+  await ready;
   assert.equal(client.state, 'unavailable');
   assert.equal(client.has(echo), false);
+  assert.equal(transport.sent.length, 1);
+});
+
+test('a lost hello is retried once with a new ID and the expired attempt cannot establish a session', async () => {
+  let receive;
+  const ids = [];
+  const client = createBridge({ handshakeTimeout: 20, adapter: {
+    listen(listener) { receive = listener; return () => { receive = undefined; }; },
+    send(raw) {
+      const { id } = JSON.parse(raw).rpc;
+      ids.push(id);
+      if (ids.length === 2) {
+        receive(frame({ id: ids[0], result: { ...hello, host: { ...host, name: 'stale' } } }));
+        receive(frame({ id, result: hello }));
+      }
+    },
+  } });
+  assert.deepEqual(await client.ready(), host);
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[0], ids[1]);
+});
+
+test('two hello timeouts reject with Timeout and reconnect starts a new attempt', async () => {
+  const transport = controlledTransport();
+  const client = createBridge({ adapter: transport.adapter, handshakeTimeout: 25 });
+  await assert.rejects(client.ready(), { code: ErrorCode.Timeout });
+  assert.equal(transport.sent.length, 2);
+  const [first, second] = transport.sent.map(({ rpc }) => rpc.id);
+  assert.notEqual(first, second);
+  assert.equal(client.state, 'unavailable');
+
+  const recovered = client.reconnect();
+  assert.equal(client.reconnect(), recovered);
+  await setImmediate();
+  assert.equal(transport.sent.length, 3);
+  const third = transport.sent[2].rpc.id;
+  assert.notEqual(second, third);
+  transport.push(frame({ id: second, result: { ...hello, host: { ...host, name: 'stale' } } }));
+  transport.push(frame({ id: third, result: hello }));
+  assert.deepEqual(await recovered, host);
+  assert.equal(client.has(echo), true);
+});
+
+test('a missing browser shim is unavailable and can be discovered on reconnect', async (t) => {
+  const { window } = shimWindow(t);
+  const mock = createMockAdapter();
+  const client = createBridge({ handshakeTimeout: 15 });
+  await assert.rejects(client.ready(), { code: ErrorCode.Unavailable });
+  let sent = 0;
+  window.__OJSB_TRANSPORT__ = { name: 'mock', protocols: [1], postMessage(raw) {
+    sent++;
+    return mock.send(raw);
+  } };
+  assert.deepEqual(await client.reconnect(), host);
+  assert.equal(sent, 1);
 });
 
 test('handshake protocol incompatibility is retained on ready and queued calls become unavailable', async () => {
