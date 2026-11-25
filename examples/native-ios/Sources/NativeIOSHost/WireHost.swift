@@ -175,7 +175,9 @@ final class WireHost {
                 return failure(-32602, "Invalid params", id: id, meta: responseMeta)
             }
             if mediaBusy { return failure(-32010, "Busy", id: id, meta: responseMeta) }
-            if chooseMedia == nil { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
+            guard chooseMedia != nil, onBusinessCall != nil else {
+                return mediaFailure(MediaProfileError.unavailable, id: id, meta: responseMeta)
+            }
         }
         if let handler = isMedia ? chooseMedia : businessMethods[name] {
             guard let onBusinessCall else { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
@@ -262,7 +264,7 @@ final class WireHost {
             let result: Any
             if call.isMedia {
                 guard let media, let selection = value as? MediaSelection else {
-                    return failure(-32603, "Internal error", id: call.id, meta: call.meta)
+                    return mediaFailure(MediaProfileError.unavailable, id: call.id, meta: call.meta)
                 }
                 switch selection {
                 case .cancelled:
@@ -273,7 +275,7 @@ final class WireHost {
                         insertedID = file["id"] as? String
                         result = ["status": "selected", "files": [file]] as [String: Any]
                     } catch {
-                        return handlerFailure(error, id: call.id, meta: call.meta)
+                        return mediaFailure(error, id: call.id, meta: call.meta)
                     }
                 }
             } else {
@@ -282,6 +284,7 @@ final class WireHost {
             guard JSONSerialization.isValidJSONObject([result]), Self.isPortableJSON(result),
                   let reply = response(id: call.id, meta: call.meta, fields: ["result": result]) else {
                 if let insertedID { media?.discard(insertedID) }
+                if call.isMedia { return mediaFailure(MediaProfileError.unavailable, id: call.id, meta: call.meta) }
                 return failure(-32603, "Internal error", id: call.id, meta: call.meta)
             }
             guard reply.utf8.count <= Self.maxMessageBytes else {
@@ -290,20 +293,24 @@ final class WireHost {
             }
             return reply
         case .failure(let error):
-            return handlerFailure(error, id: call.id, meta: call.meta)
+            if call.isMedia { return mediaFailure(error, id: call.id, meta: call.meta) }
+            if case NativeIOSHost.BusinessMethodError.invalidParams = error {
+                return failure(-32602, "Invalid params", id: call.id, meta: call.meta)
+            }
+            return failure(-32603, "Internal error", id: call.id, meta: call.meta)
         }
     }
 
-    private func handlerFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
+    private func mediaFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
         switch error {
-        case NativeIOSHost.BusinessMethodError.invalidParams:
-            return failure(-32602, "Invalid params", id: id, meta: meta)
+        case is CancellationError:
+            return failure(-32002, "Call cancelled", id: id, meta: meta)
         case MediaProfileError.tooLarge:
             return failure(-32006, "Payload too large", id: id, meta: meta)
         case MediaProfileError.busy:
             return failure(-32010, "Busy", id: id, meta: meta)
         default:
-            return failure(-32603, "Internal error", id: id, meta: meta)
+            return failure(-32003, "Media unavailable", id: id, meta: meta)
         }
     }
 

@@ -12,10 +12,13 @@ final class MediaPicker: NSObject, PHPickerViewControllerDelegate {
     private var importProgress: Progress?
 
     func choose(in webView: WKWebView) async throws -> MediaSelection {
+        try Task.checkCancellation()
         guard continuation == nil else { throw MediaProfileError.busy }
         guard let window = webView.window, !window.isHidden,
               window.windowScene?.activationState == .foregroundActive,
-              let presenter = window.rootViewController, presenter.presentedViewController == nil else {
+              let presenter = window.rootViewController, presenter.viewIfLoaded?.window === window,
+              presenter.presentedViewController == nil, presenter.transitionCoordinator == nil,
+              !presenter.isBeingPresented, !presenter.isBeingDismissed else {
             throw MediaProfileError.unavailable
         }
 

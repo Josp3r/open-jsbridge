@@ -13,6 +13,7 @@ import android.provider.MediaStore
 import android.provider.MediaStore.MediaColumns
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SdkSuppress
@@ -22,6 +23,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.FileNotFoundException
@@ -32,16 +34,21 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.TIRAMISU)
+// The fixture inserts a scoped MediaStore row, which requires Android 10+.
+@SdkSuppress(minSdkVersion = Build.VERSION_CODES.Q)
 class ReleaseSystemPhotoPickerTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val app = instrumentation.targetContext
     private val automation get() = instrumentation.uiAutomation
     private val pickerPackage by lazy {
-        val intent = checkNotNull(AndroidMediaPicker.createIntent(app)) {
-            "Run the media tests on an Android 13+ device with the system Photo Picker (API 35 emulator recommended)"
-        }
-        assertEquals(MediaStore.ACTION_PICK_IMAGES, intent.action)
+        val candidate = AndroidMediaPicker.createIntent(app)
+        assumeNotNull(candidate)
+        val intent = checkNotNull(candidate)
+        assertTrue(intent.action in setOf(
+            MediaStore.ACTION_PICK_IMAGES,
+            PickVisualMedia.ACTION_SYSTEM_FALLBACK_PICK_IMAGES,
+            "com.google.android.gms.provider.action.PICK_IMAGES",
+        ))
         val component = checkNotNull(intent.component)
         val flags = app.packageManager.getApplicationInfo(component.packageName, 0).flags
         assertTrue("Expected an external system Photo Picker: $component",

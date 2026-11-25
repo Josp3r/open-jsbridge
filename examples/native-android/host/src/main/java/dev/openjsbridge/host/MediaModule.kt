@@ -106,7 +106,7 @@ internal class MediaSession(
     @OptIn(ExperimentalEncodingApi::class)
     suspend fun choose(): JsonObject {
         check(!closed)
-        val image = pick()
+        val image = accessSelection { pick() }
         currentCoroutineContext().ensureActive()
         check(!closed)
         if (image == null) return choice("cancelled")
@@ -117,22 +117,24 @@ internal class MediaSession(
         check(pending == null)
         pending = staged
         try {
-            val selected = withContext(io) {
-                val mime = image.mime()?.lowercase(Locale.ROOT)?.takeIf(IMAGE_MIME::matches)
-                    ?: throw IOException("Selected item is not an image")
-                val context = currentCoroutineContext()
-                val size = staged.open().use { output ->
-                    image.open().use { input -> copyBounded(context, input, output, budget) }
+            val selected = accessSelection {
+                withContext(io) {
+                    val mime = image.mime()?.lowercase(Locale.ROOT)?.takeIf(IMAGE_MIME::matches)
+                        ?: throw IOException("Selected item is not an image")
+                    val context = currentCoroutineContext()
+                    val size = staged.open().use { output ->
+                        image.open().use { input -> copyBounded(context, input, output, budget) }
+                    }
+                    if (size == 0) throw IOException("Selected image is empty")
+                    context.ensureActive()
+                    val thumbnail = generateThumbnail(staged.stagedFile())
+                    context.ensureActive()
+                    if (thumbnail.width <= 0 || thumbnail.height <= 0 || thumbnail.jpeg.isEmpty()) {
+                        throw IOException("Invalid media thumbnail")
+                    }
+                    if (thumbnail.jpeg.size > MediaThumbnail.MAX_BYTES) throw tooLarge()
+                    PreparedSelection(mime, size, thumbnail.width, thumbnail.height, Base64.encode(thumbnail.jpeg))
                 }
-                if (size == 0) throw IOException("Selected image is empty")
-                context.ensureActive()
-                val thumbnail = generateThumbnail(staged.stagedFile())
-                context.ensureActive()
-                if (thumbnail.width <= 0 || thumbnail.height <= 0 || thumbnail.jpeg.isEmpty()) {
-                    throw IOException("Invalid media thumbnail")
-                }
-                if (thumbnail.jpeg.size > MediaThumbnail.MAX_BYTES) throw tooLarge()
-                PreparedSelection(mime, size, thumbnail.width, thumbnail.height, Base64.encode(thumbnail.jpeg))
             }
             currentCoroutineContext().ensureActive()
             check(!closed && pending === staged)
@@ -160,6 +162,16 @@ internal class MediaSession(
             if (pending === staged) pending = null
             staged.discard()
         }
+    }
+
+    private suspend fun <T> accessSelection(block: suspend () -> T): T = try {
+        block()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: MediaFailure) {
+        throw error
+    } catch (_: Exception) {
+        throw MediaFailure(-32003, "Permission denied")
     }
 
     fun abortCopy() {

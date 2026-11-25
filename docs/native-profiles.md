@@ -39,11 +39,16 @@ App 挂载宿主时显式设置 `toast = true`，页面即可在握手后通过 
 
 ## Media
 
-[`media.chooseMedia` v1](../spec/methods/media/chooseMedia.json) 打开系统照片选择器，允许从相册选择一张图片。宿主显式启用该模块，同一 WebView 同时只处理一次选择。可以省略参数，也可以传入 `{ mediaType: ['image'], sourceType: ['album'], count: 1 }`。参考实现使用 iOS 14+ 的 PHPicker 和 Android 13+ 的系统 Photo Picker。宿主通过系统选择器获得选中图片的访问权，无需申请整个相册的读取权限。
+[`media.chooseMedia` v1](../spec/methods/media/chooseMedia.json) 打开系统照片选择器，允许从相册选择一张图片。宿主显式启用该模块，同一 WebView 同时只处理一次选择。可以省略参数，也可以传入 `{ mediaType: ['image'], sourceType: ['album'], count: 1 }`。iOS 14+ 使用 PHPicker。Android 使用 AndroidX `PickVisualMedia`，API 24–32 需要设备提供系统 Photo Picker 或已安装的回移版本。设备缺少可用选择器时，握手不声明 `media.chooseMedia`。两端都只获得选中图片的访问权，无需申请相册或存储权限。[Android Photo Picker](https://developer.android.com/training/data-storage/shared/photopicker)
 
-用户关闭选择器时返回 `{ status: 'cancelled', files: [] }`。成功时返回 `{ status: 'selected', files: [{ type: 'image', id, mime, size, width, height, expiresAt, thumbUrl }] }`。`id` 是原生宿主保管的媒体句柄，`width` 和 `height` 表示原图按正确方向显示时的像素尺寸。`thumbUrl` 是 Web SDK 为最长边不超过 256 px 的 JPEG 缩略图创建的 `blob:` URL。页面使用 CSP 时，在图片资源策略 `img-src` 中允许 `blob:` 即可预览。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
+用户关闭选择器时返回 `{ status: 'cancelled', files: [] }`。成功时线上响应为 `{ status: 'selected', files: [{ type: 'image', id, mime, size, width, height, expiresAt, thumbnailBase64 }] }`。`id` 是宿主保管的媒体句柄，`width` 和 `height` 表示原图按正确方向显示时的像素尺寸。`thumbnailBase64` 是 JPEG 缩略图的 Base64，长边至多 256 px，解码后的 JPEG 至多 32 KiB。Web SDK 将这个字段转换成 `blob:` URL，以 `thumbUrl` 提供给业务代码。页面使用 CSP 时，在 `img-src` 中允许 `blob:` 即可预览。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
-原图由宿主保存在当前文档会话中，最长保留 5 分钟，会话暂存总量上限为 20 MiB。超过上限返回 `-32006`。Web SDK 默认等待 120 秒，也接受 `AbortSignal`。调用方中止 RPC 返回 `-32002`，来源或系统无法交付资源时返回 `-32003`，明确拒绝授权时返回 `-32007`。Web SDK 在有效期结束或文档会话失效时自动撤销缩略图 URL。该能力可从源码构建使用，已发布的 `@open-jsbridge/web@0.1.0` 尚未包含它。
+原图由宿主保存在当前文档会话中，最长保留 5 分钟，会话暂存总量上限为 20 MiB。Web SDK 默认等待 120 秒，支持 `AbortSignal`，并在有效期结束或文档会话失效时自动撤销缩略图 URL。该能力可从源码构建使用，已发布的 `@open-jsbridge/web@0.1.0` 尚未包含它。
+
+- `-32010` 表示已有选择请求在进行或先前打开的选择器仍在等待系统回调。
+- `-32003` 表示无法展示选择器，或系统无法读取或解码已选图片。
+- `-32002` 表示调用方中止 RPC。单张图片或会话暂存量超出上限时返回 `-32006`。
+- v1 通过系统选择器授权单张图片，无单独的权限弹窗，因此不会返回 `-32007`。未来有显式权限拒绝路径的能力才使用该码。
 
 ```ts
 import { bridge } from '@open-jsbridge/web'

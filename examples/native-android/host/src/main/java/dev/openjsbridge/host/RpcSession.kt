@@ -29,6 +29,7 @@ internal class RpcSession(
         val id: String,
         val sid: String,
         val onCancel: (() -> Unit)? = null,
+        val mediaSelection: Boolean = false,
     )
 
     private class EventSubscription {
@@ -110,6 +111,7 @@ internal class RpcSession(
         businessBusy: Boolean = false,
         onBusinessCall: ((BusinessCall) -> Unit)? = null,
         onCancellation: ((String) -> Unit)? = null,
+        mediaBusy: Boolean = false,
         afterResponse: (() -> Unit) -> Unit = {},
     ): String? {
         if (exceedsMessageLimit(raw)) return null
@@ -159,6 +161,7 @@ internal class RpcSession(
         ) return failure(id, replySid, -32600, "Invalid request")
 
         if (!hello && incomingSid == null) return failure(id, activeSid, -32009, "Session expired")
+        if (activeMedia != null && mediaBusy) return failure(id, replySid, -32010, "Busy")
         if (businessBusy) return failure(id, replySid, -32008, "Rate limited")
         val handler = methods[versionOne]
         val control = versionOne == SUBSCRIBE || versionOne == UNSUBSCRIBE
@@ -210,7 +213,8 @@ internal class RpcSession(
             (params.has("count") && params.get("count").asSafeIntegerOrNull() != 1L)
         ) return failure(id, sid, -32602, "Invalid params")
         if (startCall == null) return failure(id, sid, -32603, "Internal error")
-        startCall(BusinessCall({ media.choose() }, params, id, sid, onCancel = media::abortCopy))
+        startCall(BusinessCall({ media.choose() }, params, id, sid,
+            onCancel = media::abortCopy, mediaSelection = true))
         return null
     }
 
