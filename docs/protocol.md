@@ -37,7 +37,7 @@ flowchart LR
 3. 一条消息 MUST 是一个 JSON object，包含一个 JSON-RPC 2.0 对象。v1 在信封层和 `rpc` 层均不支持批量消息。接收方 MUST NOT 依赖字段顺序。
 4. 整数超出 JavaScript 安全整数范围（−(2^53−1) 至 2^53−1）时 MUST 以字符串传输。JSON 数字须能以有限值解码。
 5. Web 编码器在序列化前校验整个信封的 JSON 值。对象字段必须是可枚举的字符串数据属性，数组必须稠密。遇到 JavaScript 专有值、访问器、非普通对象、自定义序列化函数或循环引用时，编码器以 `-32600` 拒绝。可选字段应直接省略。
-6. Web 解码器在返回 JSON 数据前过滤任意层级的 `__proto__`、`constructor` 和 `prototype` 对象字段。
+6. Web 解码器在返回 JSON 数据前过滤任意层级的 `__proto__` 对象字段。 `constructor` 和 `prototype` 作为业务字段保留。
 
 ---
 
@@ -460,7 +460,7 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 
 - **S1** Host MUST 从平台提供的可信来源获取调用者 origin：iOS `WKScriptMessage.frameInfo.securityOrigin`；Android `WebMessageListener` 回调的 `sourceOrigin`；Flutter / React Native 见 flutter.md、react-native.md（多数情况下拿不到可信 frame origin，按 S2 处理）。payload 中的任何 origin/url 字段 MUST 被忽略。
 - **S2** 当通道缺少可信 origin 或 frame 信息时，Host MUST 默认禁用该通道。只有宿主能够独立约束可达内容、确认其满足调用来源与 frame 策略并显式启用时，才 MAY 建立 `trust: "degraded"` 会话。此类会话属于可选策略扩展，当前参考宿主只实现可信来源模式。顶层 URL 和页面自报字段不能充当消息来源或主 frame 的证明。
-- **S3** origin 匹配 MUST 是 `scheme://host[:port]` 的精确匹配或受限通配（仅允许最左子域 `https://*.example.com`），MUST NOT 用前缀/子串匹配（防 `https://example.com.evil.io`）。
+- **S3** 参考宿主只支持精确的 HTTPS origin，按 `https://host[:port]` 匹配。Host MUST NOT 用前缀或子串匹配 origin。
 - **S4** `http:` origin 默认 MUST 被拒绝，除非 debug 构建显式开启。`file:`、`data:`、`about:blank`、opaque origin（`null`）默认 MUST 被拒绝。
 
 ### 11.3 来源白名单与可选策略扩展

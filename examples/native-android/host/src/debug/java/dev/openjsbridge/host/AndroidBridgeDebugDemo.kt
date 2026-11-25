@@ -13,7 +13,7 @@ object AndroidBridgeDebugDemo {
         options: AndroidBridge.Options = AndroidBridge.Options(),
         scheduleReply: (() -> Unit) -> Unit = { it() },
     ): AndroidBridge? = AndroidBridge.install(
-        webView, listOf(ORIGIN), AndroidBridge.modulesFor(webView, options), enableEcho = true,
+        webView, setOf(ORIGIN), AndroidBridge.modulesFor(webView, options), enableEcho = true,
         scheduleReply = scheduleReply,
     )
 
@@ -22,6 +22,6 @@ object AndroidBridgeDebugDemo {
         val events = NetworkEvents { onChange ->
             observe { name -> onChange(NetworkType.entries.first { it.wireName == name }) }
         }
-        return AndroidBridge.install(webView, listOf(ORIGIN), BridgeModules(networkEvents = events), enableEcho = true)
+        return AndroidBridge.install(webView, setOf(ORIGIN), BridgeModules(networkEvents = events), enableEcho = true)
     }
 }

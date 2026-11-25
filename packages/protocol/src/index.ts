@@ -138,7 +138,7 @@ function checkJsonNumber(value: unknown): void {
 
 function decodeJsonProperty(key: string, value: unknown): unknown {
   checkJsonNumber(value);
-  if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+  if (key === '__proto__') return undefined;
   return value;
 }
 

@@ -10,7 +10,7 @@ import java.util.UUID
 
 /** State for one WebView, confined to the UI thread by AndroidBridge. */
 internal class DocumentTransport(
-    allowedOrigins: Collection<String>,
+    canonicalOrigins: Collection<String>,
     private val enableEcho: Boolean,
     private val modules: BridgeModules = BridgeModules(),
     private val businessMethods: List<BusinessMethod> = emptyList(),
@@ -18,7 +18,7 @@ internal class DocumentTransport(
     events: List<String> = emptyList(),
     private val scheduleReply: (() -> Unit) -> Unit = { reply -> reply() },
 ) {
-    val originRules = exactOrigins(allowedOrigins)
+    val originRules = canonicalOrigins.toSet()
     private val registeredEvents = events.indexBusinessEvents()
 
     data class CommitChallenge(val origin: String, val nonce: String)
@@ -248,12 +248,13 @@ internal class DocumentTransport(
         fun exactOrigins(origins: Collection<String>): Set<String> {
             require(origins.isNotEmpty()) { "At least one exact origin is required" }
             return origins.mapTo(linkedSetOf()) { origin ->
-                requireNotNull(exactOrigin(origin)) { "An exact HTTP(S) origin is required" }
+                requireNotNull(exactOrigin(origin)) { "An exact HTTPS origin is required" }
             }
         }
 
         fun exactOrigin(raw: String): String? {
             val uri = parseUri(raw) ?: return null
+            if (!uri.scheme.equals("https", ignoreCase = true)) return null
             if (uri.rawPath !in listOf("", "/") || uri.rawQuery != null || uri.rawFragment != null) return null
             return originOf(uri)
         }

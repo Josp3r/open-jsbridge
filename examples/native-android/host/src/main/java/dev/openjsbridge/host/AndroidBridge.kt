@@ -119,7 +119,6 @@ class AndroidBridge private constructor(
         ): AndroidBridge? {
             requireUiThread()
             val origins = DocumentTransport.exactOrigins(allowedOrigins)
-            require(origins.all { it.startsWith("https://") }) { "Only exact HTTPS origins are allowed" }
             val registeredMethods = methods.toList()
             registeredMethods.indexBusinessMethods()
             val registeredEvents = events.toList()
@@ -160,7 +159,7 @@ class AndroidBridge private constructor(
         @MainThread
         internal fun install(
             webView: WebView,
-            allowedOrigins: Collection<String>,
+            canonicalOrigins: Set<String>,
             modules: BridgeModules = BridgeModules(),
             methods: List<BusinessMethod> = emptyList(),
             enableEcho: Boolean = false,
@@ -179,7 +178,7 @@ class AndroidBridge private constructor(
             val main = Handler(Looper.getMainLooper())
             val scope = CoroutineScope(SupervisorJob() + Executor { main.post(it) }.asCoroutineDispatcher())
             val transport = DocumentTransport(
-                allowedOrigins, enableEcho, modules, businessMethods = methods,
+                canonicalOrigins, enableEcho, modules, businessMethods = methods,
                 runBusiness = { call, complete ->
                     val job = scope.launch {
                         val result = try {
