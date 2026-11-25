@@ -2,189 +2,65 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import Ajv2020 from 'ajv/dist/2020.js';
-import * as sdk from '../dist/packages/web-sdk/src/index.js';
+import { createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
 import { createMediaHelpers } from '../dist/packages/web-sdk/src/media.js';
 
-const reference = '0123456789abcdef0123456789abcdef';
-const bytes = Buffer.alloc(65_541);
-for (let index = 0; index < bytes.length; index++) bytes[index] = index % 251;
-const selected = {
-  status: 'selected',
-  files: [{ type: 'image', blobRef: reference, mime: 'image/png', size: bytes.length, expiresAt: 1_800_000_000_000 }],
+const handle = '0123456789abcdef0123456789abcdef';
+const jpeg = Uint8Array.of(255, 216, 255, 217);
+const thumbnailBase64 = Buffer.from(jpeg).toString('base64');
+const resource = {
+  type: 'image', id: handle, mime: 'image/png', size: 1800,
+  width: 800, height: 640, expiresAt: Date.now() + 300_000, thumbnailBase64,
 };
 const cancelled = { status: 'cancelled', files: [] };
-const methods = ['media.chooseMedia', 'bridge.blob.read', 'bridge.blob.release'];
 
-test('media v1 schemas enforce the single-image and bounded chunk contracts', () => {
+test('media v1 schemas allow only single-image selection with bounded JPEG data', () => {
   const load = (path) => JSON.parse(readFileSync(new URL(`../spec/${path}.json`, import.meta.url), 'utf8'));
   const ajv = new Ajv2020({ strictRequired: true });
-  ajv.addSchema(load('schemas/blob-ref'));
+  ajv.addSchema(load('schemas/media-id'));
   const choose = load('methods/media/chooseMedia');
-  const read = load('methods/bridge/blob/read');
-  const release = load('methods/bridge/blob/release');
-  const chooseParams = ajv.compile(choose.params);
-  assert.ok(chooseParams({}));
-  assert.ok(chooseParams({ count: 1, sourceType: ['album'], mediaType: ['image'] }));
-  for (const params of [{ count: 2 }, { mediaType: ['video'] }, { sourceType: ['camera'] }, { extra: true }]) {
-    assert.equal(chooseParams(params), false);
+  const params = ajv.compile(choose.params);
+  assert.ok(params({}));
+  assert.ok(params({ count: 1, sourceType: ['album'], mediaType: ['image'] }));
+  for (const invalid of [{ count: 2 }, { mediaType: ['video'] }, { sourceType: ['camera'] }, { extra: true }]) {
+    assert.equal(params(invalid), false);
   }
-  const chooseResult = ajv.compile(choose.result);
-  assert.ok(chooseResult(selected));
-  assert.ok(chooseResult(cancelled));
-  assert.equal(chooseResult({ status: 'selected', files: [] }), false);
-  assert.equal(chooseResult({ ...selected, files: [{ ...selected.files[0], size: 20_971_521 }] }), false);
-  const readParams = ajv.compile(read.params);
-  assert.ok(readParams({ blobRef: reference, index: 0 }));
-  assert.ok(readParams({ blobRef: reference, index: 319 }));
-  for (const index of [-1, 320, 0.5, '0']) {
-    assert.equal(readParams({ blobRef: reference, index }), false);
-  }
-  assert.equal(readParams({ blobRef: reference }), false);
-  assert.equal(readParams({ blobRef: reference, index: 0, sid: 'other' }), false);
-  const readResult = ajv.compile(read.result);
-  const fullChunk = bytes.subarray(0, 65_536).toString('base64');
-  assert.ok(readResult({ dataBase64: fullChunk, done: false }));
-  assert.ok(readResult({ dataBase64: fullChunk, done: true }));
-  assert.ok(readResult({ dataBase64: 'YQ==', done: true }));
-  assert.equal(readResult({ dataBase64: 'YQ==', done: false }), false);
-  assert.equal(readResult({ dataBase64: fullChunk }), false);
-  assert.equal(readResult({ dataBase64: fullChunk, done: true, size: 65_536 }), false);
-  for (const dataBase64 of ['', '%%%%', 'A=A=', 'AA=\n', 'YQ==\n', 'YR==', 'YWJ=',
-    bytes.subarray(0, 65_537).toString('base64'), bytes.subarray(0, 65_538).toString('base64')]) {
-    assert.equal(readResult({ dataBase64, done: true }), false);
-  }
-  const releaseParams = ajv.compile(release.params);
-  assert.ok(releaseParams({ blobRef: reference }));
-  for (const blobRef of [reference.slice(1), reference + 'a', reference.toUpperCase(), reference + '\n', 'file:///path']) {
-    assert.equal(releaseParams({ blobRef }), false);
-    assert.equal(readParams({ blobRef, index: 0 }), false);
-  }
-  assert.equal(releaseParams({ blobRef: reference, expiresAt: 1 }), false);
-  const releaseResult = ajv.compile(release.result);
-  assert.ok(releaseResult({}));
-  assert.equal(releaseResult({ released: true }), false);
+  const result = ajv.compile(choose.result);
+  const selected = (file) => ({ status: 'selected', files: [file] });
+  assert.ok(result(selected(resource)));
+  assert.ok(result(cancelled));
+  assert.equal(result(selected({ ...resource, thumbnailBase64: Buffer.alloc(32769).toString('base64') })), false);
+  assert.equal(result(selected({ ...resource, thumbnailBase64: 'AB==' })), false);
+  assert.equal(result(selected({ ...resource, id: 'file:///photo.png' })), false);
+  assert.equal(result(selected({ ...resource, size: 20971521 })), false);
+  assert.equal(result(selected({ ...resource, blobRef: handle })), false);
 });
 
-test('the installed Web APIs assemble bytes, distinguish picker dismissal, and handle invalid or released chunks', async (t) => {
-  let released = false;
-  let dismiss = false;
-  let invalidChunk;
-  let readBytes = bytes;
-  let onRead;
-  const requests = [];
-  const sid = 'media-document';
+function setup(t, choose) {
   const window = new EventTarget();
+  const requests = [];
+  let counter = 0;
+  let sid;
   window.__OJSB_TRANSPORT__ = {
-    name: 'test-media',
+    name: 'media-test',
     protocols: [1],
     async postMessage(raw) {
-      const { rpc, meta } = JSON.parse(raw);
-      requests.push({ method: rpc.method, params: rpc.params, meta });
-      const respond = (content) => JSON.stringify({
-        jsb: '1.0', meta: { sid }, rpc: { jsonrpc: '2.0', id: rpc.id, ...content },
-      });
-      if (rpc.method === 'bridge.hello') {
-        return respond({ result: {
-          jsb: '1.0', sid, host: { platform: 'ios', name: 'test-picker', version: '1' },
-          capabilities: {
-            methods: Object.fromEntries(methods.map((method) => [method, { versions: [1] }])),
-            events: [], features: ['blob', 'cancel'],
-          },
-          limits: { maxMessageBytes: 1_048_576, maxInflight: 1, defaultTimeoutMs: 15_000 },
-        } });
-      }
-      if (rpc.method === 'media.chooseMedia@1') return respond({ result: dismiss ? cancelled : selected });
+      const { rpc } = JSON.parse(raw);
+      requests.push(rpc.method);
       if (rpc.method === 'bridge.cancel') return null;
-      if (rpc.method === 'bridge.blob.release@1') {
-        released = true;
-        return respond({ result: {} });
-      }
-      assert.equal(rpc.method, 'bridge.blob.read@1');
-      assert.equal(rpc.params.blobRef, reference);
-      if (released) return respond({ error: { code: sdk.ErrorCode.PermissionDenied, message: 'Permission denied' } });
-      const offset = rpc.params.index * 65_536;
-      onRead?.();
-      return respond({ result: {
-        dataBase64: readBytes.subarray(offset, offset + 65_536).toString('base64'),
-        done: offset + 65_536 >= readBytes.length,
-        ...invalidChunk,
-      } });
-    },
-  };
-  Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
-  t.after(() => { delete globalThis.window; });
-
-  const result = await sdk.media.chooseMedia({ count: 1 });
-  assert.deepEqual(result, selected);
-  assert.ok(requests.find(({ method }) => method === 'media.chooseMedia@1').meta.timeout > 100_000);
-  const file = await sdk.blob.read(result.files[0]);
-  assert.equal(file.type, 'image/png');
-  assert.deepEqual(Buffer.from(await file.arrayBuffer()), bytes);
-  assert.deepEqual(requests.filter(({ method }) => method === 'bridge.blob.read@1').map(({ params }) => params.index), [0, 1]);
-  invalidChunk = { done: true };
-  await assert.rejects(sdk.blob.read(result.files[0]), { code: sdk.ErrorCode.InternalError });
-  invalidChunk = { dataBase64: 'YQ \n', done: true };
-  await assert.rejects(sdk.blob.read({ ...result.files[0], size: 1 }), { code: sdk.ErrorCode.InternalError });
-  await assert.rejects(sdk.blob.read({ ...result.files[0], size: 20_971_521 }), { code: sdk.ErrorCode.InvalidParams });
-
-  invalidChunk = undefined;
-  readBytes = bytes.subarray(0, 65_536);
-  const exactChunk = await sdk.blob.read({ ...result.files[0], size: readBytes.length });
-  assert.deepEqual(Buffer.from(await exactChunk.arrayBuffer()), readBytes);
-
-  readBytes = bytes;
-  const abort = new AbortController();
-  onRead = () => abort.abort();
-  const beforeAbort = requests.length;
-  await assert.rejects(sdk.blob.read(result.files[0], { signal: abort.signal }), { code: sdk.ErrorCode.Cancelled });
-  assert.deepEqual(requests.slice(beforeAbort).map(({ method }) => method), ['bridge.blob.read@1', 'bridge.cancel']);
-  onRead = undefined;
-
-  assert.deepEqual(await sdk.blob.release(reference), {});
-  assert.deepEqual(await sdk.blob.release(reference), {});
-  await assert.rejects(sdk.blob.read(result.files[0]), { code: sdk.ErrorCode.PermissionDenied });
-  dismiss = true;
-  assert.deepEqual(await sdk.media.chooseMedia(), cancelled);
-});
-
-test('pagehide cancels a pending blob read and a restored session cannot resume the old reference', async (t) => {
-  const window = new EventTarget();
-  const requests = [];
-  const sessions = [];
-  let deliverOldChunk;
-  let observeOldRequest;
-  const requestedOldChunk = new Promise((resolve) => { observeOldRequest = resolve; });
-  window.__OJSB_TRANSPORT__ = {
-    name: 'test-media-lifecycle',
-    protocols: [1],
-    async postMessage(raw) {
-      const { rpc, meta } = JSON.parse(raw);
-      const reply = (sid, payload) => JSON.stringify({
-        jsb: '1.0', meta: { sid }, rpc: { jsonrpc: '2.0', id: rpc.id, ...payload },
-      });
       if (rpc.method === 'bridge.hello') {
-        const sid = sessions.length === 0 ? 'before-pagehide' : 'after-pageshow';
-        sessions.push(sid);
-        return reply(sid, { result: {
-          jsb: '1.0', sid, host: { platform: 'ios', name: 'test-picker', version: '1' },
-          capabilities: {
-            methods: { 'bridge.blob.read': { versions: [1] }, 'bridge.blob.release': { versions: [1] } },
-            events: [], features: ['blob'],
-          },
-          limits: { maxMessageBytes: 1_048_576, maxInflight: 1, defaultTimeoutMs: 15_000 },
-        } });
+        sid = `document-${++counter}`;
+        return JSON.stringify({ jsb: '1.0', rpc: { jsonrpc: '2.0', id: rpc.id, result: {
+          jsb: '1.0', sid, host: { platform: 'ios', name: 'media-test', version: '1' },
+          capabilities: { methods: { 'media.chooseMedia': { versions: [1] } }, events: [], features: ['cancel'] },
+          limits: { maxMessageBytes: 65536, maxInflight: 1, defaultTimeoutMs: 15000 },
+        } } });
       }
-      assert.equal(rpc.method, 'bridge.blob.read@1');
-      requests.push({ sid: meta.sid, ...rpc.params });
-      if (meta.sid === 'before-pagehide') {
-        return new Promise((resolve) => {
-          deliverOldChunk = () => resolve(reply(meta.sid, { result: {
-            dataBase64: bytes.subarray(0, 65_536).toString('base64'), done: false,
-          } }));
-          observeOldRequest();
-        });
-      }
-      return reply(meta.sid, { error: { code: sdk.ErrorCode.PermissionDenied, message: 'Permission denied' } });
+      const route = sid;
+      assert.equal(rpc.method, 'media.chooseMedia@1');
+      return JSON.stringify({ jsb: '1.0', meta: { sid: route }, rpc: {
+        jsonrpc: '2.0', id: rpc.id, result: await choose(rpc),
+      } });
     },
   };
   Object.defineProperty(globalThis, 'window', { value: window, configurable: true });
@@ -192,25 +68,67 @@ test('pagehide cancels a pending blob read and a restored session cannot resume 
     window.dispatchEvent(new Event('pagehide'));
     delete globalThis.window;
   });
-  const client = sdk.createBridge();
-  const { blob } = createMediaHelpers(client);
-  const resource = selected.files[0];
+  const bridge = createBridge();
+  const { media } = createMediaHelpers(bridge);
+  return { window, bridge, media, requests };
+}
 
-  const reading = blob.read(resource);
-  const cancellation = assert.rejects(reading, { code: sdk.ErrorCode.Cancelled });
-  await requestedOldChunk;
+test('Web exposes only a revocable JPEG object URL and the original metadata', async (t) => {
+  let selection = { status: 'selected', files: [resource] };
+  const { media, bridge, window, requests } = setup(t, () => selection);
+  const { files: [file] } = await media.chooseMedia();
+  assert.equal(file.id, handle);
+  assert.ok(file.thumbUrl.startsWith('blob:'));
+  assert.equal(file.width, resource.width);
+  assert.equal('thumbnailBase64' in file, false);
+  assert.equal('blobRef' in file, false);
+  const thumbnail = await fetch(file.thumbUrl);
+  assert.equal(thumbnail.headers.get('Content-Type'), 'image/jpeg');
+  assert.deepEqual(new Uint8Array(await thumbnail.arrayBuffer()), jpeg);
+  assert.equal(bridge.has('bridge.blob.read', 1), false);
+  assert.equal(bridge.has('bridge.blob.release', 1), false);
+  await assert.rejects(bridge.call('bridge.blob.read@1', { blobRef: handle, index: 0 }), { code: ErrorCode.MethodNotFound });
   window.dispatchEvent(new Event('pagehide'));
-  await cancellation;
-
+  await assert.rejects(fetch(file.thumbUrl));
   const restored = new Event('pageshow');
   Object.defineProperty(restored, 'persisted', { value: true });
   window.dispatchEvent(restored);
-  await client.ready();
-  deliverOldChunk();
-  await assert.rejects(blob.read(resource), { code: sdk.ErrorCode.PermissionDenied });
-  assert.deepEqual(sessions, ['before-pagehide', 'after-pageshow']);
-  assert.deepEqual(requests, [
-    { sid: 'before-pagehide', blobRef: reference, index: 0 },
-    { sid: 'after-pageshow', blobRef: reference, index: 0 },
-  ]);
+  await bridge.ready();
+  selection = cancelled;
+  assert.deepEqual(await media.chooseMedia(), cancelled);
+  assert.deepEqual(requests, ['bridge.hello', 'media.chooseMedia@1', 'bridge.hello', 'media.chooseMedia@1']);
+});
+
+test('Web rejects over-limit and malformed thumbnails before returning an object URL', async (t) => {
+  let source = thumbnailBase64;
+  const { media } = setup(t, () => ({ status: 'selected', files: [{ ...resource, thumbnailBase64: source }] }));
+  for (const invalid of ['bm90LWpwZWc=', 'AB==', Buffer.alloc(32769).toString('base64')]) {
+    source = invalid;
+    await assert.rejects(media.chooseMedia(), { code: ErrorCode.InternalError });
+  }
+});
+
+test('Web revokes a thumbnail at its negotiated expiry', async (t) => {
+  const { media, bridge } = setup(t, () => ({
+    status: 'selected', files: [{ ...resource, expiresAt: Date.now() + 1_000 }],
+  }));
+  await bridge.ready();
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const { files: [{ thumbUrl }] } = await media.chooseMedia();
+  t.mock.timers.tick(999);
+  assert.equal((await fetch(thumbUrl)).ok, true);
+  t.mock.timers.tick(1);
+  await assert.rejects(fetch(thumbUrl));
+});
+
+test('hiding a document cancels selection before the late thumbnail is delivered', async (t) => {
+  let start;
+  const started = new Promise((resolve) => { start = resolve; });
+  let deliver;
+  const { media, window } = setup(t, () => new Promise((resolve) => { deliver = resolve; start(); }));
+  const pending = assert.rejects(media.chooseMedia(), { code: ErrorCode.Cancelled });
+  await started;
+  window.dispatchEvent(new Event('pagehide'));
+  deliver({ status: 'selected', files: [resource] });
+  await pending;
 });

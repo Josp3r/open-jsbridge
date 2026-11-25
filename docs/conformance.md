@@ -105,14 +105,14 @@ flowchart TB
 
 ### 2.3 PR #1 审查回归用例
 
-以下为用例契约。SDK 队列与入站规则以 Fake Transport 配合可控时钟验证。调用来源和 document 投递隔离以真实 WebView 验证。
+以下为用例契约。SDK 队列与入站规则以 Fake Transport 配合可控时钟验证。调用来源和 document 投递隔离以真实 WebView 验证。`SEC-ACL-ERROR-001` 适用于实现了可选规则扩展的宿主。
 
 | 用例 | 驱动步骤 | 必须断言 |
 |------|----------|----------|
 | `SEC-ACL-ERROR-001` | 让测试权限规则抛出未分类异常，从已握手、原本允许调用的上下文发起请求 | 返回 `-32603`，业务 handler 调用数为零，响应不包含内部异常信息 |
 | `SEC-JSI-DEFAULT-001` | 在无 WebMessageListener 的 Android WebView 上使用默认配置，导航后检测注入通道 | 不安装 `addJavascriptInterface`；握手判定为 bridge 不可用；不建立会话 |
 | `HS-SID-001` | 在握手前或切换会话时送入旧会话消息，握手后送入缺失或不匹配 `sid` 的消息，最后送入当前会话消息 | 只有匹配当前会话的消息进业务分派。非当前握手 id、超时后迟到的 hello 响应均不能安装会话 |
-| `LIFE-DOCUMENT-001` | 在旧 document 留下未完成的 handler 和待投递的结果，再导航到新 document；声明 iframe 时还要单独导航子 frame | 旧会话的 handler、订阅、blob 和待发送结果被清理；在新 document 的 transport 接收层断言未收到旧 payload |
+| `LIFE-DOCUMENT-001` | 在旧 document 留下未完成的 handler 和待投递的结果，再导航到新 document；声明 iframe 时还要单独导航子 frame | 旧会话的 handler、订阅、媒体暂存和待发送结果被清理；在新 document 的 transport 接收层断言未收到旧 payload |
 | `CALL-PRE-READY-001` | 延迟 hello，通过可控时钟使排队请求超时，然后完成握手 | 调用返回 `-32001`；transport 仅收到 hello，未收到该 request 或 cancel |
 | `CALL-PRE-READY-002` | 延迟 hello，对排队请求触发 AbortSignal，然后完成握手 | 调用返回 `-32002`；transport 仅收到 hello，未收到该 request 或 cancel |
 | `CALL-PRE-READY-003` | 延迟 hello，让宿主在调用 deadline 之前完成握手并声明 `cancel`，确认 request 发出后触发 AbortSignal | 发出的 request 使用剩余时长；`bridge.cancel` 通知的 `params.requestId` 指向原请求，外层 `meta.sid` 与原请求相同 |
@@ -205,19 +205,19 @@ steps:
 
 每个宿主在 `conformance-tests/hosts/<host>.yaml` 声明能力，runner 据此决定哪些用例 MUST 通过、哪些 SKIP（SKIP 必须对应协议允许的能力缺失，不能当作"已知失败"的遮羞布）：
 
-| 宿主 | trust | iframe | blob URL | reply 通道 | 备注 |
+| 宿主 | trust | iframe | 标准选图 | reply 通道 | 备注 |
 |------|-------|--------|----------|-----------|------|
-| `mock` | full（模拟） | 模拟 | 模拟 | 可切换 | Web SDK 单测与 runner 自检 |
-| `ios-wk`（iOS 14+） | full | M1 关闭，开放须通过 F5 | ✅ `WKURLSchemeHandler` | ✅ WithReply | 主 frame |
+| `mock` | full（模拟） | 模拟 | 测试 transport | 可切换 | Web SDK 单测与 runner 自检 |
+| `ios-wk`（iOS 14+） | full | M1 关闭，开放须通过 F5 | 按需启用 PHPicker | ✅ WithReply | 主 frame |
 | `ios-wk-legacy`（iOS 13） | full | ❌ | 需验证 | ❌ | 验证 document 隔离后再启用 |
-| `android-wml` | full | M1 关闭，开放须通过 F5 | ✅（下行） | ❌ | 主 frame；上传走分片 |
+| `android-wml` | full | M1 关闭，开放须通过 F5 | Android 13+ 按需启用 Photo Picker | ❌ | 主 frame |
 | `android-jsi` | degraded | ❌ | 待评估 | ❌ | 默认停用，仅在 S2 的受控配置下评估 |
 | `flutter-inappwebview` | 由可信元数据决定 | 须通过 F5 | 视实现 | ✅ callHandler | 方案 A；无可信来源时按 S2 启用 |
 | `flutter-webview_flutter` | degraded | ❌ | ❌ | ❌ | 须满足 S2 |
 | `rn-webview` | degraded | ❌ | ❌ | ❌ | 方案 A，须满足 S2 |
 | `rn-native`（方案 B） | full | 随原生宿主 | 随原生宿主 | 同 iOS/Android | 复用原生实现 |
 
-所有宿主必须通过 `ENV-*`、`HS-*`、`CALL-*`、`LIFE-*` 的适用核心用例及相应的 `SEC-*` 用例。流式回调与事件用例分别随宿主声明的对应能力启用。任何启用降级通道的宿主还须验证 degraded 会话拒绝未标 `allowDegraded` 的 method。
+所有宿主必须通过 `ENV-*`、`HS-*`、`CALL-*`、`LIFE-*` 的适用核心用例及相应的 `SEC-*` 用例。流式回调与事件用例分别随宿主声明的对应能力启用。启用降级通道的宿主还须验证 protocol S2 的来源与 frame 限制。
 
 ## 5. 运行方式
 

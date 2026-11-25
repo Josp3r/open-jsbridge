@@ -59,8 +59,7 @@ internal class RpcSession(
     private val businessMethods = businessMethods.indexBusinessMethods()
     private val media = modules.media?.takeIf { supportsCancellation }?.newSession()
     private val canCancel = supportsCancellation && (this.businessMethods.isNotEmpty() || media != null)
-    // A 64 KiB binary chunk needs 87,384 bytes after base64 encoding, plus its RPC envelope.
-    val maxMessageBytes = if (media == null) MAX_MESSAGE_BYTES else 96 * 1024
+    val maxMessageBytes = MAX_MESSAGE_BYTES
     private val observedEvents = buildMap<String, ((JsonElement) -> Unit) -> (() -> Unit)?> {
         modules.networkEvents?.let { source ->
             put(NETWORK_STATUS_CHANGED) { emit -> source.observe { emit(it.snapshot()) } }
@@ -145,7 +144,7 @@ internal class RpcSession(
         val params = rawParams as? JsonObject
         val versionOne = method?.removeSuffix("@1").orEmpty()
         val business = businessMethods[versionOne]
-        val activeMedia = media?.takeIf { versionOne in MEDIA_METHODS }
+        val activeMedia = media?.takeIf { versionOne == MEDIA_CHOOSE }
         val invalidMeta = when {
             !envelope.has("meta") -> false
             meta == null -> true
@@ -172,7 +171,7 @@ internal class RpcSession(
         if (hello) return negotiate(id, params)
         val requestSid = activeSid ?: return null
         if (activeMedia != null) {
-            return receiveMedia(activeMedia, versionOne, params ?: JsonObject(), id, requestSid, onBusinessCall)
+            return chooseMedia(activeMedia, params ?: JsonObject(), id, requestSid, onBusinessCall)
         }
         if (control) {
             val events = eventNames(params) ?: return failure(id, requestSid, -32602, "Invalid event names")
@@ -198,40 +197,20 @@ internal class RpcSession(
         return failure(id, requestSid, -32601, "Method not found")
     }
 
-    private fun receiveMedia(
+    private fun chooseMedia(
         media: MediaSession,
-        method: String,
         params: JsonObject,
         id: String,
         sid: String,
         startCall: ((BusinessCall) -> Unit)?,
     ): String? {
-        fun invalid() = failure(id, sid, -32602, "Invalid params")
-        val handler: suspend () -> JsonElement = when (method) {
-            MEDIA_CHOOSE -> {
-                if (!params.keySet().all { it in CHOOSE_KEYS } ||
-                    (params.has("mediaType") && !params.get("mediaType").isSingleChoice("image")) ||
-                    (params.has("sourceType") && !params.get("sourceType").isSingleChoice("album")) ||
-                    (params.has("count") && params.get("count").asSafeIntegerOrNull() != 1L)
-                ) return invalid()
-                suspend { media.choose() }
-            }
-            BLOB_READ -> {
-                if (params.keySet() != READ_KEYS) return invalid()
-                val ref = params.get("blobRef").asBlobRef() ?: return invalid()
-                val index = params.get("index").asSafeIntegerOrNull()
-                    ?.takeIf { it in 0L..MediaSession.MAX_CHUNK_INDEX.toLong() } ?: return invalid()
-                suspend { media.read(ref, index) }
-            }
-            BLOB_RELEASE -> {
-                if (params.keySet() != RELEASE_KEYS) return invalid()
-                val ref = params.get("blobRef").asBlobRef() ?: return invalid()
-                return success(id, sid, media.release(ref))
-            }
-            else -> error("Not a media method")
-        }
+        if (!params.keySet().all { it in CHOOSE_KEYS } ||
+            (params.has("mediaType") && !params.get("mediaType").isSingleChoice("image")) ||
+            (params.has("sourceType") && !params.get("sourceType").isSingleChoice("album")) ||
+            (params.has("count") && params.get("count").asSafeIntegerOrNull() != 1L)
+        ) return failure(id, sid, -32602, "Invalid params")
         if (startCall == null) return failure(id, sid, -32603, "Internal error")
-        startCall(BusinessCall({ handler() }, params, id, sid, onCancel = if (method == MEDIA_CHOOSE) media::abortCopy else null))
+        startCall(BusinessCall({ media.choose() }, params, id, sid, onCancel = media::abortCopy))
         return null
     }
 
@@ -363,7 +342,7 @@ internal class RpcSession(
             })
             add("capabilities", JsonObject().apply {
                 add("methods", JsonObject().apply {
-                    val mediaMethods = if (media == null) emptySet() else MEDIA_METHODS
+                    val mediaMethods = if (media == null) emptySet() else setOf(MEDIA_CHOOSE)
                     for (method in methods.keys + businessMethods.keys + mediaMethods) {
                         add(method, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
                     }
@@ -371,7 +350,6 @@ internal class RpcSession(
                 add("events", strings(availableEvents()))
                 add("features", JsonArray().apply {
                     if (canCancel) add("cancel")
-                    if (media != null) add("blob")
                 })
             })
             add("limits", JsonObject().apply {
@@ -400,13 +378,7 @@ internal class RpcSession(
         private const val NETWORK_STATUS = "network.getStatus"
         private const val TOAST_SHOW = "ui.toast.show"
         private const val MEDIA_CHOOSE = "media.chooseMedia"
-        private const val BLOB_READ = "bridge.blob.read"
-        private const val BLOB_RELEASE = "bridge.blob.release"
-        private val MEDIA_METHODS = setOf(MEDIA_CHOOSE, BLOB_READ, BLOB_RELEASE)
         private val CHOOSE_KEYS = setOf("mediaType", "sourceType", "count")
-        private val READ_KEYS = setOf("blobRef", "index")
-        private val RELEASE_KEYS = setOf("blobRef")
-        private val BLOB_REF = Regex("[0-9a-f]{32}")
         private const val SUBSCRIBE = "bridge.subscribe"
         private const val UNSUBSCRIBE = "bridge.unsubscribe"
         private const val NETWORK_STATUS_CHANGED = "network.statusChanged"
@@ -442,8 +414,6 @@ internal class RpcSession(
             val number = (this as? JsonPrimitive)?.takeIf { it.isNumber }?.asDouble ?: return null
             return number.takeIf { abs(it) <= MAX_SAFE_INTEGER && it % 1 == 0.0 }?.toLong()
         }
-
-        private fun JsonElement?.asBlobRef() = asStringOrNull()?.takeIf(BLOB_REF::matches)
 
         private fun JsonElement?.isSingleChoice(expected: String): Boolean =
             this is JsonArray && size() == 1 && get(0).asStringOrNull() == expected

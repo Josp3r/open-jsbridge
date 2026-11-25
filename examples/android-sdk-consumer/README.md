@@ -31,4 +31,6 @@ media_fixture="$PWD/dist/sdk-consumer/MediaFixture.png"
 
 Release instrumentation 调用 `window.__sdkToastProbe()`，校验 JavaScript 返回值、页面状态与 Android 的原生 Toast 无障碍事件（包含预期文字），并另测不同 HTTPS 端口的文档无法使用 bridge。运行 `connectedReleaseAndroidTest` 后，可查看 [Release 测试报告](<app/build/reports/androidTests/connected/release/>) 和 [Release 测试结果 XML](<app/build/outputs/androidTest-results/connected/release/>)。原生 Toast 截图若可捕获，测试会将其记录到日志指明的目标 App 外部文件目录；可在卸载前用 `adb pull` 保存。
 
-[Photo Picker 测试](<app/src/androidTest/java/dev/openjsbridge/sdkconsumer/ReleaseSystemPhotoPickerTest.kt>)在 API 33+ 上将一张唯一命名的共享 PNG 写入 MediaStore，用系统无障碍动作点击实际系统 Picker 的测试图片或按返回键关闭，不伪造 Activity Result，也不修改已有照片。测试核对 MIME、大小、逐字节读取、显式释放后的拒绝、同源文档替换后的失效、不同 HTTPS 端口不可用，以及关闭后不返回 blob。写入过测试 PNG 的用例在 `finally` 中只删除自己创建的 MediaStore 行。
+[Photo Picker 测试](<app/src/androidTest/java/dev/openjsbridge/sdkconsumer/ReleaseSystemPhotoPickerTest.kt>)在 API 33+ 将共享的 800×640 合成 PNG 写入 MediaStore，通过系统无障碍操作点击真实选择器中的测试图片，或按系统返回键取消；不伪造 Activity Result，也不修改已有照片。测试使用同一轮构建的缩略图版 AAR、共享 H5 和 PNG。
+
+测试核对 32 位十六进制图片 ID、原图 MIME／字节数／尺寸，并确认页面显示 `Preview ready`，且渲染的是长边不超过 256 像素、解码后不超过 32 KiB 的 JPEG 缩略图。H5 探针只暴露可渲染的 `blob:` 预览 URL 和元数据，不返回原图字节。测试还覆盖系统取消、同源新文档无法获取旧预览 URL、未列入白名单的 HTTPS 端口无法使用媒体，以及旧 `blob` 特性和读／释放接口不再可用（直接走真实注入传输检查握手和 `-32601`）。写入测试 PNG 的用例只清理本次创建的 MediaStore 行。

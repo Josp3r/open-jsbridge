@@ -238,7 +238,7 @@ bridge.emit("network.statusChanged", ["type": "wifi"])
 let share: ShareInfo = try await bridge.callWeb("page.getShareInfo", timeout: 3)
 ```
 
-`OJSBridge.init` 内部完成：注入 shim、添加 message handler、注册 `ojsb-blob` scheme（注意 `setURLSchemeHandler` 必须在 WebView 创建前设置到 `WKWebViewConfiguration`，因此提供 `OJSBridge.configure(_ config: WKWebViewConfiguration)` 静态方法，在创建 WebView 前调用）、hook 导航代理。
+宿主初始化时安装文档 shim、注册 message handler 并接入导航代理。选图响应通过现有 RPC 通道交付缩略图，由 Web SDK 生成预览 URL。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
 ### 6.3 导航代理：不抢 delegate
 
@@ -341,7 +341,7 @@ let security = SecurityChain(
 | `webViewWebContentProcessDidTerminate` | 所有 sid 失效，取消所有 Task |
 | App 拆卸 WebView | App 调用 `Attachment.detach()`，取消旧任务并移除桥接 handler 与注入脚本 |
 
-会话失效时取消进行中的 handler 和反向请求，清理订阅、释放 blob，丢弃尚未投递的旧会话消息。仍持有的 WithReply 回调以传输层 `null` 完成一次，避免将旧会话的协议数据交给新 document。同一 document 内使用新 id 重试握手时，复用活动 sid。
+会话失效时取消进行中的 handler 和反向请求，清理订阅和暂存媒体，丢弃尚未投递的旧会话消息。仍持有的 WithReply 回调以传输层 `null` 完成一次，避免将旧会话的协议数据交给新 document。同一 document 内使用新 id 重试握手时，复用活动 sid。
 
 宿主须协调 `didCommit` 与 document-start 握手的到达顺序。只有确认握手来自当前提交的 document，才允许建立或复用会话。
 

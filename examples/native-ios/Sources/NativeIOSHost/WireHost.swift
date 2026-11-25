@@ -38,7 +38,7 @@ final class WireHost {
     private let events: [String]
     private let businessEvents: Set<String>
     private let networkType: () -> NetworkConnection
-    private let media: MediaBlobStore?
+    private let media: MediaStore?
     private var subscriptions: [String: EventSubscription] = [:]
     private(set) var sid: String?
     private var handshakeIDs = Set<Data>()
@@ -53,17 +53,13 @@ final class WireHost {
         self.businessEvents = Set(businessEvents)
         self.networkType = networkType
         let mediaEnabled = options.media && supportsMedia
-        media = mediaEnabled ? MediaBlobStore() : nil
+        media = mediaEnabled ? MediaStore() : nil
         var methods = businessMethods.mapValues { _ in ["versions": [1]] }
         if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
         if options.toast { methods[ToastModule.method] = ["versions": [1]] }
-        if mediaEnabled {
-            for method in [MediaBlobStore.chooseMethod, MediaBlobStore.readMethod, MediaBlobStore.releaseMethod] {
-                methods[method] = ["versions": [1]]
-            }
-        }
+        if mediaEnabled { methods[MediaStore.chooseMethod] = ["versions": [1]] }
         self.methods = methods
         let lifecycleEvents = options.appLifecycle && supportsAppLifecycle
             ? AppLifecycleEvent.allCases.map(\.rawValue) : []
@@ -173,7 +169,7 @@ final class WireHost {
         }
         if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
 
-        let isMedia = name == MediaBlobStore.chooseMethod
+        let isMedia = name == MediaStore.chooseMethod
         if isMedia {
             guard Self.validMediaParams(params) else {
                 return failure(-32602, "Invalid params", id: id, meta: responseMeta)
@@ -216,26 +212,6 @@ final class WireHost {
                 return failure(-32603, "Internal error", id: id, meta: responseMeta)
             }
             result = NSDictionary()
-        case MediaBlobStore.readMethod, MediaBlobStore.releaseMethod:
-            let read = name == MediaBlobStore.readMethod
-            guard let media, params?.count == (read ? 2 : 1),
-                  let ref = params?["blobRef"] as? String, MediaBlobStore.isRef(ref) else {
-                return failure(-32602, "Invalid params", id: id, meta: responseMeta)
-            }
-            if read {
-                guard let index = params?["index"].flatMap(Self.safeInteger),
-                      (0..<MediaBlobStore.maxChunks).contains(index) else {
-                    return failure(-32602, "Invalid params", id: id, meta: responseMeta)
-                }
-                do {
-                    result = try media.read(ref, index: index)
-                } catch {
-                    return handlerFailure(error, id: id, meta: responseMeta)
-                }
-            } else {
-                media.release(ref)
-                result = NSDictionary()
-            }
         default:
             result = params ?? NSDictionary()
         }
@@ -282,7 +258,7 @@ final class WireHost {
         guard sid == call.sid else { return nil }
         switch result {
         case .success(let value):
-            var insertedRef: String?
+            var insertedID: String?
             let result: Any
             if call.isMedia {
                 guard let media, let selection = value as? MediaSelection else {
@@ -294,7 +270,7 @@ final class WireHost {
                 case .selected(let image):
                     do {
                         let file = try media.insert(image)
-                        insertedRef = file["blobRef"] as? String
+                        insertedID = file["id"] as? String
                         result = ["status": "selected", "files": [file]] as [String: Any]
                     } catch {
                         return handlerFailure(error, id: call.id, meta: call.meta)
@@ -305,11 +281,11 @@ final class WireHost {
             }
             guard JSONSerialization.isValidJSONObject([result]), Self.isPortableJSON(result),
                   let reply = response(id: call.id, meta: call.meta, fields: ["result": result]) else {
-                if let insertedRef { media?.release(insertedRef) }
+                if let insertedID { media?.discard(insertedID) }
                 return failure(-32603, "Internal error", id: call.id, meta: call.meta)
             }
             guard reply.utf8.count <= Self.maxMessageBytes else {
-                if let insertedRef { media?.release(insertedRef) }
+                if let insertedID { media?.discard(insertedID) }
                 return failure(-32006, "Payload too large", id: call.id, meta: ["sid": call.sid])
             }
             return reply
@@ -320,10 +296,8 @@ final class WireHost {
 
     private func handlerFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
         switch error {
-        case NativeIOSHost.BusinessMethodError.invalidParams, MediaProfileError.invalidIndex:
+        case NativeIOSHost.BusinessMethodError.invalidParams:
             return failure(-32602, "Invalid params", id: id, meta: meta)
-        case MediaProfileError.unknownReference:
-            return failure(-32003, "Permission denied", id: id, meta: meta)
         case MediaProfileError.tooLarge:
             return failure(-32006, "Payload too large", id: id, meta: meta)
         case MediaProfileError.busy:
@@ -472,7 +446,7 @@ final class WireHost {
             "capabilities": [
                 "methods": methods,
                 "events": events,
-                "features": media != nil ? ["blob", "cancel"] : businessMethods.isEmpty ? [] : ["cancel"]
+                "features": media != nil || !businessMethods.isEmpty ? ["cancel"] : []
             ],
             "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": 15_000]
         ]

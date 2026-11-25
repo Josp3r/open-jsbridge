@@ -2,16 +2,33 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ojsb:method/media.chooseMedia",
   "title": "media.chooseMedia",
-  "description": "从系统相册选择一张图片，交付当前会话的短期只读引用。",
+  "description": "从系统相册选择一张图片，返回绑定当前会话的原生句柄、原图元数据及有界 JPEG 缩略图。",
   "x-ojsb-kind": "method",
   "x-ojsb-version": 1,
   "x-ojsb-since": "1.0",
   "params": {
     "type": "object",
     "properties": {
-      "mediaType": { "const": ["image"], "default": ["image"] },
-      "sourceType": { "const": ["album"], "default": ["album"] },
-      "count": { "const": 1, "default": 1 }
+      "mediaType": {
+        "const": [
+          "image"
+        ],
+        "default": [
+          "image"
+        ]
+      },
+      "sourceType": {
+        "const": [
+          "album"
+        ],
+        "default": [
+          "album"
+        ]
+      },
+      "count": {
+        "const": 1,
+        "default": 1
+      }
     },
     "additionalProperties": false
   },
@@ -20,16 +37,26 @@
       {
         "type": "object",
         "properties": {
-          "status": { "const": "cancelled" },
-          "files": { "type": "array", "maxItems": 0 }
+          "status": {
+            "const": "cancelled"
+          },
+          "files": {
+            "type": "array",
+            "maxItems": 0
+          }
         },
-        "required": ["status", "files"],
+        "required": [
+          "status",
+          "files"
+        ],
         "additionalProperties": false
       },
       {
         "type": "object",
         "properties": {
-          "status": { "const": "selected" },
+          "status": {
+            "const": "selected"
+          },
           "files": {
             "type": "array",
             "minItems": 1,
@@ -37,18 +64,69 @@
             "items": {
               "type": "object",
               "properties": {
-                "type": { "const": "image" },
-                "blobRef": { "$ref": "ojsb:schema/blob.ref" },
-                "mime": { "type": "string", "pattern": "^image/[a-zA-Z0-9!#$&^_.+\\-]+$", "maxLength": 128 },
-                "size": { "type": "integer", "minimum": 1, "maximum": 20971520 },
-                "expiresAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+                "type": {
+                  "const": "image"
+                },
+                "mime": {
+                  "type": "string",
+                  "pattern": "^image/[a-zA-Z0-9!#$&^_.+\\-]+$",
+                  "maxLength": 128
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 20971520
+                },
+                "expiresAt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "id": {
+                  "$ref": "ojsb:schema/media.id"
+                },
+                "width": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                },
+                "height": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                },
+                "thumbnailBase64": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "minLength": 8,
+                  "maxLength": 43692,
+                  "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?(?![\\s\\S])",
+                  "if": {
+                    "minLength": 43692
+                  },
+                  "then": {
+                    "pattern": "=$"
+                  }
+                }
               },
-              "required": ["type", "blobRef", "mime", "size", "expiresAt"],
+              "required": [
+                "type",
+                "id",
+                "mime",
+                "size",
+                "width",
+                "height",
+                "expiresAt",
+                "thumbnailBase64"
+              ],
               "additionalProperties": false
             }
           }
         },
-        "required": ["status", "files"],
+        "required": [
+          "status",
+          "files"
+        ],
         "additionalProperties": false
       }
     ]

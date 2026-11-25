@@ -2,6 +2,7 @@ import {
   decodeEnvelope, encodeEnvelope, ErrorCode,
   type Envelope, type JsonObject, type JsonValue, type RpcRequest,
 } from '../../protocol/src/index.js';
+import { revokeMediaPreviews } from './media.js';
 import { BridgeError } from './errors.js';
 import { EventSubscriptions, hasSessionEvent, type EventControl, type EventListener, type EventSubscription, type StandardEvents } from './events.js';
 import { isObject, readSession, type HostInfo, type Session } from './session.js';
@@ -241,6 +242,7 @@ class WebBridge implements Bridge {
     this.session = undefined;
     this.connection = undefined;
     this.events.reset();
+    revokeMediaPreviews(this);
     this.lifetime?.abort();
     this.lifetime = undefined;
     const hello = this.hello;
@@ -320,7 +322,7 @@ class WebBridge implements Bridge {
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events', 'blob'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events'],
       } },
     });
     const stopTimer = atDeadline(deadline, () => {

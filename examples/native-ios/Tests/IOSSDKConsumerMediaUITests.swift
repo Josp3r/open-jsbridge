@@ -2,13 +2,9 @@ import XCTest
 
 final class IOSSDKConsumerMediaUITests: XCTestCase {
     @MainActor
-    func testSharedH5ReadsTheExactImageFromTheSystemPhotoPicker() throws {
+    func testSharedH5PreviewsAnImageFromTheSystemPhotoPicker() {
         continueAfterFailure = false
-        let fixtureURL = try XCTUnwrap(Bundle(for: IOSSDKConsumerMediaUITests.self)
-            .url(forResource: "MediaFixture", withExtension: "png"))
-        let expected = try Data(contentsOf: fixtureURL)
         let app = XCUIApplication()
-        app.launchEnvironment["OJSB_EXPECTED_MEDIA_BASE64"] = expected.base64EncodedString()
         app.launch()
 
         let page = app.webViews.firstMatch
@@ -25,7 +21,7 @@ final class IOSSDKConsumerMediaUITests: XCTestCase {
         XCTAssertTrue(fixture.waitForExistence(timeout: 45), app.debugDescription)
         fixture.tap()
 
-        let result = page.staticTexts["Verified \(expected.count) bytes"]
+        let result = page.staticTexts["Preview ready"]
         XCTAssertTrue(result.waitForExistence(timeout: 20), app.debugDescription)
         XCTAssertTrue(page.images["Selected image"].exists)
     }

@@ -64,6 +64,7 @@ class AndroidMediaPicker(private val launch: () -> Unit) {
                 }
             },
             directory = File(app.cacheDir, "open-jsbridge-media"),
+            generateThumbnail = ::androidMediaThumbnail,
             scheduleExpiry = { delay, callback ->
                 val expire = Runnable { callback() }
                 main.postDelayed(expire, delay)

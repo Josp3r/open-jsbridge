@@ -41,30 +41,25 @@ App 挂载宿主时显式设置 `toast = true`，页面即可在握手后通过 
 
 [`media.chooseMedia` v1](../spec/methods/media/chooseMedia.json) 打开系统照片选择器，允许从相册选择一张图片。宿主显式启用该模块，同一 WebView 同时只处理一次选择。可以省略参数，也可以传入 `{ mediaType: ['image'], sourceType: ['album'], count: 1 }`。参考实现使用 iOS 14+ 的 PHPicker 和 Android 13+ 的系统 Photo Picker。宿主通过系统选择器获得选中图片的访问权，无需申请整个相册的读取权限。
 
-用户关闭选择器时返回 `{ status: 'cancelled', files: [] }`。成功时返回 `{ status: 'selected', files: [{ type: 'image', blobRef, mime, size, expiresAt }] }`。引用绑定当前文档会话，有效期为 5 分钟。单张图片或会话暂存总量超过 20 MiB 时返回 `-32006`。Web SDK 默认等待 120 秒，也接受 `AbortSignal`。调用方取消 RPC 时返回 `-32002`，由宿主停止交付该次结果。[分片读取协议](protocol.md#102-分片读取与释放)
+用户关闭选择器时返回 `{ status: 'cancelled', files: [] }`。成功时返回 `{ status: 'selected', files: [{ type: 'image', id, mime, size, width, height, expiresAt, thumbUrl }] }`。`id` 是原生宿主保管的媒体句柄，`width` 和 `height` 表示原图按正确方向显示时的像素尺寸。`thumbUrl` 是 Web SDK 为最长边不超过 256 px 的 JPEG 缩略图创建的 `blob:` URL。页面使用 CSP 时，在图片资源策略 `img-src` 中允许 `blob:` 即可预览。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
-当前源码中的 Web SDK 提供 `media.chooseMedia()`、`blob.read(file)` 和 `blob.release(file.blobRef)`。示例可从源码构建安装包，已发布的 `@open-jsbridge/web@0.1.0` 尚无这些导出。
+原图由宿主保存在当前文档会话中，最长保留 5 分钟，会话暂存总量上限为 20 MiB。超过上限返回 `-32006`。Web SDK 默认等待 120 秒，也接受 `AbortSignal`。调用方中止 RPC 返回 `-32002`，来源或系统无法交付资源时返回 `-32003`，明确拒绝授权时返回 `-32007`。Web SDK 在有效期结束或文档会话失效时自动撤销缩略图 URL。该能力可从源码构建使用，已发布的 `@open-jsbridge/web@0.1.0` 尚未包含它。
 
 ```ts
-import { blob, bridge, media } from '@open-jsbridge/web'
+import { bridge } from '@open-jsbridge/web'
+import { media } from '@open-jsbridge/web/media'
 
-export async function chooseImage(): Promise<Blob | undefined> {
+export async function chooseImage(preview: HTMLImageElement): Promise<void> {
   await bridge.ready()
   if (!bridge.has('media.chooseMedia', 1)) return
 
   const result = await media.chooseMedia()
   if (result.status === 'cancelled') return
-  const [file] = result.files
-
-  try {
-    return await blob.read(file)
-  } finally {
-    await blob.release(file.blobRef).catch(() => {})
-  }
+  preview.src = result.files[0].thumbUrl
 }
 ```
 
-`blob.read()` 将系统选择器交付的图片字节还原为浏览器 `Blob`。读取使用顺序分片，`timeout` 按单个分片计算，传入同一个 `AbortSignal` 可以中止整个读取。页面可以直接上传或用 `URL.createObjectURL()` 预览，预览结束调用 `URL.revokeObjectURL()`。文档换页、宿主分离或有效期结束时，宿主会回收引用。
+原生全屏预览、原图上传与进度是候选能力。缩略图适合在选择结果页展示。
 
 ## Web 接入
 
@@ -101,7 +96,7 @@ if (bridge.has('network.getStatus', 1)) {
 
 ## 宿主接入与演示
 
-参考宿主为配置的受信主文档提供能力。订阅须通过会话和事件权限检查。退订后停止推送，并释放只为该订阅启动的原生监听。宿主可在会话有效期间保留查询所用的网络状态缓存和监听。文档会话失效时清理其订阅和监听。Android 读取网络状态需要在 Manifest 中声明 `ACCESS_NETWORK_STATE`。
+参考宿主为配置的受信主文档提供能力。订阅须匹配活动会话和宿主声明的事件。退订后停止推送，并释放只为该订阅启动的原生监听。宿主可在会话有效期间保留查询所用的网络状态缓存和监听。文档会话失效时清理其订阅和监听。Android 读取网络状态需要在 Manifest 中声明 `ACCESS_NETWORK_STATE`。
 
 两端示例注册实际原生实现并加载同一个页面。点击「查询设备信息」或「查询网络状态」会触发自动握手。宿主声明网络事件后，页面会显示订阅控件。可以切换设备网络观察事件，也可以在浏览器 Mock 中用按钮模拟切换。
 

@@ -306,7 +306,7 @@ final class WireHostTests: XCTestCase {
     }
 
     @MainActor
-    func testMediaOptInGatesSelectionAndBlobMethodsAndValidatesParams() throws {
+    func testMediaOptInAdvertisesSelectionOnlyAndRejectsRetiredBlobMethods() throws {
         let disabled = WireHost(platform: "ios", enableEcho: false)
         let disabledSID = try session(disabled)
         let methods = ["media.chooseMedia", "bridge.blob.read", "bridge.blob.release"]
@@ -319,8 +319,12 @@ final class WireHostTests: XCTestCase {
         let result = try XCTUnwrap(unpack(host.receive(hello(id: "enabled"))).rpc["result"] as? [String: Any])
         let sid = try XCTUnwrap(result["sid"] as? String)
         let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any])
-        XCTAssertEqual(Set((capabilities["methods"] as? [String: Any] ?? [:]).keys), Set(methods))
-        XCTAssertEqual(Set(capabilities["features"] as? [String] ?? []), ["blob", "cancel"])
+        XCTAssertEqual(Set((capabilities["methods"] as? [String: Any] ?? [:]).keys), ["media.chooseMedia"])
+        XCTAssertEqual(Set(capabilities["features"] as? [String] ?? []), ["cancel"])
+        for (index, method) in ["bridge.blob.read", "bridge.blob.read@1", "bridge.blob.release", "bridge.blob.release@1"].enumerated() {
+            let request = echo(id: "retired-\(index)", sid: sid, method: method)
+            XCTAssertEqual(try unpack(host.receive(request)).error?["code"] as? Int, -32601)
+        }
         let invalid = [#"{"mediaType":["video"]}"#, #"{"mediaType":"image"}"#, #"{"sourceType":["camera"]}"#,
                        #"{"count":2}"#, #"{"count":true}"#, #"{"count":null}"#, #"{"other":1}"#]
         for (index, params) in invalid.enumerated() {
@@ -335,53 +339,30 @@ final class WireHostTests: XCTestCase {
     }
 
     @MainActor
-    func testMediaMakesSelectedBytesReadableInChunksAndRevokesReferences() async throws {
+    func testMediaSelectionReturnsOriginalMetadataAndOnlyTheThumbnailBytes() async throws {
         let host = WireHost(platform: "ios", options: .init(media: true))
         let sid = try session(host)
-        let raw = Data(repeating: 0xC0, count: 65_536) + Data([1, 2, 3])
-        let result = try await completeMedia(.selected(.init(data: raw, mime: "image/png")), id: "pick", sid: sid, in: host)
+        let raw = try makeMediaJPEG(width: 800, height: 640, orientation: 6)
+        let image = try MediaImage.prepare(data: raw, mime: "image/jpeg")
+        let result = try await completeMedia(.selected(image), id: "pick", sid: sid, in: host)
         XCTAssertEqual(result["status"] as? String, "selected")
-        let file = try XCTUnwrap((result["files"] as? [[String: Any]])?.first)
-        let blobRef = try XCTUnwrap(file["blobRef"] as? String)
-        XCTAssertNotNil(blobRef.range(of: #"\A[0-9a-f]{32}\z"#, options: .regularExpression))
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files.count, 1)
+        let file = try XCTUnwrap(files.first)
+        XCTAssertEqual(Set(file.keys), ["type", "id", "mime", "size", "width", "height", "expiresAt", "thumbnailBase64"])
+        let id = try XCTUnwrap(file["id"] as? String)
+        XCTAssertNotNil(id.range(of: #"\A[0-9a-f]{32}\z"#, options: .regularExpression))
         XCTAssertEqual(file["type"] as? String, "image")
-        XCTAssertEqual(file["mime"] as? String, "image/png")
+        XCTAssertEqual(file["mime"] as? String, "image/jpeg")
         XCTAssertEqual(file["size"] as? Int, raw.count)
+        XCTAssertEqual(file["width"] as? Int, 640)
+        XCTAssertEqual(file["height"] as? Int, 800)
         let ttl = try XCTUnwrap(file["expiresAt"] as? Int64) - Int64(Date().timeIntervalSince1970 * 1000)
-        XCTAssertTrue((299_000...300_000).contains(ttl))
-
-        func read(_ index: String, id: String, using session: String? = nil) throws -> (rpc: [String: Any], meta: [String: Any]?, error: [String: Any]?) {
-            try unpack(host.receive(echo(id: id, sid: session ?? sid, params: #"{"blobRef":"\#(blobRef)","index":\#(index)}"#,
-                                         method: "bridge.blob.read@1")))
-        }
-        let first = try XCTUnwrap(read("0", id: "first").rpc["result"] as? [String: Any])
-        XCTAssertEqual(first["dataBase64"] as? String, raw.prefix(65_536).base64EncodedString())
-        XCTAssertEqual(first["done"] as? Bool, false)
-        let last = try XCTUnwrap(read("1", id: "last").rpc["result"] as? [String: Any])
-        XCTAssertEqual(last["dataBase64"] as? String, "AQID")
-        XCTAssertEqual(last["done"] as? Bool, true)
-        for (offset, index) in ["2", "-1", "true", "0.5"].enumerated() {
-            XCTAssertEqual(try read(index, id: "bad-\(offset)").error?["code"] as? Int, -32602)
-        }
-        let invalidRef = echo(id: "bad-ref", sid: sid, params: #"{"blobRef":"BAD","index":0}"#,
-                              method: "bridge.blob.read")
-        XCTAssertEqual(try unpack(host.receive(invalidRef)).error?["code"] as? Int, -32602)
-
-        for id in ["release", "release-again"] {
-            let reply = try unpack(host.receive(echo(id: id, sid: sid, params: #"{"blobRef":"\#(blobRef)"}"#,
-                                                     method: "bridge.blob.release")))
-            XCTAssertEqual(reply.rpc["result"] as? [String: String], [:])
-        }
-        XCTAssertEqual(try read("0", id: "released").error?["code"] as? Int, -32003)
-        XCTAssertEqual(try read("320", id: "invalid-with-released-ref").error?["code"] as? Int, -32602)
-
-        let next = try await completeMedia(.selected(.init(data: raw, mime: "image/png")), id: "next", sid: sid, in: host)
-        let nextRef = try XCTUnwrap((next["files"] as? [[String: Any]])?.first?["blobRef"] as? String)
-        host.reset()
-        let newSID = try session(host)
-        let stale = try unpack(host.receive(echo(id: "stale", sid: newSID, params: #"{"blobRef":"\#(nextRef)","index":0}"#,
-                                                 method: "bridge.blob.read")))
-        XCTAssertEqual(stale.error?["code"] as? Int, -32003)
+        XCTAssertTrue((295_000...300_000).contains(ttl))
+        let encoded = try XCTUnwrap(file["thumbnailBase64"] as? String)
+        let thumbnail = try XCTUnwrap(Data(base64Encoded: encoded))
+        XCTAssertEqual(thumbnail, image.thumbnail)
+        XCTAssertNotEqual(thumbnail, raw)
     }
 
     @MainActor
@@ -394,21 +375,18 @@ final class WireHostTests: XCTestCase {
     }
 
     @MainActor
-    func testMediaStoreEnforcesTheTotalQuotaAndReleasesCapacity() throws {
-        let store = MediaBlobStore()
-        let first = MediaImage(data: Data(repeating: 1, count: 20 * 1024 * 1024), mime: "image/png")
-        let second = MediaImage(data: Data([2]), mime: "image/png")
+    func testMediaStoreEnforcesTheTotalQuotaAndResetFreesCapacity() throws {
+        let store = MediaStore()
+        let second = try MediaImage.prepare(data: makeMediaJPEG(width: 8, height: 8), mime: "image/jpeg")
+        let first = MediaImage(data: Data(repeating: 1, count: 20 * 1024 * 1024), mime: second.mime,
+                               width: second.width, height: second.height, thumbnail: second.thumbnail)
         let descriptor = try store.insert(first)
-        let ref = try XCTUnwrap(descriptor["blobRef"] as? String)
+        XCTAssertEqual(descriptor["size"] as? Int, 20 * 1024 * 1024)
         XCTAssertThrowsError(try store.insert(second)) { error in
             guard case MediaProfileError.tooLarge = error else { return XCTFail("Unexpected error: \(error)") }
         }
-        store.release(ref)
-        XCTAssertEqual(try store.insert(second)["size"] as? Int, 1)
-        let invalidMIME = MediaImage(data: Data([3]), mime: "image/png; charset=UTF-8")
-        XCTAssertThrowsError(try store.insert(invalidMIME)) { error in
-            guard case MediaProfileError.unavailable = error else { return XCTFail("Unexpected error: \(error)") }
-        }
+        store.reset()
+        XCTAssertEqual(try store.insert(second)["size"] as? Int, second.data.count)
     }
 
     @MainActor
@@ -416,7 +394,7 @@ final class WireHostTests: XCTestCase {
         let host = WireHost(platform: "ios", options: .init(media: true))
         let sid = try session(host)
         let omitted = #"{"jsb":"1.0","meta":{"sid":"\#(sid)"},"rpc":{"jsonrpc":"2.0","id":"pick","method":"media.chooseMedia"}}"#
-        let image = MediaImage(data: Data([1, 2, 3]), mime: "image/png")
+        let image = try MediaImage.prepare(data: makeMediaJPEG(width: 8, height: 8), mime: "image/jpeg")
         var pendingCall: WireHost.BusinessCall?
         XCTAssertNil(host.receive(omitted, chooseMedia: { _ in MediaSelection.selected(image) },
                                   onBusinessCall: { pendingCall = $0 }))

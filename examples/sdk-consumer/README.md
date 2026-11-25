@@ -1,6 +1,6 @@
 # 原生 SDK 独立接入验收
 
-两个最小 App 都创建自己的 WebView，安装宿主 SDK，并加载同一份 H5。页面可以查询 `device.getInfo` 并调用原生 Toast，也可以打开系统照片选择器，把图片读为浏览器 `Blob` 并预览。
+两个最小 App 都创建自己的 WebView，安装宿主 SDK，并加载同一份 H5。页面可以查询 `device.getInfo`、调用原生 Toast 或打开系统照片选择器，并显示所选图片的缩略图。
 
 ## 生成共享页面
 
@@ -24,8 +24,8 @@ xcodebuild -project examples/native-ios/NativeIOSDemo.xcodeproj \
   -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
 ```
 
-测试运行真实的 `WKWebView`，用共享页面触发 Toast 并打开系统选择器。导入测试图片后，运行 `IOSSDKConsumerMedia` scheme 验证选中图片的字节。[iOS 宿主接入和测试命令](../native-ios/README.md)
+测试运行真实的 `WKWebView`，用共享页面触发 Toast 并打开系统选择器。导入测试图片后，运行 `IOSSDKConsumerMedia` scheme 验证取消、选图和缩略图渲染。[iOS 宿主接入和测试命令](../native-ios/README.md)
 
 ## Android Release
 
-独立 Gradle 工程通过 Maven 坐标安装 Release AAR。仪器测试校验系统 Toast，并通过实际 Photo Picker 检查选图、字节读取、用户取消和换页失效。[Android 构建和验收](../android-sdk-consumer/README.md)
+独立 Gradle 工程通过 Maven 坐标安装 Release AAR。仪器测试校验系统 Toast，并通过实际 Photo Picker 检查选图结果、缩略图渲染、用户取消和换页失效。[Android 构建和验收](../android-sdk-consumer/README.md)

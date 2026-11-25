@@ -256,10 +256,7 @@ WML 通道下推送**不需要拼接 JS 源码**，天然避免注入问题，�
 
 ## 8. 大数据
 
-- 已实现的选图数据通道使用 `bridge.blob.read@1` 和 `bridge.blob.release@1`。[会话内分片协议](protocol.md#102-分片读取与释放)
-- 若另行实现 URL 资源扩展，可在页面同源下挂虚拟路径 `https://<page-host>/__ojsb__/blob/<token>`，由 `shouldInterceptRequest` 按 token 返回 `WebResourceResponse`。必须校验 `request.url` 的 host 与该 token 绑定会话的 origin 一致。
-- 或使用 `androidx.webkit.WebViewAssetLoader` 的专用域（`appassets.androidplatform.net`）配合自定义 `PathHandler`，此时是跨源，需要返回 CORS 头。
-- `shouldInterceptRequest` 在非主线程调用，BlobStore 需线程安全。
+相册选择通过受信主文档的 RPC 响应返回会话媒体句柄和小型 JPEG 缩略图。原图留在应用私有暂存区，随会话或有效期结束清理。Web SDK 从响应生成图片预览所用的 `blob:` URL。[会话媒体协议](protocol.md#101-原生句柄和缩略图)
 
 ## 9. 单元测试策略
 

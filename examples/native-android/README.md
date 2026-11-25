@@ -81,7 +81,7 @@ attachment?.emit("acme.app.configChanged", JsonNull.INSTANCE)
 
 在 App 的 Activity 进入 `STARTED` 前用 Activity Result API 注册 launcher。用 `AndroidMediaPicker.createIntent(context)` 获取系统单图选择 Intent（API 33+；不可用时返回 `null`），用 `AndroidMediaPicker { launcher.launch(intent) }` 接入，并把选中的 URI 或关闭选择器时的 `null` 交给 `picker.onResult`。挂载时显式传 `AndroidBridge.Options(media = true)` 和 `mediaPicker = picker`。不需要相册权限，SDK 只读当前选中的图；不支持时握手不会声明媒体能力。 [独立 Release App 接入](../android-sdk-consumer/README.md)
 
-页面得到的是当前文档有效的 `blobRef`，不是系统 URI。读取按 64 KiB 原始字节分块；单文件与当前会话总量均上限 20 MiB，引用在 5 分钟后失效。读取完请主动释放；导航或宿主销毁也会回收。关闭系统选择器会成功返回 `cancelled`；SDK 取消请求会忽略迟到的系统结果，不强制关闭系统界面。
+页面收到当前文档的媒体 `id` 和 `thumbUrl`，用缩略图 URL 显示选择结果。原图暂存在宿主私有目录，每个会话最多 20 MiB，5 分钟内有效。换页、宿主销毁或到期时自动清理。关闭系统选择器返回 `cancelled`。SDK 取消请求后忽略迟到的系统结果，系统界面由用户关闭。[会话媒体协议](../../docs/protocol.md#101-原生句柄和缩略图)
 
 ## 在模拟器验证
 
