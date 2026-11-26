@@ -28,7 +28,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
   const packageDir = join(consumer, 'node_modules', '@open-jsbridge', 'web');
   const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.exports).sort(), [
-    '.', './app', './auto', './device', './media', './mock', './network', './ui',
+    '.', './app', './auto', './device', './fallback', './media', './mock', './network', './ui',
   ]);
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.sideEffects, false);
@@ -44,6 +44,13 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     assert.throws(() => createRequire(import.meta.url)('@open-jsbridge/web'), {
       code: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
     });
+    const { BrowserFallbackAdapter } = await import('@open-jsbridge/web/fallback');
+    const fallbackBridge = core.createBridge({
+      fallback: new BrowserFallbackAdapter({ polyfills: { 'acme.ping': () => ({ ok: true }) } }),
+    });
+    assert.deepEqual(await fallbackBridge.call('acme.ping'), { ok: true });
+    fallbackBridge.close();
+
     const { createMockAdapter, installMockTransport } = await import('@open-jsbridge/web/mock');
     const isolated = core.createBridge({ adapter: createMockAdapter() });
     assert.deepEqual(await isolated.call('conformance.echo', { text: 'core' }), { text: 'core' });
@@ -80,12 +87,13 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     import * as auto from '@open-jsbridge/web/auto';
     import { app } from '@open-jsbridge/web/app';
     import { device } from '@open-jsbridge/web/device';
+    import { BrowserFallbackAdapter } from '@open-jsbridge/web/fallback';
     import { media } from '@open-jsbridge/web/media';
     import { createMockAdapter } from '@open-jsbridge/web/mock';
     import { network } from '@open-jsbridge/web/network';
     import { ui } from '@open-jsbridge/web/ui';
 
-    const isolated: Bridge = createBridge({ adapter: createMockAdapter() });
+    const isolated: Bridge = createBridge({ adapter: createMockAdapter(), fallback: new BrowserFallbackAdapter() });
     const automatic: Bridge = auto.bridge;
     const off = app.onForegrounded((value: null) => value);
     const info = device.getInfo();

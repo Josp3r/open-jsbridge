@@ -14,6 +14,10 @@
       "types": "./packages/web-sdk/src/auto.d.ts",
       "import": "./packages/web-sdk/src/auto.js"
     },
+    "./fallback": {
+      "types": "./packages/web-sdk/src/fallback.d.ts",
+      "import": "./packages/web-sdk/src/fallback.js"
+    },
     "./mock": {
       "types": "./packages/web-mock/src/index.d.ts",
       "import": "./packages/web-mock/src/index.js"
