@@ -156,3 +156,5 @@ iOS 通过 SwiftPM 验证 `NativeIOSHost`，Android 通过本地 Maven 安装 `i
 - [Web SDK docs/web-sdk.md](docs/web-sdk.md)
 - [一致性测试与 Schema 单一事实来源 docs/conformance.md](docs/conformance.md)
 - [开发待办 TODO.md](TODO.md)
+- [Agent 协作规范 AGENTS.md](AGENTS.md)
+- [多 Agent 团队状态看板 docs/team-status.md](docs/team-status.md)

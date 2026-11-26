@@ -1,5 +1,7 @@
 # Open JSBridge TODO
 
+> 本文件记录协议与里程碑级待办项；多 Agent 并行开发时的任务认领、Scope 锁、跨端交接与共享决策统一维护在 [docs/team-status.md](docs/team-status.md)（协作规范见 [AGENTS.md](AGENTS.md)）。
+
 ## M0 · JSON-RPC wire 格式
 
 - [ ] 评审 [JSON-RPC 信封规范](docs/protocol.md#3-消息信封envelope)、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json` 和 `spec/methods/bridge/hello.json`。
