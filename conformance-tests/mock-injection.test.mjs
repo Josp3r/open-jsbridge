@@ -47,7 +47,7 @@ test('the default bridge negotiates and echoes through the preinstalled Mock tra
   const { installMockTransport } = await import(mockModule);
   const frames = [];
   installMockTransport({ onFrame: (direction, raw) => frames.push([direction, JSON.parse(raw)]) });
-  const { bridge } = await import('../dist/packages/web-sdk/src/index.js?preinstalled-mock');
+  const { bridge } = await import('../dist/packages/web-sdk/src/auto.js?preinstalled-mock');
   const payload = { text: '你好', values: [1, null, true] };
 
   assert.deepEqual(await bridge.call(echo, payload), payload);

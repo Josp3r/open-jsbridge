@@ -360,7 +360,7 @@ class WebBridge implements Bridge {
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.1.0' }, wants: ['cancel', 'events'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.2.0' }, wants: ['cancel', 'events'],
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
@@ -369,7 +369,7 @@ class WebBridge implements Bridge {
     try {
       return await new Promise<Session>((resolve, reject) => {
         this.hello = { id, deadline, resolve, reject };
-        this.post(request, id, () => reject(new BridgeError(ErrorCode.Unavailable, 'Handshake failed to send')));
+        void this.post(request, id, () => reject(new BridgeError(ErrorCode.Unavailable, 'Handshake failed to send')));
       });
     } finally {
       if (this.hello?.id === id) this.hello = undefined;
@@ -429,7 +429,7 @@ class WebBridge implements Bridge {
     pending.session = session;
     session.inflight++;
     pending.onDispatch?.();
-    this.post(raw, request.id, () => this.fail(request.id, ErrorCode.Unavailable, 'Call failed to send'));
+    void this.post(raw, request.id, () => this.fail(request.id, ErrorCode.Unavailable, 'Call failed to send'));
   }
 
   private startTimeout(pending: PendingCall, deadline: number): void {

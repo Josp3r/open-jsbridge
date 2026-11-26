@@ -1,4 +1,5 @@
-import { BridgeError, bridge } from '../../dist/packages/web-sdk/src/index.js';
+import { bridge } from '../../dist/packages/web-sdk/src/auto.js';
+import { BridgeError } from '../../dist/packages/web-sdk/src/index.js';
 import { installMockTransport } from '../../dist/packages/web-mock/src/index.js';
 
 const echoMethod = 'conformance.echo';

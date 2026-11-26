@@ -86,7 +86,7 @@
 
       <section class="example" id="example-code" aria-labelledby="example-title">
         <h2 id="example-title">Web 端接入代码</h2>
-        <pre tabindex="0"><code>import { bridge } from '/dist/packages/web-sdk/src/index.js';
+        <pre tabindex="0"><code>import { bridge } from '/dist/packages/web-sdk/src/auto.js';
 
 const result = await bridge.call('conformance.echo', { text: '你好' }, { timeout: 3000 });
 console.log(result);</code></pre>

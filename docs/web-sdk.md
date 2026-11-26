@@ -4,6 +4,8 @@
 
 ## 1. 公共 API
 
+本文的导入示例以源码构建出的 0.2.0 候选包为准。该版本仅支持 ESM。已发布的 `@open-jsbridge/web@0.1.0` 从主入口导出具名的 `bridge` 单例。[安装方式](../examples/web-demo/README.md#在独立-web-项目安装)
+
 当前实现提供 `createBridge`、默认 `bridge`、`ready`、`has`、`call` 和事件相关的 `on`、`off`、`hasEvent`。浏览器 Mock 可用于事件联调。原生宿主的事件能力以握手声明为准。此处还展示了后续的流式回调、反向调用和 codegen 设计。
 
 App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`。首次调用会自动等待注入通道并发起握手，握手完成后按宿主声明的并发上限发送请求。需要先读取宿主信息或用 `has()` 决定界面是否显示某项能力时，再显式调用 `ready()`。
@@ -13,7 +15,8 @@ App WebView 中的业务代码可以直接用默认单例调用 `bridge.call()`�
 用 `createBridge()` 创建独立实例时，可在拥有它的页面或组件卸载时调用 `close()`。它会解绑监听，拒绝待处理调用，并永久停用该实例。关闭后 `ready()`、`reconnect()` 和 `call()` 返回 `-32002`。调用时 SDK 会保存参数的 JSON 快照，排队期间修改原对象不会改变发送值。关闭实例或页面离开时，SDK 会用旧 `sid` 尽力取消已发送且宿主支持取消的请求，再解除传输绑定。仍在排队的请求在本地以 `-32002` 取消。两种情况都会撤销该实例管理的媒体预览 URL。
 
 ```ts
-import { bridge, BridgeError, ErrorCode } from '@open-jsbridge/web';
+import { bridge } from '@open-jsbridge/web/auto';
+import { BridgeError, ErrorCode } from '@open-jsbridge/web';
 
 await bridge.ready();                                   // 握手完成（或降级判定完成）
 
@@ -250,16 +253,19 @@ declare module '@open-jsbridge/web' {
 
 ## 5. 构建与 npm 包
 
-`npm run build` 用 TypeScript 生成 ES2020 模块和声明文件。`npm run pack:web` 生成 `dist/open-jsbridge-web-0.1.0.tgz`，可以在独立项目里本地安装。
+`npm run build` 用 TypeScript 生成 ES2020 模块和声明文件。`npm run pack:web` 生成 `dist/open-jsbridge-web-0.2.0.tgz`，可以在独立项目里本地安装。
 
-- `@open-jsbridge/web` 提供默认 `bridge`、`createBridge`、错误类型和相关 TypeScript 声明。
+- `@open-jsbridge/web` 提供 `createBridge`、错误类型和 TypeScript 声明。导入主入口时不会创建默认连接。
+- `@open-jsbridge/web/auto` 提供默认 `bridge` 和类型化能力。原来从主入口导入默认单例和能力的代码可迁至此路径。
 - `@open-jsbridge/web/mock` 提供 `installMockTransport`、`createMockAdapter` 和对应的类型声明。开发页显式调用 `installMockTransport()` 后开始联调。
-- 包包含零运行时依赖的 ESM 模块。仓库的 `npm run demo:web` 仍直接使用本地编译产物。
-- 体积目标以 min+gzip 为准，核心 ≤ 4 KB，含事件、反向调用和回调的完整形态 ≤ 6 KB。
+- 所有公开入口均为零运行时依赖的 ESM，并附带类型声明。CommonJS 调用方使用动态 `import()`。仓库的 `npm run demo:web` 使用本地编译产物。
+- `npm run size:web` 检查主入口浏览器产物的体积。CI 要求 min+gzip 不超过 7 KiB。
+
+验收候选包时运行 `npm run lint`、`npm test`、`npm run size:web` 和 `npm run pack:web`。测试会在独立项目安装 tarball，核对 ESM 入口，并用 TypeScript 的 NodeNext 和 Bundler 模式解析声明文件。npm 包、iOS 标签和 Android Maven 产物各自发版。
 
 [独立项目接入示例](../examples/web-demo/README.md#在独立-web-项目安装)
 
-从当前源码打包后，按需引入可使用 `@open-jsbridge/web/app`、`/device`、`/network`、`/ui` 和 `/media`。各入口复用一个连接，导入 Web 模块只提供调用接口。运行时使用 `bridge.has()` 和 `bridge.hasEvent()` 读取握手能力。构建器可以移除未使用的模块。
+从当前源码打包后，按需引入可使用 `@open-jsbridge/web/app`、`/device`、`/network`、`/ui` 和 `/media`。各能力入口和 `/auto` 复用同一个默认连接。运行时使用 `bridge.has()` 和 `bridge.hasEvent()` 读取握手能力。构建器可以移除未使用的模块。
 
 ## 6. Mock 与调试工具
 

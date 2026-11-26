@@ -21,7 +21,9 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm test
+      - run: npm run size:web
       - run: node --test examples/native-android/test/shim.test.mjs
 
   swift:
@@ -45,7 +47,7 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - run: ./examples/native-android/gradlew -p examples/native-android --no-daemon :host:testDebugUnitTest :app:assembleRelease
+      - run: ./examples/native-android/gradlew -p examples/native-android --no-daemon :host:testDebugUnitTest :host:bundleUnsignedCentralRelease :app:assembleRelease
 
   ios-release:
     name: iOS Release WebView

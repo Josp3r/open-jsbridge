@@ -51,7 +51,7 @@ App 挂载宿主时显式设置 `toast = true`，页面即可在握手后通过 
 - v1 通过系统选择器授权单张图片，无单独的权限弹窗，因此不会返回 `-32007`。未来有显式权限拒绝路径的能力才使用该码。
 
 ```ts
-import { bridge } from '@open-jsbridge/web'
+import { bridge } from '@open-jsbridge/web/auto'
 import { media } from '@open-jsbridge/web/media'
 
 export async function chooseImage(preview: HTMLImageElement): Promise<void> {
@@ -69,7 +69,7 @@ export async function chooseImage(preview: HTMLImageElement): Promise<void> {
 ## Web 接入
 
 ```ts
-import { bridge, ui } from '@open-jsbridge/web'
+import { bridge, ui } from '@open-jsbridge/web/auto'
 
 await bridge.ready()
 

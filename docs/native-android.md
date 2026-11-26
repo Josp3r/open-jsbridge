@@ -245,6 +245,26 @@ val share = bridge.callWeb("page.getShareInfo", ShareInfo.serializer(), timeoutM
 
 后续只有在宿主能验证每个子 frame 及其 document、感知子 frame 的新 document 提交、立即使旧 sid 失效，并保证旧消息无法进入新 document 时，才对该宿主声明 iframe 能力。`JavaScriptReplyProxy` 可用于定向发送，`onPageStarted` 只报告主 frame 导航。[Android `JavaScriptReplyProxy` 文档](https://developer.android.com/reference/androidx/webkit/JavaScriptReplyProxy) · [Android `WebViewClient` 文档](https://developer.android.com/reference/android/webkit/WebViewClient#onPageStarted(android.webkit.WebView,java.lang.String,android.graphics.Bitmap))
 
+### 6.2 Android API 24–32 的 Photo Picker 回移
+
+> [!IMPORTANT]
+> **由接入方 App 配置回移模块。** Android 宿主 AAR 不附带 `ModuleDependencies` 声明。需要 Google Play 服务为未预装 Photo Picker 的适用设备自动安装回移模块时，App 必须在自己的 `AndroidManifest.xml` 的 `<application>` 中加入以下声明，并在根 `<manifest>` 上声明 `xmlns:tools="http://schemas.android.com/tools"`。
+
+```xml
+<service
+    android:name="com.google.android.gms.metadata.ModuleDependencies"
+    android:enabled="false"
+    android:exported="false"
+    tools:ignore="MissingClass">
+    <intent-filter>
+        <action android:name="com.google.android.gms.metadata.MODULE_DEPENDENCIES" />
+    </intent-filter>
+    <meta-data android:name="photopicker_activity:0:required" android:value="" />
+</service>
+```
+
+App 未声明该元数据时，Google Play 服务不会因该 App 自动安装回移模块。若宿主挂载时设备没有可用的受信系统选择器或回移选择器，握手中的 `capabilities.methods` 不包含 `media.chooseMedia`。已经通过系统更新或其他途径安装了可用选择器的设备，仍可使用该能力。组件安装完成后重新挂载宿主以重新检测。该模块无需申请存储权限。[Android 官方回移配置](https://developer.android.com/training/data-storage/shared/photo-picker#device-availability)
+
 ## 7. Native → Web 推送
 
 以下示例用于已有会话的消息。握手及握手前的 JSON-RPC 响应使用入站消息自带的 proxy，并且只向发起请求的 document 投递。
