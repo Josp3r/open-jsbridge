@@ -64,7 +64,7 @@ npm run demo:web
 2. 如果想单独观察握手，可以在首次发送 echo 前点击「开始握手」。Mock 返回宿主信息和支持的能力，SDK 进入 `ready`，`bridge.has('conformance.echo')` 返回 `true`。
 3. 连接后点击「试试报错」。SDK 根据握手时收到的能力列表，在本地以 `BridgeError` 拒绝调用，错误码为 `-32601`。这次调用没有发送请求，因此没有对应的响应。
 
-页面展示最近的实际请求、响应和 SDK 操作结果。握手和 echo 的面板里，外层 `jsb` 与 `meta` 属于 Open JSBridge 信封，`rpc` 对象承载 JSON-RPC 2.0 消息。请求和响应可以用 `rpc.id` 对照。
+页面展示最近的实际请求、响应和 SDK 操作结果。握手和 echo 的面板里，外层 `jsb` 与 `meta` 属于 Open JSBridge 信封，`rpc` 对象承载 JSON-RPC 2.0 消息。请求和响应可以用 `rpc.id` 对照。访问 `http://127.0.0.1:4173/?devtools=1` 可额外开启 `@open-jsbridge/devtools` 悬浮调试面板与 HAR 导出。
 
 ## 在代码里调用
 

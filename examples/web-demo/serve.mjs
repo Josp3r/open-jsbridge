@@ -19,6 +19,7 @@ const assets = new Map([
   ["/demo.js", "examples/web-demo/demo.js"],
   ...[
     "dist/packages/protocol/src/index.js",
+    "dist/packages/host-core/src/index.js",
     "dist/packages/web-sdk/src/index.js",
     "dist/packages/web-sdk/src/auto.js",
     "dist/packages/web-sdk/src/bridge.js",
@@ -33,7 +34,13 @@ const assets = new Map([
     "dist/packages/web-sdk/src/errors.js",
     "dist/packages/web-sdk/src/session.js",
     "dist/packages/web-sdk/src/transport.js",
+    "dist/packages/web-sdk/src/fallback.js",
+    "dist/packages/web-sdk/src/reverse-slot.js",
+    "dist/packages/web-sdk/src/reverse.js",
     "dist/packages/web-mock/src/index.js",
+    "dist/packages/devtools/src/index.js",
+    "dist/packages/devtools/src/recorder.js",
+    "dist/packages/devtools/src/overlay.js",
   ].map((path) => [`/${path}`, path]),
 ]);
 const contentTypes = {
