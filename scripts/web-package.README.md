@@ -2,13 +2,15 @@
 
 面向 Open JSBridge 宿主的 Web SDK。仅支持 ESM，随包提供 TypeScript 类型声明。
 
-## 安装 0.2.0 候选包
+## 安装 0.2.0 预览版
 
-在仓库根目录运行 `npm run pack:web` 后，将生成的 tarball 安装到应用。
+通过 npm 的 `next` 频道安装。也可以从仓库运行 `npm run pack:web`，在应用中安装生成的 tarball。
 
 ```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.2.0.tgz
+npm install @open-jsbridge/web@next
 ```
+
+[CHANGELOG](https://github.com/Josp3r/open-jsbridge/blob/main/CHANGELOG.md#020) · [从 0.1.x 升级](https://github.com/Josp3r/open-jsbridge/blob/main/docs/migrate-0.2.0.md)
 
 ## App WebView
 
