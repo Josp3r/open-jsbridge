@@ -2,6 +2,17 @@ import {
   decodeEnvelope, encodeEnvelope, ErrorCode, WireDecodeError,
   type Envelope, type JsonObject, type JsonValue, type RpcRequest,
 } from '../../protocol/src/index.js';
+import {
+  createAclPolicy,
+  type AclConfig, type AclDecision, type AclDenyReason, type AclFrameScope,
+  type AclPolicy, type AclPolicyOptions, type AclRateLimit, type AclRule, type CallerContext,
+} from './acl.js';
+
+export { createAclPolicy };
+export type {
+  AclConfig, AclDecision, AclDenyReason, AclFrameScope,
+  AclPolicy, AclPolicyOptions, AclRateLimit, AclRule, CallerContext,
+};
 
 const HELLO_METHOD = 'bridge.hello';
 const SUBSCRIBE_METHOD = 'bridge.subscribe';
@@ -63,6 +74,16 @@ export interface CallWebOptions {
   traceId?: string;
 }
 
+export interface AuthorizeRequest {
+  readonly kind: 'hello' | 'method' | 'subscribe';
+  readonly method: string;
+  readonly version?: number;
+  readonly sid?: string;
+  readonly caller: CallerContext;
+}
+
+export type HostAuthorizeHook = (request: AuthorizeRequest) => boolean | AclDecision | void;
+
 export interface HostCoreOptions {
   platform?: string;
   name?: string;
@@ -74,14 +95,23 @@ export interface HostCoreOptions {
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
   supportsReverse?: boolean;
+  supportsIframe?: boolean;
   limits?: HostCoreLimits;
+  /** Optional protocol §11.3 rules JSON ACL config or compiled policy. */
+  acl?: AclConfig | AclPolicy;
+  /** Default caller origin/frame metadata applied when receive() is called without an explicit caller. */
+  caller?: CallerContext;
+  /** Optional authorization hook evaluated in the security chain; unexpected throws map to -32603 (SEC-ACL-ERROR-001). */
+  authorize?: HostAuthorizeHook;
+  /** Optional clock (ms) forwarded to ACL rate limiting. */
+  now?: () => number;
 }
 
 export interface HostCore {
   readonly sid: string | undefined;
   readonly name: string;
   readonly webMethods: ReadonlySet<string>;
-  receive(raw: string): Promise<string | null>;
+  receive(raw: string, caller?: CallerContext): Promise<string | null>;
   emit(name: string, payload: JsonValue): boolean;
   callWeb<T = JsonValue>(method: string, params?: JsonObject, options?: CallWebOptions): Promise<T>;
   register(method: string, handler: HostHandler, options?: RegisterHandlerOptions): () => void;
@@ -229,9 +259,17 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
       ? options.limits.defaultTimeoutMs
       : DEFAULT_LIMITS.defaultTimeoutMs,
   };
+  const aclPolicy = options.acl === undefined
+    ? undefined
+    : ('evaluate' in options.acl
+      ? options.acl
+      : createAclPolicy(options.acl, { supportsIframe: options.supportsIframe, now: options.now }));
   const supportsCancel = options.supportsCancel === true;
   const supportsCallbacks = options.supportsCallbacks === true;
   const supportsReverse = options.supportsReverse === true;
+  const supportsIframe = aclPolicy ? aclPolicy.supportsIframe : options.supportsIframe === true;
+  const defaultCaller = options.caller;
+  const authorizeHook = options.authorize;
   const allowedEvents = new Set(options.events?.filter(isQualifiedName));
   const deniedEvents = new Set(options.deniedEvents?.filter(isQualifiedName));
   const advertisedEvents = [...new Set([...allowedEvents, ...deniedEvents])];
@@ -352,7 +390,60 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     return registry.delete(method);
   }
 
-  function negotiate(request: RpcRequest, traceId?: string): string {
+  function checkAuthorization(
+    request: AuthorizeRequest,
+    rpcId: string,
+    replySid: string | undefined,
+    traceId: string | undefined,
+  ): string | undefined {
+    if (!aclPolicy && !authorizeHook) return;
+    try {
+      if (aclPolicy) {
+        const decision = request.kind === 'method'
+          ? aclPolicy.evaluate(request.caller, request.method)
+          : aclPolicy.canHandshake(request.caller);
+        if (!decision.allowed) {
+          return failure(
+            rpcId,
+            decision.code,
+            decision.message,
+            { reason: decision.reason, method: request.method },
+            replySid,
+            traceId,
+          );
+        }
+      }
+      if (authorizeHook) {
+        const verdict = authorizeHook(request);
+        if (verdict === false) {
+          return failure(
+            rpcId,
+            ErrorCode.PermissionDenied,
+            'Permission denied',
+            { reason: 'acl_denied', method: request.method },
+            replySid,
+            traceId,
+          );
+        }
+        if (verdict && typeof verdict === 'object' && verdict.allowed === false) {
+          return failure(
+            rpcId,
+            verdict.code,
+            verdict.message,
+            { reason: verdict.reason, method: request.method },
+            replySid,
+            traceId,
+          );
+        }
+      }
+    } catch {
+      // Protocol §11.3 / SEC-ACL-ERROR-001: unexpected policy exceptions MUST abort dispatch
+      // and return -32603 without leaking internal exception details.
+      return failure(rpcId, ErrorCode.InternalError, 'Internal error', undefined, replySid, traceId);
+    }
+  }
+
+  function negotiate(request: RpcRequest, caller: CallerContext, traceId?: string): string {
     const protocols = readProtocols(request.params);
     if (!protocols) return failure(request.id, ErrorCode.InvalidParams, 'Invalid handshake params', undefined, undefined, traceId);
     if (!protocols.includes(1)) {
@@ -361,12 +452,22 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     activeSid ??= globalThis.crypto?.randomUUID?.() ?? `host-${++nextSession}`;
     const advertisedMethods: JsonObject = {};
     for (const [name, entry] of registry) {
+      if (aclPolicy) {
+        let allowed = false;
+        try {
+          allowed = aclPolicy.evaluate(caller, name, { consumeRateLimit: false }).allowed;
+        } catch {
+          allowed = false;
+        }
+        if (!allowed) continue;
+      }
       advertisedMethods[name] = { versions: [...entry.versions] };
     }
     const features: string[] = [];
     if (supportsCancel) features.push('cancel');
     if (supportsCallbacks) features.push('callbacks');
     if (supportsReverse) features.push('reverse');
+    if (supportsIframe) features.push('iframe');
     return success(
       request.id,
       {
@@ -442,7 +543,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     call.controller.abort(reason);
   }
 
-  async function receive(raw: string): Promise<string | null> {
+  async function receive(raw: string, caller?: CallerContext): Promise<string | null> {
     if (exceedsMessageLimit(raw)) return null;
 
     let envelope: Envelope;
@@ -475,6 +576,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
       return null;
     }
 
+    const effectiveCaller: CallerContext = caller ?? defaultCaller ?? {};
     const traceId = typeof meta?.traceId === 'string' ? meta.traceId : undefined;
     const { name, explicitVersion } = parseMethod(rpc.method);
     const isHello = name === HELLO_METHOD && (explicitVersion === undefined || explicitVersion === 1);
@@ -485,7 +587,14 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
       if (meta?.timeout === 0) {
         return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, activeSid, traceId);
       }
-      return negotiate(rpc, traceId);
+      const authError = checkAuthorization(
+        { kind: 'hello', method: HELLO_METHOD, caller: effectiveCaller },
+        rpc.id,
+        activeSid,
+        traceId,
+      );
+      if (authError !== undefined) return authError;
+      return negotiate(rpc, effectiveCaller, traceId);
     }
 
     if (!activeSid || meta?.sid !== activeSid || requestIds.has(rpc.id)) return null;
@@ -499,6 +608,15 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     if (isControl) {
       if (meta.timeout === 0) {
         return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, replySid, traceId);
+      }
+      if (name === SUBSCRIBE_METHOD) {
+        const authError = checkAuthorization(
+          { kind: 'subscribe', method: name, sid: replySid, caller: effectiveCaller },
+          rpc.id,
+          replySid,
+          traceId,
+        );
+        if (authError !== undefined) return authError;
       }
       return controlSubscription(name, rpc, replySid, traceId);
     }
@@ -526,6 +644,14 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
       for (const method of methods) registeredWebMethods.add(method);
       return response;
     }
+
+    const authError = checkAuthorization(
+      { kind: 'method', method: name, version: explicitVersion, sid: replySid, caller: effectiveCaller },
+      rpc.id,
+      replySid,
+      traceId,
+    );
+    if (authError !== undefined) return authError;
 
     const entry = registry.get(name);
     if (!entry) {
