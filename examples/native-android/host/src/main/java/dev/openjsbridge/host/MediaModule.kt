@@ -65,6 +65,8 @@ internal class MediaSession(
 
     private class Selection(val file: File, val size: Int, val expiresAt: Long, val deadline: Long) {
         var cancelExpiry: (() -> Unit)? = null
+
+        fun isExpired(now: Long, elapsed: Long) = expiresAt <= now || deadline <= elapsed
     }
 
     // Cancellation/retirement can unlink the copy before a blocked content provider
@@ -179,6 +181,16 @@ internal class MediaSession(
         pending = null
     }
 
+    fun release(ids: List<String>) {
+        val now = epochMillis()
+        val elapsed = elapsedMillis()
+        for (id in ids) {
+            val selection = entries[id] ?: continue
+            if (selection.isExpired(now, elapsed)) continue
+            check(remove(id)) { "Could not remove stored media" }
+        }
+    }
+
     fun close() {
         closed = true
         abortCopy()
@@ -188,14 +200,16 @@ internal class MediaSession(
     private fun sweepExpired() {
         val elapsed = elapsedMillis()
         val now = epochMillis()
-        entries.filterValues { it.deadline <= elapsed || it.expiresAt <= now }.keys.forEach(::remove)
+        entries.filterValues { it.isExpired(now, elapsed) }.keys.forEach(::remove)
     }
 
-    private fun remove(id: String) {
-        val previous = entries.remove(id) ?: return
+    private fun remove(id: String): Boolean {
+        val previous = entries[id] ?: return true
+        if (!previous.file.delete() && previous.file.exists()) return false
+        entries.remove(id)
         allocated -= previous.size
         previous.cancelExpiry?.invoke()
-        previous.file.delete()
+        return true
     }
 
     companion object {
