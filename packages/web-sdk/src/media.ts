@@ -4,8 +4,10 @@ import type { Bridge, CallOptions } from './bridge.js';
 import { isObject } from './session.js';
 
 const chooseMethod = 'media.chooseMedia@1';
+const releaseMethod = 'media.release@1';
 const maxImageBytes = 20 * 1024 * 1024;
 const maxThumbnailBytes = 32 * 1024;
+const maxReleaseIds = 32;
 const previewLifetime = 300_000;
 const mediaId = /^[0-9a-f]{32}$/;
 const imageMime = /^image\/[a-z0-9!#$&^_.+-]+$/i;
@@ -33,6 +35,12 @@ export type ChooseMediaParams = {
 export type ChooseMediaResult =
   | { status: 'cancelled'; files: [] }
   | { status: 'selected'; files: [ImageResource] };
+
+export type ReleaseMediaParams = {
+  ids: readonly string[];
+};
+
+export type ReleaseMediaResult = null;
 
 export function revokeMediaPreviews(client: Bridge): void {
   const active = previews.get(client);
@@ -93,6 +101,24 @@ export function createMediaHelpers(client: Bridge) {
           URL.revokeObjectURL(thumbUrl);
         }, ttl));
         return { status: 'selected', files: [{ type, id, mime, size, width, height, expiresAt, thumbUrl }] };
+      },
+
+      async release(params: ReleaseMediaParams, options?: Omit<CallOptions, 'version'>): Promise<ReleaseMediaResult> {
+        if (
+          !isObject(params) ||
+          Object.keys(params).length !== 1 ||
+          !Array.isArray(params.ids) ||
+          params.ids.length < 1 ||
+          params.ids.length > maxReleaseIds ||
+          !params.ids.every((id): id is string => typeof id === 'string' && mediaId.test(id))
+        ) {
+          throw new BridgeError(ErrorCode.InvalidParams, 'Invalid media release params', { method: releaseMethod });
+        }
+        const result = await client.call(releaseMethod, { ids: [...params.ids] }, options);
+        if (result !== null) {
+          throw new BridgeError(ErrorCode.InternalError, 'Invalid media release result', { method: releaseMethod });
+        }
+        return null;
       },
     },
   };
