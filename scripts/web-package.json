@@ -34,6 +34,10 @@
       "types": "./packages/web-sdk/src/network.d.ts",
       "import": "./packages/web-sdk/src/network.js"
     },
+    "./reverse": {
+      "types": "./packages/web-sdk/src/reverse.d.ts",
+      "import": "./packages/web-sdk/src/reverse.js"
+    },
     "./ui": {
       "types": "./packages/web-sdk/src/ui.d.ts",
       "import": "./packages/web-sdk/src/ui.js"
