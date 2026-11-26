@@ -76,6 +76,8 @@ open-jsbridge/
 
 Flutter 和 React Native 宿主、共享 TS 宿主核心、代码生成及调试工具见[路线图](#6-路线图)，均处于规划阶段。
 
+Web SDK 0.2.0 预览版使用 npm 的 `next` 频道。[CHANGELOG](CHANGELOG.md#020) · [从 0.1.x 升级](docs/migrate-0.2.0.md)
+
 ### 本地构建与验证
 
 ```sh
