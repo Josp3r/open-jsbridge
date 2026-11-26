@@ -10,6 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 24
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     sourceSets.getByName("test").resources.srcDir("../../../conformance-tests/fixtures")
@@ -38,6 +39,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:2.6.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.1")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 val sdkGroup = "io.github.josp3r"

@@ -191,30 +191,35 @@ jobs:
             sleep 2
           done
           timeout 15s "$adb" shell wm dismiss-keyguard
-      - name: Run Release WebView instrumentation
+      - name: Run Release WebView and host image instrumentation
         run: |
           timeout --kill-after=30s 12m ./examples/native-android/gradlew -p examples/native-android \
-            --no-daemon --stacktrace -PojsbTestBuildType=release :app:connectedReleaseAndroidTest \
+            --no-daemon --stacktrace -PojsbTestBuildType=release \
+            :app:connectedReleaseAndroidTest :host:connectedDebugAndroidTest \
             2>&1 | tee "$RUNNER_TEMP/android-release-webview/gradle.log"
 
           test -s examples/native-android/app/build/reports/androidTests/connected/release/index.html
+          test -s examples/native-android/host/build/reports/androidTests/connected/debug/index.html
           python3 - <<'PY'
           from pathlib import Path
           import xml.etree.ElementTree as ET
 
-          results = Path("examples/native-android/app/build/outputs/androidTest-results/connected/release")
-          suites = [ET.parse(report).getroot() for report in results.glob("TEST-*.xml")]
-          cases = [case for suite in suites for case in suite.iter("testcase")]
-          release_class = "dev.openjsbridge.example.ReleaseActivityTest"
-          if not any(case.get("classname") == release_class for case in cases):
-              raise SystemExit("ReleaseActivityTest did not produce any test results")
-          suite_failed = any(int(suite.get(outcome, "0")) for suite in suites
-                             for outcome in ("errors", "failures", "skipped"))
-          case_failed = any(case.find(outcome) is not None for case in cases
-                            for outcome in ("error", "failure", "skipped"))
-          if suite_failed or case_failed:
-              raise SystemExit("Release instrumentation reported errors, failures, or skipped tests")
-          print(f"Verified {len(cases)} Android Release instrumentation test results")
+          for module, variant, expected_class in [
+              ("app", "release", "dev.openjsbridge.example.ReleaseActivityTest"),
+              ("host", "debug", "dev.openjsbridge.host.AndroidUploadImageTest"),
+          ]:
+              results = Path("examples/native-android") / module / "build/outputs/androidTest-results/connected" / variant
+              suites = [ET.parse(report).getroot() for report in results.glob("TEST-*.xml")]
+              cases = [case for suite in suites for case in suite.iter("testcase")]
+              if not any(case.get("classname") == expected_class for case in cases):
+                  raise SystemExit(f"{expected_class} did not produce any test results")
+              suite_failed = any(int(suite.get(outcome, "0")) for suite in suites
+                                 for outcome in ("errors", "failures", "skipped"))
+              case_failed = any(case.find(outcome) is not None for case in cases
+                                for outcome in ("error", "failure", "skipped"))
+              if suite_failed or case_failed:
+                  raise SystemExit(f"{module} {variant} instrumentation reported errors, failures, or skipped tests")
+              print(f"Verified {len(cases)} Android {module} {variant} instrumentation test results")
           PY
       - name: Collect Android emulator diagnostics
         if: failure()
@@ -236,3 +241,5 @@ jobs:
             ${{ runner.temp }}/android-release-webview/
             examples/native-android/app/build/outputs/androidTest-results/connected/release/
             examples/native-android/app/build/reports/androidTests/connected/release/
+            examples/native-android/host/build/outputs/androidTest-results/connected/debug/
+            examples/native-android/host/build/reports/androidTests/connected/debug/
