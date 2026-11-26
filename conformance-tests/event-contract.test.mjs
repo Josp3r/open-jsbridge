@@ -41,7 +41,8 @@ test('the default bridge handshakes and follows subscriptions through an injecte
     if (needsCustomEvent) delete globalThis.CustomEvent;
   });
 
-  const { bridge, ErrorCode } = await import('../dist/packages/web-sdk/src/index.js');
+  const { bridge } = await import('../dist/packages/web-sdk/src/auto.js');
+  const { ErrorCode } = await import('../dist/packages/web-sdk/src/index.js');
   const { installMockTransport } = await import('../dist/packages/web-mock/src/index.js');
   const name = 'network.statusChanged';
   const denied = 'demo.restricted';

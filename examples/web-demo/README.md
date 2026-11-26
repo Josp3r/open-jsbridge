@@ -2,13 +2,13 @@
 
 ## 在独立 Web 项目安装
 
+### 已发布的 0.1.0
+
+从 npm 安装稳定版，并从主入口导入 `bridge` 单例。
+
 ```sh
-npm install @open-jsbridge/web
+npm install @open-jsbridge/web@0.1.0
 ```
-
-验证仓库版本时，可[从源码打包安装](#从源码打包安装)，并使用下面的导入方式。
-
-业务代码从主入口导入单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
 
 ```ts
 import { bridge } from '@open-jsbridge/web'
@@ -16,19 +16,9 @@ import { bridge } from '@open-jsbridge/web'
 const device = await bridge.call<{ os: string; osVersion: string }>('device.getInfo')
 ```
 
-普通浏览器联调时，可以在开发入口安装 Mock 通道，再用同一份单例调用 Mock 宿主的 echo。
-
-```ts
-import { bridge } from '@open-jsbridge/web'
-import { installMockTransport } from '@open-jsbridge/web/mock'
-
-installMockTransport()
-const result = await bridge.call<{ text: string }>('conformance.echo', { text: '你好' })
-```
-
 ## 从源码打包安装
 
-在 Open JSBridge 仓库根目录构建本地 tarball。
+在 Open JSBridge 仓库根目录构建 0.2.0 候选包。
 
 ```sh
 npm ci
@@ -38,7 +28,25 @@ npm run pack:web
 在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
 
 ```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.1.0.tgz
+npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.2.0.tgz
+```
+
+候选包仅支持 ESM，从 `/auto` 导入 `bridge` 单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
+
+```ts
+import { bridge } from '@open-jsbridge/web/auto'
+
+const device = await bridge.call<{ os: string; osVersion: string }>('device.getInfo')
+```
+
+普通浏览器联调时，在开发入口安装 Mock，再通过同一单例调用 Mock 宿主的 echo。
+
+```ts
+import { bridge } from '@open-jsbridge/web/auto'
+import { installMockTransport } from '@open-jsbridge/web/mock'
+
+installMockTransport()
+const result = await bridge.call<{ text: string }>('conformance.echo', { text: '你好' })
 ```
 
 ## 在浏览器体验
@@ -63,7 +71,8 @@ npm run demo:web
 Demo 已完成 Mock 注入。在页面打开浏览器开发者工具，把以下代码粘贴到控制台运行。模块来自仓库的本地构建产物。
 
 ```js
-const { BridgeError, bridge } = await import('/dist/packages/web-sdk/src/index.js');
+const { BridgeError } = await import('/dist/packages/web-sdk/src/index.js');
+const { bridge } = await import('/dist/packages/web-sdk/src/auto.js');
 
 try {
   const result = await bridge.call('conformance.echo', { text: '你好' }, { timeout: 3000 });
@@ -95,7 +104,7 @@ installMockTransport();
 App 向 WebView 注入 `window.__OJSB_TRANSPORT__` 并声明支持的业务方法。Web 页面导入默认 `bridge` 单例后可以直接调用。SDK 在第一次 `call()` 时自动连接和握手，并在发送请求前检查能力。点击「查询设备信息」或「查询网络状态」可查看可选模块的返回值。[原生基础能力](../../docs/native-profiles.md)
 
 ```js
-import { bridge } from '/dist/packages/web-sdk/src/index.js';
+import { bridge } from '/dist/packages/web-sdk/src/auto.js';
 
 const result = await bridge.call('conformance.echo', { text: '你好' });
 ```

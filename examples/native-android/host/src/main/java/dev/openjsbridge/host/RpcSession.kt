@@ -342,7 +342,7 @@ internal class RpcSession(
             add("host", JsonObject().apply {
                 addProperty("platform", "android")
                 addProperty("name", "android-wml")
-                addProperty("version", "0.1.0")
+                addProperty("version", "0.2.0")
             })
             add("capabilities", JsonObject().apply {
                 add("methods", JsonObject().apply {

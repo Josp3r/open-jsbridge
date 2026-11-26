@@ -128,7 +128,7 @@ export function createMockAdapter(options?: MockAdapterOptions) {
     }
     sid ??= globalThis.crypto?.randomUUID?.() ?? `mock-${++nextSession}`;
     return success(request.id, {
-      jsb: '1.0', sid, host: { platform: 'mock', name: 'mock', version: '0.1.0' },
+      jsb: '1.0', sid, host: { platform: 'mock', name: 'mock', version: '0.2.0' },
       capabilities: {
         methods: Object.fromEntries([...methods.keys()].map((method) => [method, { versions: [1] }])),
         events: eventNames,

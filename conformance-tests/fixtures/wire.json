@@ -14,7 +14,7 @@
           "result": {
             "jsb": "1.0",
             "sid": "s-1",
-            "host": { "platform": "mock", "name": "mock", "version": "0.1.0" },
+            "host": { "platform": "mock", "name": "mock", "version": "0.2.0" },
             "capabilities": {
               "methods": { "conformance.echo": { "versions": [1] } },
               "events": [],

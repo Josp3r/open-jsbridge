@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { setImmediate, setTimeout } from 'node:timers/promises';
 import { test } from 'node:test';
-import { bridge, BridgeError, createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
+import { bridge } from '../dist/packages/web-sdk/src/auto.js';
+import { BridgeError, createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
 import { createMockAdapter } from '../dist/packages/web-mock/src/index.js';
 
 const echo = 'conformance.echo';
-const host = { platform: 'mock', name: 'mock', version: '0.1.0' };
+const host = { platform: 'mock', name: 'mock', version: '0.2.0' };
 const hello = {
   jsb: '1.0',
   sid: 'test-session',

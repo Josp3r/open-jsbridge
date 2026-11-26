@@ -1,4 +1,4 @@
-import { bridge, media, ui } from '@open-jsbridge/web';
+import { bridge, media, ui } from '@open-jsbridge/web/auto';
 
 const text = 'Open JSBridge native toast';
 const run = document.getElementById('run');

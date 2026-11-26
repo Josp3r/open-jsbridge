@@ -47,7 +47,7 @@ test('shared demo uses the injected Native transport for calls and events', asyn
       const reply = await adapter.send(raw);
       if (method !== 'bridge.hello') return reply;
       const response = JSON.parse(reply);
-      response.rpc.result.host = { platform: 'ios', name: 'ios-wk', version: '0.1.0' };
+      response.rpc.result.host = { platform: 'ios', name: 'ios-wk', version: '0.2.0' };
       return JSON.stringify(response);
     },
   });

@@ -15,7 +15,9 @@ android {
     sourceSets.getByName("test").resources.srcDir("../../../conformance-tests/fixtures")
 
     publishing {
-        singleVariant("release")
+        singleVariant("release") {
+            withSourcesJar()
+        }
     }
 
     compileOptions {
@@ -38,16 +40,57 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
+val sdkGroup = "io.github.josp3r"
+val sdkArtifactId = "open-jsbridge-android"
+val sdkVersion = "0.2.0"
+val projectUrl = "https://github.com/Josp3r/open-jsbridge"
 val sdkRepository = providers.gradleProperty("ojsbSdkRepository")
     .map { rootProject.file(it) }
     .orElse(rootProject.layout.buildDirectory.dir("sdk-maven").map { it.asFile })
 
+// Bundle the existing integration docs without pulling AGP's legacy Dokka toolchain.
+val releaseDocumentationJar by tasks.registering(Jar::class) {
+    archiveClassifier.set("javadoc")
+    from(rootProject.file("README.md"))
+    from(rootProject.file("../../docs/native-android.md"))
+    from(rootProject.file("../../LICENSE")) { into("META-INF") }
+}
+
+tasks.withType<Jar>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "io.github.josp3r"
-            artifactId = "open-jsbridge-android"
-            version = "0.1.0"
+            groupId = sdkGroup
+            artifactId = sdkArtifactId
+            version = sdkVersion
+            pom {
+                name.set("Open JSBridge Android")
+                description.set("Android WebView host for the Open JSBridge protocol")
+                url.set(projectUrl)
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://opensource.org/license/mit")
+                    }
+                }
+                developers {
+                    developer {
+                        id.set("Josp3r")
+                        name.set("Open JSBridge contributors")
+                        url.set("$projectUrl/graphs/contributors")
+                    }
+                }
+                scm {
+                    connection.set("scm:git:$projectUrl.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/Josp3r/open-jsbridge.git")
+                    url.set(projectUrl)
+                }
+            }
+            artifact(releaseDocumentationJar)
             // Use AGP's release component so API/runtime scopes are exported to the POM and module metadata.
             afterEvaluate { from(components["release"]) }
         }
@@ -58,4 +101,30 @@ publishing {
             url = uri(sdkRepository.get())
         }
     }
+}
+
+tasks.register<Zip>("bundleUnsignedCentralRelease") {
+    group = "publishing"
+    description = "Assemble the unsigned Android release in Maven Central's bundle layout."
+    dependsOn("publishReleasePublicationToLocalSdkRepository")
+
+    val coordinatePath = "${sdkGroup.replace('.', '/')}/$sdkArtifactId/$sdkVersion"
+    val artifactPrefix = "$sdkArtifactId-$sdkVersion"
+    val publicationDir = sdkRepository.map { it.resolve(coordinatePath) }
+    val bundleFiles = listOf(".aar", ".pom", ".module", "-sources.jar", "-javadoc.jar")
+        .map { "$artifactPrefix$it" }
+        .flatMap { listOf(it, "$it.md5", "$it.sha1") }
+    from(publicationDir) {
+        into(coordinatePath)
+        include(bundleFiles)
+    }
+    doFirst {
+        val missing = bundleFiles.filterNot { publicationDir.get().resolve(it).isFile }
+        check(missing.isEmpty()) { "Missing Maven publication files: ${missing.joinToString()}" }
+    }
+
+    archiveFileName.set("$artifactPrefix-central-unsigned.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("central"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
 }

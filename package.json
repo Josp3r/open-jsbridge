@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"packages/**/*.ts\"",
+    "size:web": "npm run build --silent && node scripts/check-web-size.mjs",
     "pack:web": "node scripts/pack-web.mjs",
     "build:sdk-consumer": "node scripts/build-sdk-consumer.mjs",
     "test": "npm run build && node --test conformance-tests/*.test.mjs",
@@ -12,6 +14,8 @@
   "devDependencies": {
     "ajv": "8.20.0",
     "esbuild": "0.28.2",
-    "typescript": "5.9.3"
+    "eslint": "10.15.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.74.0"
   }
 }

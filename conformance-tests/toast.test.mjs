@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { bridge, createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
+import { bridge } from '../dist/packages/web-sdk/src/auto.js';
+import { createBridge, ErrorCode } from '../dist/packages/web-sdk/src/index.js';
 import { createMockAdapter, installMockTransport } from '../dist/packages/web-mock/src/index.js';
 
 const method = 'ui.toast.show';
@@ -39,7 +40,7 @@ test('the Mock host advertises and dispatches Toast only after opt-in', async ()
 });
 
 test('the typed Toast helper calls through the page default bridge', async (t) => {
-  const { ui } = await import('../dist/packages/web-sdk/src/index.js');
+  const { ui } = await import('../dist/packages/web-sdk/src/auto.js');
   Object.defineProperty(globalThis, 'window', { value: new EventTarget(), configurable: true });
   t.after(() => { delete globalThis.window; });
   const shown = [];

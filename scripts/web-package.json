@@ -1,6 +1,6 @@
 {
   "name": "@open-jsbridge/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web SDK for Open JSBridge hosts",
   "license": "MIT",
   "type": "module",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./packages/web-sdk/src/index.d.ts",
       "import": "./packages/web-sdk/src/index.js"
+    },
+    "./auto": {
+      "types": "./packages/web-sdk/src/auto.d.ts",
+      "import": "./packages/web-sdk/src/auto.js"
     },
     "./mock": {
       "types": "./packages/web-mock/src/index.d.ts",
