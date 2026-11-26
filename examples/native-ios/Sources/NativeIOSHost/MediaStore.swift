@@ -15,6 +15,7 @@ enum MediaProfileError: Error {
 /// Privately retains selected originals for one verified document session.
 final class MediaStore {
     static let chooseMethod = "media.chooseMedia"
+    static let releaseMethod = "media.release"
     static let maxBytes = 20 * 1024 * 1024
     private static let lifetimeSeconds = 300
 

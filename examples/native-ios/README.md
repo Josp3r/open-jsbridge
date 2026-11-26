@@ -88,6 +88,16 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 
 宿主在后台生成最长边 256 像素、原始 JPEG 不超过 32 KiB 的缩略图。返回值包含原图的 MIME、字节数和按显示方向计算的像素尺寸，以及缩略图 Base64。宿主为当前文档最多暂存 20 MiB 原图，超过单图上限或当前会话额度时返回 `-32006`。原图 ID 在五分钟后过期，跨文档导航、Web 内容进程退出或附件拆卸会提前使其失效。
 
+启用媒体能力时，宿主也会通告 `media.release@1`。页面用完 `media.chooseMedia` 返回的文件 `file` 后，可提前归还原图占用的会话配额。页面已经取得的缩略图仍按 Web 对象 URL 的生命周期回收。
+
+```ts
+if (bridge.has('media.release', 1)) {
+  await bridge.call('media.release@1', { ids: [file.id] })
+}
+```
+
+一次可提交 1–32 个选图句柄。重复、已过期或本会话中不存在的 ID 会被跳过，成功返回 `null`。任一 ID 格式有误时，宿主返回 `-32602`，整批句柄保持原状。
+
 同一 WebView 已有选择请求在进行时，新的选择请求返回 `-32010`。选择器无法打开、所选图片无法读取或解码时返回 `-32003`。用户关闭选择器时，结果为 `{ status: 'cancelled', files: [] }`。H5 通过 `AbortSignal` 中止本次 RPC 时，SDK 以 `-32002` 拒绝该调用。
 
 ## 宿主的关键代码

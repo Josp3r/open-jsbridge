@@ -59,7 +59,10 @@ final class WireHost {
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
         if options.networkStatus { methods[NetworkModule.method] = ["versions": [1]] }
         if options.toast { methods[ToastModule.method] = ["versions": [1]] }
-        if mediaEnabled { methods[MediaStore.chooseMethod] = ["versions": [1]] }
+        if mediaEnabled {
+            methods[MediaStore.chooseMethod] = ["versions": [1]]
+            methods[MediaStore.releaseMethod] = ["versions": [1]]
+        }
         self.methods = methods
         let lifecycleEvents = options.appLifecycle && supportsAppLifecycle
             ? AppLifecycleEvent.allCases.map(\.rawValue) : []
@@ -189,6 +192,13 @@ final class WireHost {
         let result: Any
         var changedEvents = [String]()
         switch name {
+        case MediaStore.releaseMethod:
+            guard let media else { return mediaFailure(MediaProfileError.unavailable, id: id, meta: responseMeta) }
+            guard let ids = Self.mediaReleaseIDs(params) else {
+                return failure(-32602, "Invalid params", id: id, meta: responseMeta)
+            }
+            ids.forEach(media.discard)
+            result = NSNull()
         case Self.subscribe, Self.unsubscribe:
             guard let requested = Self.eventNames(params) else {
                 return failure(-32602, "Invalid events", id: id, meta: responseMeta)
@@ -363,6 +373,14 @@ final class WireHost {
             default: return false
             }
         }
+    }
+
+    private static func mediaReleaseIDs(_ params: NSDictionary?) -> [String]? {
+        guard params?.count == 1, let ids = params?["ids"] as? [String], (1...32).contains(ids.count),
+              ids.allSatisfy({ $0.range(of: #"\A[0-9a-f]{32}\z"#, options: .regularExpression) != nil }) else {
+            return nil
+        }
+        return ids
     }
 
     private func parseFailure() -> String? {

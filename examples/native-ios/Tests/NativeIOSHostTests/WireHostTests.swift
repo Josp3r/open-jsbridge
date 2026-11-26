@@ -306,10 +306,10 @@ final class WireHostTests: XCTestCase {
     }
 
     @MainActor
-    func testMediaOptInAdvertisesSelectionOnlyAndRejectsRetiredBlobMethods() throws {
+    func testMediaOptInAdvertisesSelectionAndReleaseAndRejectsRetiredBlobMethods() throws {
         let disabled = WireHost(platform: "ios", enableEcho: false)
         let disabledSID = try session(disabled)
-        let methods = ["media.chooseMedia", "bridge.blob.read", "bridge.blob.release"]
+        let methods = ["media.chooseMedia", "media.release@1", "bridge.blob.read", "bridge.blob.release"]
         for method in methods {
             XCTAssertEqual(try unpack(disabled.receive(echo(id: method, sid: disabledSID, method: method)))
                 .error?["code"] as? Int, -32601)
@@ -319,7 +319,9 @@ final class WireHostTests: XCTestCase {
         let result = try XCTUnwrap(unpack(host.receive(hello(id: "enabled"))).rpc["result"] as? [String: Any])
         let sid = try XCTUnwrap(result["sid"] as? String)
         let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any])
-        XCTAssertEqual(Set((capabilities["methods"] as? [String: Any] ?? [:]).keys), ["media.chooseMedia"])
+        XCTAssertEqual(capabilities["methods"] as? [String: [String: [Int]]], [
+            "media.chooseMedia": ["versions": [1]], "media.release": ["versions": [1]]
+        ])
         XCTAssertEqual(Set(capabilities["features"] as? [String] ?? []), ["cancel"])
         for (index, method) in ["bridge.blob.read", "bridge.blob.read@1", "bridge.blob.release", "bridge.blob.release@1"].enumerated() {
             let request = echo(id: "retired-\(index)", sid: sid, method: method)
@@ -372,6 +374,71 @@ final class WireHostTests: XCTestCase {
         let result = try await completeMedia(.cancelled, id: "pick", sid: sid, in: host)
         XCTAssertEqual(result["status"] as? String, "cancelled")
         XCTAssertEqual((result["files"] as? [Any])?.count, 0)
+    }
+
+    @MainActor
+    func testMediaReleaseValidatesTheWholeBatchBeforeReclaimingQuota() async throws {
+        let host = WireHost(platform: "ios", options: .init(media: true))
+        let sid = try session(host)
+        let half = try mediaSelection(bytes: 10 * 1024 * 1024)
+        let first = try await completeMedia(half, id: "first", sid: sid, in: host)
+        let second = try await completeMedia(half, id: "second", sid: sid, in: host)
+        let handle = try XCTUnwrap((first["files"] as? [[String: Any]])?.first?["id"] as? String)
+        let other = try XCTUnwrap((second["files"] as? [[String: Any]])?.first?["id"] as? String)
+        let quoted = "\"\(handle)\""
+        let maximumBatch = (Array(repeating: quoted, count: 31) + ["\"\(other)\""]).joined(separator: ",")
+        let invalid = [
+            "{}", #"{"ids":[]}"#, #"{"ids":null}"#, #"{"ids":\#(quoted)}"#,
+            #"{"ids":[\#(quoted)],"extra":true}"#, #"{"ids":[\#(maximumBatch),\#(quoted)]}"#,
+            #"{"ids":[\#(quoted),1]}"#, #"{"ids":[\#(quoted),"\#(handle.dropLast())"]}"#,
+            #"{"ids":["\#(handle)0"]}"#, #"{"ids":["A\#(handle.dropFirst())"]}"#, #"{"ids":["\#(handle)\n"]}"#
+        ]
+        for (index, params) in invalid.enumerated() {
+            let request = echo(id: "invalid-\(index)", sid: sid, params: params, method: "media.release@1")
+            XCTAssertEqual(try unpack(host.receive(request)).error?["code"] as? Int, -32602, params)
+        }
+        let blocked = try await mediaRPC(half, id: "still-full", sid: sid, in: host)
+        XCTAssertEqual((blocked["error"] as? [String: Any])?["code"] as? Int, -32006)
+
+        let release = echo(id: "release", sid: sid, params: #"{"ids":[\#(maximumBatch)]}"#, method: "media.release@1")
+        XCTAssertTrue(try unpack(host.receive(release)).rpc["result"] is NSNull)
+        _ = try await completeMedia(half, id: "refill-first", sid: sid, in: host)
+        _ = try await completeMedia(half, id: "refill-second", sid: sid, in: host)
+    }
+
+    @MainActor
+    func testMediaReleaseIsScopedToItsSessionAndRetryOnlyFreesTheListedHandlesOnce() async throws {
+        let host = WireHost(platform: "ios", options: .init(media: true))
+        let oldSID = try session(host)
+        host.reset()
+        let sid = try session(host)
+        let other = WireHost(platform: "ios", options: .init(media: true))
+        let otherSID = try session(other)
+        let half = try mediaSelection(bytes: 10 * 1024 * 1024)
+        let first = try await completeMedia(half, id: "first", sid: sid, in: host)
+        let handle = try XCTUnwrap((first["files"] as? [[String: Any]])?.first?["id"] as? String)
+        _ = try await completeMedia(half, id: "second", sid: sid, in: host)
+        let params = #"{"ids":["\#(handle)"]}"#
+
+        XCTAssertNil(host.receive(echo(id: "stale", sid: oldSID, params: params, method: "media.release@1")))
+        let foreign = echo(id: "foreign", sid: otherSID, params: params, method: "media.release@1")
+        XCTAssertTrue(try unpack(other.receive(foreign)).rpc["result"] is NSNull)
+        let stillFull = try await mediaRPC(half, id: "still-full", sid: sid, in: host)
+        XCTAssertEqual((stillFull["error"] as? [String: Any])?["code"] as? Int, -32006)
+
+        for id in ["release", "retry"] {
+            let request = echo(id: id, sid: sid, params: params, method: "media.release@1")
+            XCTAssertTrue(try unpack(host.receive(request)).rpc["result"] is NSNull)
+        }
+        _ = try await completeMedia(half, id: "replacement", sid: sid, in: host)
+        let overQuota = try await mediaRPC(half, id: "over-quota", sid: sid, in: host)
+        XCTAssertEqual((overQuota["error"] as? [String: Any])?["code"] as? Int, -32006)
+    }
+
+    private func mediaSelection(bytes: Int) throws -> MediaSelection {
+        let jpeg = try makeMediaJPEG(width: 8, height: 8)
+        let padded = jpeg + Data(repeating: 0, count: bytes - jpeg.count)
+        return .selected(MediaImage(data: padded, mime: "image/jpeg", width: 8, height: 8, thumbnail: jpeg))
     }
 
     @MainActor
@@ -454,13 +521,19 @@ final class WireHostTests: XCTestCase {
 
     @MainActor
     private func completeMedia(_ selection: MediaSelection, id: String, sid: String, in host: WireHost) async throws -> [String: Any] {
+        let rpc = try await mediaRPC(selection, id: id, sid: sid, in: host)
+        return try XCTUnwrap(rpc["result"] as? [String: Any])
+    }
+
+    @MainActor
+    private func mediaRPC(_ selection: MediaSelection, id: String, sid: String, in host: WireHost) async throws -> [String: Any] {
         var call: WireHost.BusinessCall?
         let request = echo(id: id, sid: sid, params: #"{"mediaType":["image"],"sourceType":["album"],"count":1}"#,
                            method: "media.chooseMedia@1")
         XCTAssertNil(host.receive(request, chooseMedia: { _ in selection }, onBusinessCall: { call = $0 }))
         let pending = try XCTUnwrap(call)
         let value = try await pending.handler(pending.params)
-        return try XCTUnwrap(unpack(host.finishBusinessCall(pending, result: .success(value))).rpc["result"] as? [String: Any])
+        return try unpack(host.finishBusinessCall(pending, result: .success(value))).rpc
     }
 
     func testBusinessNamesRequireAQualifiedBaseOutsideReservedNamespaces() throws {
