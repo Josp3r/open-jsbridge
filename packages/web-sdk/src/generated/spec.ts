@@ -119,6 +119,27 @@ export type NetworkGetStatusResult = NetworkStatus;
 /** 宿主 App 默认网络路径类型发生变化。 */
 export type NetworkStatusChangedPayload = NetworkStatus;
 
+/** 使用 media.chooseMedia 签发给当前文档会话的图片句柄，通过原生宿主发起一次前台 multipart/form-data POST 上传。仅当当前可信主文档获准使用至少一个预配置 HTTPS 上传端点、可安全读取会话图片且支持取消时，宿主才可在握手中通告此方法。 */
+export interface TransferUploadParams {
+  id: MediaId;
+  request: {
+    url: string;
+    method?: "POST";
+    fieldName?: string;
+    formData?: Record<string, string>;
+    headers?: Record<string, string>;
+    compress?: {
+      maxEdge?: number;
+      quality?: number;
+    };
+  };
+}
+
+export interface TransferUploadResult {
+  status: number;
+  body: string;
+}
+
 /** 请求宿主显示一条短文本提示。成功表示宿主接受展示请求。 */
 export interface UiToastShowParams {
   text: string;
@@ -135,6 +156,7 @@ export interface MethodMap {
   "media.chooseMedia": { params: MediaChooseMediaParams; result: MediaChooseMediaResult };
   "media.release": { params: MediaReleaseParams; result: MediaReleaseResult };
   "network.getStatus": { params: NetworkGetStatusParams; result: NetworkGetStatusResult };
+  "transfer.upload": { params: TransferUploadParams; result: TransferUploadResult };
   "ui.toast.show": { params: UiToastShowParams; result: UiToastShowResult };
 }
 

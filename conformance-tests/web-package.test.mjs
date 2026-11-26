@@ -28,7 +28,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
   const packageDir = join(consumer, 'node_modules', '@open-jsbridge', 'web');
   const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.exports).sort(), [
-    '.', './app', './auto', './device', './fallback', './media', './mock', './network', './reverse', './ui',
+    '.', './app', './auto', './device', './fallback', './media', './mock', './network', './reverse', './transfer', './ui',
   ]);
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.sideEffects, false);
@@ -61,6 +61,9 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     assert.deepEqual(await mockAdapter.callWeb('page.getShareInfo'), { title: 'Open JSBridge' });
     isolated.close();
 
+    const { transfer } = await import('@open-jsbridge/web/transfer');
+    assert.equal(typeof transfer.upload, 'function');
+
     const auto = await import('@open-jsbridge/web/auto');
     for (const name of ['app', 'device', 'media', 'network', 'ui']) {
       assert.equal(auto[name], (await import('@open-jsbridge/web/' + name))[name]);
@@ -89,7 +92,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
   `], { cwd: consumer, stdio: 'pipe' });
 
   await writeFile(join(consumer, 'consumer.ts'), `
-    import { createBridge, type Bridge, type ChooseMediaResult, type ReleaseMediaResult } from '@open-jsbridge/web';
+    import { createBridge, type Bridge, type ChooseMediaResult, type ReleaseMediaResult, type UploadResult } from '@open-jsbridge/web';
     import * as auto from '@open-jsbridge/web/auto';
     import { app } from '@open-jsbridge/web/app';
     import { device } from '@open-jsbridge/web/device';
@@ -98,6 +101,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     import { createMockAdapter } from '@open-jsbridge/web/mock';
     import { network } from '@open-jsbridge/web/network';
     import { createReverseHandlers, type ReverseHandlers } from '@open-jsbridge/web/reverse';
+    import { transfer } from '@open-jsbridge/web/transfer';
     import { ui } from '@open-jsbridge/web/ui';
 
     const isolated: Bridge = createBridge({ adapter: createMockAdapter(), fallback: new BrowserFallbackAdapter() });
@@ -110,7 +114,11 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     const shown: Promise<Record<string, never>> = ui.toast.show({ text: 'auto' });
     const selection: Promise<ChooseMediaResult> = media.chooseMedia();
     const released: Promise<ReleaseMediaResult> = media.release({ ids: ['0123456789abcdef0123456789abcdef'] });
-    export { isolated, reverse, unhandle, automatic, off, info, status, shown, selection, released };
+    const uploaded: Promise<UploadResult> = transfer.upload({
+      id: '0123456789abcdef0123456789abcdef',
+      request: { url: 'https://uploads.example.com/v1/avatar' },
+    });
+    export { isolated, reverse, unhandle, automatic, off, info, status, shown, selection, released, uploaded };
   `);
   const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
   const flags = ['--noEmit', '--strict', '--target', 'ES2020', 'consumer.ts'];

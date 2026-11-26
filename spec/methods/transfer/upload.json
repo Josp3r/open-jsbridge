@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/transfer.upload",
+  "title": "transfer.upload",
+  "description": "使用 media.chooseMedia 签发给当前文档会话的图片句柄，通过原生宿主发起一次前台 multipart/form-data POST 上传。仅当当前可信主文档获准使用至少一个预配置 HTTPS 上传端点、可安全读取会话图片且支持取消时，宿主才可在握手中通告此方法。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "x-ojsb-concurrency": "serial",
+  "x-ojsb-concurrency-policy": "reject",
+  "x-ojsb-callbacks": {
+    "type": "object",
+    "description": "上传进度块，单位为完整 multipart/form-data 请求体的字节数（不含 HTTP 请求头）。total 固定且大于零，sent 单调不减并满足 0 <= sent <= total。",
+    "properties": {
+      "sent": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "total": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "required": ["sent", "total"],
+    "additionalProperties": false
+  },
+  "params": {
+    "type": "object",
+    "description": "顶层仅接受必填的会话图片句柄 id 与上传请求配置 request。超时统一走信封 meta.timeout（显式 0 返回 -32602）。formData 与 headers 键和值按 UTF-8 字节合计上限为 16 KiB（超限返回 -32006）；fieldName 与 formData 同名或 headers 按 ASCII 大小写忽略后重复返回 -32602；未获准端点、跨会话/过期/已释放句柄或禁止头（Authorization、Cookie、Host、Content-*、Transfer-Encoding 等）在出网前返回 -32003。",
+    "properties": {
+      "id": {
+        "$ref": "ojsb:schema/media.id"
+      },
+      "request": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 9,
+            "pattern": "^https://[^\\s]+$",
+            "description": "绝对 HTTPS 上传端点，须与宿主为当前来源预配置的完整 HTTPS URL 字符串精确相等（不含 userinfo、query 和 fragment）。"
+          },
+          "method": {
+            "const": "POST",
+            "description": "可省略，唯一允许值为 POST。"
+          },
+          "fieldName": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "文件表单字段名，默认 file。"
+          },
+          "formData": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "附加 UTF-8 文本表单字段，最多 16 项，不得与 fieldName 同名。"
+          },
+          "headers": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            },
+            "description": "附加请求头，最多 16 项，按 ASCII 大小写忽略后不得重复，头值不接受控制字符，不得设置宿主保留或鉴权相关头。"
+          },
+          "compress": {
+            "type": "object",
+            "properties": {
+              "maxEdge": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096
+              },
+              "quality": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "additionalProperties": false,
+            "description": "图片压缩参数，默认 maxEdge=2048、quality=80；不放大原图且输出 JPEG 最多 20 MiB。"
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    "required": ["id", "request"],
+    "additionalProperties": false
+  },
+  "result": {
+    "type": "object",
+    "description": "完整读取最终 HTTP 响应后返回原始状态码（含 2xx/4xx/5xx）与面向页面公开的 UTF-8 文本或 JSON 正文（空体返回空串，解压后上限 32 KiB）。响应头、重定向位置和鉴权信息均不交付。",
+    "properties": {
+      "status": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 599
+      },
+      "body": {
+        "type": "string"
+      }
+    },
+    "required": ["status", "body"],
+    "additionalProperties": false
+  }
+}

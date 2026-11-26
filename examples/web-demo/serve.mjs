@@ -38,6 +38,8 @@ const assets = new Map([
     "dist/packages/web-sdk/src/fallback.js",
     "dist/packages/web-sdk/src/reverse-slot.js",
     "dist/packages/web-sdk/src/reverse.js",
+    "dist/packages/web-sdk/src/transfer.js",
+    "dist/packages/web-sdk/src/transfer-profile.js",
     "dist/packages/web-mock/src/index.js",
     "dist/packages/devtools/src/index.js",
     "dist/packages/devtools/src/recorder.js",

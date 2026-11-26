@@ -13,8 +13,20 @@ const NETWORK_STATUS_METHOD = 'network.getStatus';
 const TOAST_METHOD = 'ui.toast.show';
 const MEDIA_CHOOSE_METHOD = 'media.chooseMedia';
 const MEDIA_RELEASE_METHOD = 'media.release';
+const TRANSFER_UPLOAD_METHOD = 'transfer.upload';
 const MEDIA_ID_PATTERN = /^[0-9a-f]{32}$/;
+const FIELD_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
+const HEADER_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
 const MAX_MEDIA_RELEASE_IDS = 32;
+const MAX_UPLOAD_MAP_ENTRIES = 16;
+const MAX_UPLOAD_METADATA_BYTES = 16 * 1024;
+const MAX_UPLOAD_RESPONSE_BYTES = 32 * 1024;
+const ALLOWED_UPLOAD_REQUEST_KEYS = new Set(['url', 'method', 'fieldName', 'formData', 'headers', 'compress']);
+const FORBIDDEN_UPLOAD_HEADERS = new Set([
+  'authorization', 'proxy-authorization', 'cookie', 'host', 'transfer-encoding', 'connection',
+]);
+const utf8 = new TextEncoder();
 const networkTypes = ['wifi', 'cellular', 'ethernet', 'other', 'none', 'unknown'] as const;
 
 export interface MockMediaImageWire {
@@ -31,6 +43,11 @@ export interface MockMediaImageWire {
 export type MockChooseMediaWireResult =
   | { status: 'cancelled'; files: [] }
   | { status: 'selected'; files: [MockMediaImageWire] };
+
+export interface MockUploadWireResult {
+  status: number;
+  body: string;
+}
 
 export interface MockFailureSpec {
   code: number;
@@ -56,6 +73,12 @@ export interface MockAdapterOptions {
     ids: readonly string[],
     ctx: HostHandlerContext,
   ) => void | Promise<void>;
+  uploadMedia?: (
+    params: JsonObject | undefined,
+    ctx: HostHandlerContext,
+  ) => MockUploadWireResult | Promise<MockUploadWireResult>;
+  /** Exact preconfigured HTTPS endpoints permitted for transfer.upload@1. */
+  allowedUploadUrls?: readonly string[];
   handlers?: Record<string, HostHandler>;
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
@@ -118,6 +141,133 @@ function validateMediaReleaseParams(params: JsonObject | undefined): string | un
     !ids.every((id) => typeof id === 'string' && MEDIA_ID_PATTERN.test(id))
   ) {
     return 'Invalid media release params';
+  }
+}
+
+function isPlainRecord(value: unknown): value is JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidHttpsEndpoint(url: unknown): url is string {
+  if (typeof url !== 'string' || url.length < 9 || /\s/.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.hostname.length > 0 &&
+      parsed.username === '' &&
+      parsed.password === '' &&
+      parsed.search === '' &&
+      parsed.hash === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertValidUploadRequest(
+  params: JsonObject | undefined,
+  allowedUrls: ReadonlySet<string> | undefined,
+): void {
+  if (!isPlainRecord(params) || Object.keys(params).length !== 2 || !('id' in params) || !('request' in params)) {
+    throw new HostError(-32602, 'Invalid upload params');
+  }
+  if (typeof params.id !== 'string' || !MEDIA_ID_PATTERN.test(params.id)) {
+    throw new HostError(-32602, 'Invalid media handle');
+  }
+  const req = params.request;
+  if (!isPlainRecord(req)) {
+    throw new HostError(-32602, 'Invalid upload request');
+  }
+  for (const key of Object.keys(req)) {
+    if (!ALLOWED_UPLOAD_REQUEST_KEYS.has(key)) {
+      throw new HostError(-32602, `Unknown upload request field "${key}"`);
+    }
+  }
+  if (!isValidHttpsEndpoint(req.url)) {
+    throw new HostError(-32602, 'Upload url must be an absolute HTTPS endpoint');
+  }
+  if (req.method !== undefined && req.method !== 'POST') {
+    throw new HostError(-32602, 'Upload method must be POST');
+  }
+
+  let effectiveFieldName = 'file';
+  if (req.fieldName !== undefined) {
+    if (typeof req.fieldName !== 'string' || !FIELD_NAME_PATTERN.test(req.fieldName)) {
+      throw new HostError(-32602, 'Invalid upload fieldName');
+    }
+    effectiveFieldName = req.fieldName;
+  }
+
+  let metadataBytes = 0;
+
+  if (req.formData !== undefined) {
+    if (!isPlainRecord(req.formData)) throw new HostError(-32602, 'Invalid formData');
+    const entries = Object.entries(req.formData);
+    if (entries.length > MAX_UPLOAD_MAP_ENTRIES) {
+      throw new HostError(-32006, 'formData exceeds 16 entries');
+    }
+    for (const [key, value] of entries) {
+      if (!FIELD_NAME_PATTERN.test(key) || typeof value !== 'string') {
+        throw new HostError(-32602, 'Invalid formData entry');
+      }
+      if (key === effectiveFieldName) {
+        throw new HostError(-32602, 'formData key collides with fieldName');
+      }
+      metadataBytes += utf8.encode(key).byteLength + utf8.encode(value).byteLength;
+      if (metadataBytes > MAX_UPLOAD_METADATA_BYTES) {
+        throw new HostError(-32006, 'Upload metadata exceeds budget');
+      }
+    }
+  }
+
+  const forbiddenHeadersFound: string[] = [];
+  if (req.headers !== undefined) {
+    if (!isPlainRecord(req.headers)) throw new HostError(-32602, 'Invalid headers');
+    const entries = Object.entries(req.headers);
+    if (entries.length > MAX_UPLOAD_MAP_ENTRIES) {
+      throw new HostError(-32006, 'headers exceeds 16 entries');
+    }
+    const seenLower = new Set<string>();
+    for (const [key, value] of entries) {
+      if (!HEADER_NAME_PATTERN.test(key) || typeof value !== 'string' || HEADER_CONTROL_PATTERN.test(value)) {
+        throw new HostError(-32602, 'Invalid header entry');
+      }
+      const lower = key.toLowerCase();
+      if (seenLower.has(lower)) throw new HostError(-32602, 'Duplicate header name');
+      seenLower.add(lower);
+      metadataBytes += utf8.encode(key).byteLength + utf8.encode(value).byteLength;
+      if (metadataBytes > MAX_UPLOAD_METADATA_BYTES) {
+        throw new HostError(-32006, 'Upload metadata exceeds budget');
+      }
+      if (FORBIDDEN_UPLOAD_HEADERS.has(lower) || lower.startsWith('content-')) {
+        forbiddenHeadersFound.push(lower);
+      }
+    }
+  }
+
+  if (req.compress !== undefined) {
+    if (!isPlainRecord(req.compress)) throw new HostError(-32602, 'Invalid compress options');
+    for (const [key, value] of Object.entries(req.compress)) {
+      if (key === 'maxEdge') {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 4096) {
+          throw new HostError(-32602, 'Invalid compress.maxEdge');
+        }
+      } else if (key === 'quality') {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 100) {
+          throw new HostError(-32602, 'Invalid compress.quality');
+        }
+      } else {
+        throw new HostError(-32602, `Unknown compress field "${key}"`);
+      }
+    }
+  }
+
+  if (forbiddenHeadersFound.length > 0) {
+    throw new HostError(-32003, 'Forbidden upload header', { reason: 'forbidden_header' });
+  }
+  if (allowedUrls && !allowedUrls.has(req.url)) {
+    throw new HostError(-32003, 'Upload endpoint not allowed', { reason: 'endpoint_not_allowed' });
   }
 }
 
@@ -192,7 +342,9 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
 
   register(ECHO_METHOD, (params) => params ?? {});
 
-  const { deviceInfo, getNetworkStatus, showToast, chooseMedia, releaseMedia, handlers } = options ?? {};
+  const {
+    deviceInfo, getNetworkStatus, showToast, chooseMedia, releaseMedia, uploadMedia, allowedUploadUrls, handlers,
+  } = options ?? {};
   if (deviceInfo) {
     const { os, osVersion } = deviceInfo;
     if ((os === 'ios' || os === 'android') && typeof osVersion === 'string' && osVersion.length > 0) {
@@ -235,6 +387,29 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
         return null;
       },
       { validateParams: validateMediaReleaseParams },
+    );
+  }
+  if (uploadMedia) {
+    const allowedSet = allowedUploadUrls ? new Set(allowedUploadUrls.filter(isValidHttpsEndpoint)) : undefined;
+    register(
+      TRANSFER_UPLOAD_METHOD,
+      async (params, ctx) => {
+        assertValidUploadRequest(params, allowedSet);
+        const res = await uploadMedia(params, ctx);
+        if (
+          !isPlainRecord(res) ||
+          typeof res.status !== 'number' || !Number.isSafeInteger(res.status) ||
+          res.status < 100 || res.status > 599 ||
+          typeof res.body !== 'string'
+        ) {
+          throw new HostError(-32603, 'Invalid upload response', { reason: 'invalid_response' });
+        }
+        if (utf8.encode(res.body).byteLength > MAX_UPLOAD_RESPONSE_BYTES) {
+          throw new HostError(-32006, 'Upload response body exceeds limit');
+        }
+        return { status: res.status, body: res.body };
+      },
+      { concurrency: 'serial' },
     );
   }
   if (handlers) {
