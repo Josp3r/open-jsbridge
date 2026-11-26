@@ -1,13 +1,13 @@
 import {
   createHostCore, HostError,
-  type HostCoreLimits, type HostHandler, type HostHandlerContext, type RegisterHandlerOptions,
+  type CallWebOptions, type HostCoreLimits, type HostHandler, type HostHandlerContext, type RegisterHandlerOptions,
 } from '../../host-core/src/index.js';
-import type { JsonValue } from '../../protocol/src/index.js';
+import type { JsonObject, JsonValue } from '../../protocol/src/index.js';
 import { canonicalHttpsOrigin, createOriginAllowlist, type OriginAllowlist } from './origin.js';
 import { encodeReceiveScript, OJSB_RN_SHIM } from './shim.js';
 
 export { canonicalHttpsOrigin, createOriginAllowlist, encodeReceiveScript, HostError, OJSB_RN_SHIM };
-export type { HostCoreLimits, HostHandler, HostHandlerContext, OriginAllowlist, RegisterHandlerOptions };
+export type { CallWebOptions, HostCoreLimits, HostHandler, HostHandlerContext, OriginAllowlist, RegisterHandlerOptions };
 
 export interface ReactNativeWebViewTarget {
   injectJavaScript(script: string): void;
@@ -45,6 +45,7 @@ export interface ReactNativeHostOptions {
   handlers?: Record<string, HostHandler>;
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
+  supportsReverse?: boolean;
   limits?: HostCoreLimits;
   onBlockedNavigation?: (url: string) => void;
   onSessionInvalidated?: (reason: string) => void;
@@ -74,6 +75,7 @@ export interface ReactNativeHost {
   readonly acl: OriginAllowlist;
   readonly sid: string | undefined;
   readonly documentId: number;
+  readonly webMethods: ReadonlySet<string>;
   attach(target: ReactNativeWebViewTarget): () => void;
   allowSource(url: string): boolean;
   shouldStartLoad(url: string): boolean;
@@ -83,6 +85,7 @@ export interface ReactNativeHost {
   register(method: string, handler: HostHandler, options?: RegisterHandlerOptions): () => void;
   unregister(method: string): boolean;
   emit(name: string, payload: JsonValue): boolean;
+  callWeb<T = JsonValue>(method: string, params?: JsonObject, options?: CallWebOptions): Promise<T>;
   wasCancelled(requestId: string): boolean;
   bindWebViewProps(options: BindWebViewPropsOptions): ReactNativeWebViewBridgeProps;
 }
@@ -105,6 +108,7 @@ export function createReactNativeHost(options: ReactNativeHostOptions): ReactNat
     deniedEvents: options.deniedEvents,
     supportsCancel: options.supportsCancel ?? true,
     supportsCallbacks: options.supportsCallbacks ?? true,
+    supportsReverse: options.supportsReverse ?? true,
     limits: options.limits,
   });
 
@@ -244,6 +248,9 @@ export function createReactNativeHost(options: ReactNativeHostOptions): ReactNat
     get documentId() {
       return currentDocumentId;
     },
+    get webMethods(): ReadonlySet<string> {
+      return core.webMethods;
+    },
     attach,
     allowSource,
     shouldStartLoad,
@@ -255,6 +262,12 @@ export function createReactNativeHost(options: ReactNativeHostOptions): ReactNat
     emit(name, payload) {
       if (!degradedEnabled || !documentAuthorized || !target) return false;
       return core.emit(name, payload);
+    },
+    callWeb(method, params, callOptions) {
+      if (!degradedEnabled || !documentAuthorized || !target) {
+        return Promise.reject(new HostError(-32000, 'Bridge unavailable'));
+      }
+      return core.callWeb(method, params, callOptions);
     },
     wasCancelled: (requestId) => core.wasCancelled(requestId),
     bindWebViewProps,

@@ -1,11 +1,11 @@
 import {
   createHostCore, HostError,
-  type HostCoreLimits, type HostHandler, type HostHandlerContext, type RegisterHandlerOptions,
+  type CallWebOptions, type HostCoreLimits, type HostHandler, type HostHandlerContext, type RegisterHandlerOptions,
 } from '../../host-core/src/index.js';
 import type { JsonObject, JsonValue } from '../../protocol/src/index.js';
 
 export { HostError };
-export type { HostHandler, HostHandlerContext, RegisterHandlerOptions };
+export type { CallWebOptions, HostHandler, HostHandlerContext, RegisterHandlerOptions };
 
 const ECHO_METHOD = 'conformance.echo';
 const DEVICE_INFO_METHOD = 'device.getInfo';
@@ -52,6 +52,7 @@ export interface MockAdapterOptions {
   handlers?: Record<string, HostHandler>;
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
+  supportsReverse?: boolean;
   /** Fixed delay (ms) or inclusive [minMs, maxMs] range applied before handler execution. */
   latency?: number | readonly [number, number];
   limits?: HostCoreLimits;
@@ -59,8 +60,10 @@ export interface MockAdapterOptions {
 
 export interface MockAdapter {
   readonly name: string;
+  readonly webMethods: ReadonlySet<string>;
   send(raw: string): Promise<string | null>;
   emit(name: string, payload: JsonValue): boolean;
+  callWeb<T = JsonValue>(method: string, params?: JsonObject, options?: CallWebOptions): Promise<T>;
   listen(onMessage: (raw: string) => void): () => void;
   register(method: string, handler: HostHandler, options?: RegisterHandlerOptions): () => void;
   failNext(method: string, failure: MockFailureSpec): void;
@@ -135,6 +138,7 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
     deniedEvents: options?.deniedEvents,
     supportsCancel: options?.supportsCancel,
     supportsCallbacks: options?.supportsCallbacks,
+    supportsReverse: options?.supportsReverse,
     limits: options?.limits,
   });
 
@@ -212,8 +216,12 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
 
   return {
     name: host.name,
+    get webMethods(): ReadonlySet<string> {
+      return host.webMethods;
+    },
     send: (raw) => host.receive(raw),
     emit: (name, payload) => host.emit(name, payload),
+    callWeb: (method, params, callOptions) => host.callWeb(method, params, callOptions),
     register,
     failNext(method, failure) {
       const queue = nextFailures.get(method) ?? [];
@@ -243,7 +251,9 @@ export interface MockTransportOptions extends MockAdapterOptions {
 }
 
 export interface MockTransportHandle {
+  readonly webMethods: ReadonlySet<string>;
   emit(name: string, payload: JsonValue): boolean;
+  callWeb<T = JsonValue>(method: string, params?: JsonObject, options?: CallWebOptions): Promise<T>;
   register(method: string, handler: HostHandler, options?: RegisterHandlerOptions): () => void;
   failNext(method: string, failure: MockFailureSpec): void;
   wasCancelled(requestId: string): boolean;
@@ -292,9 +302,18 @@ export function installMockTransport(options?: MockTransportOptions): MockTransp
   });
   target.dispatchEvent(new CustomEvent('ojsb:transportready'));
   return {
+    get webMethods(): ReadonlySet<string> {
+      return adapter.webMethods;
+    },
     emit(name, payload) {
       if (typeof target.__OJSB_RECEIVE__ !== 'function') return false;
       return adapter.emit(name, payload);
+    },
+    callWeb(method, params, callOptions) {
+      if (typeof target.__OJSB_RECEIVE__ !== 'function') {
+        return Promise.reject(new HostError(-32000, 'Bridge unavailable'));
+      }
+      return adapter.callWeb(method, params, callOptions);
     },
     register: (method, handler, registerOptions) => adapter.register(method, handler, registerOptions),
     failNext: (method, failure) => adapter.failNext(method, failure),

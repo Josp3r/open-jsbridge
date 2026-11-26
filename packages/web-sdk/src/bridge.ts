@@ -6,6 +6,7 @@ import { revokeMediaPreviews } from './media.js';
 import { BridgeError } from './errors.js';
 import { EventSubscriptions, hasSessionEvent, type EventControl, type EventListener, type EventSubscription, type StandardEvents } from './events.js';
 import { isObject, readSession, type HostInfo, type Session } from './session.js';
+import { reverseHooks, reverseTransports } from './reverse-slot.js';
 import { findBrowserAdapter, type Adapter } from './transport.js';
 
 export { BridgeError, ErrorCode };
@@ -131,7 +132,13 @@ class WebBridge implements Bridge {
     private readonly options: BridgeOptions,
     private readonly handshakeTimeout: number,
     private readonly queueLimit: number,
-  ) {}
+  ) {
+    reverseTransports.set(this, {
+      session: () => this.session,
+      post: (raw) => { void this.post(raw); },
+      nextId: () => this.createId(),
+    });
+  }
 
   get state(): BridgeState { return this.currentState; }
   get host(): HostInfo | undefined { return this.session?.host; }
@@ -317,6 +324,7 @@ class WebBridge implements Bridge {
     this.currentState = 'unavailable';
     this.session = undefined;
     this.connection = undefined;
+    reverseHooks.get(this)?.onInvalidate();
     if (this.closed) this.events.close();
     else this.events.reset();
     revokeMediaPreviews(this);
@@ -380,6 +388,7 @@ class WebBridge implements Bridge {
       this.drain();
       requireActive();
       this.events.start(session);
+      reverseHooks.get(this)?.onReady(session);
       requireActive();
       return session.host;
     } catch (error) {
@@ -397,10 +406,12 @@ class WebBridge implements Bridge {
   private async handshake(): Promise<Session> {
     const id = this.createId();
     const deadline = performance.now() + this.handshakeTimeout;
+    const wants = ['cancel', 'events', 'callbacks'];
+    if (reverseHooks.has(this)) wants.push('reverse');
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.2.0' }, wants: ['cancel', 'events', 'callbacks'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.2.0' }, wants,
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
@@ -578,9 +589,13 @@ class WebBridge implements Bridge {
     if (this.plugins.length) envelope = this.runHook('onReceive', envelope);
     const { rpc, meta } = envelope;
     if ('method' in rpc) {
-      if (replyId === undefined && !('id' in rpc) && activeSession && activeSession.sid === meta?.sid) {
-        if (rpc.method === 'bridge.event') this.events.deliver(rpc.params);
+      if (replyId === undefined && activeSession && activeSession.sid === meta?.sid) {
+        if ('id' in rpc) reverseHooks.get(this)?.onRequest(rpc, activeSession);
+        else if (rpc.method === 'bridge.event') this.events.deliver(rpc.params);
         else if (rpc.method === 'bridge.progress') this.deliverProgress(rpc.params, activeSession);
+        else if (rpc.method === 'bridge.cancel' && typeof rpc.params?.requestId === 'string') {
+          reverseHooks.get(this)?.onCancel(rpc.params.requestId);
+        }
       }
       return;
     }

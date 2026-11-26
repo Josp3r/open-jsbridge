@@ -28,7 +28,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
   const packageDir = join(consumer, 'node_modules', '@open-jsbridge', 'web');
   const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.exports).sort(), [
-    '.', './app', './auto', './device', './fallback', './media', './mock', './network', './ui',
+    '.', './app', './auto', './device', './fallback', './media', './mock', './network', './reverse', './ui',
   ]);
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.sideEffects, false);
@@ -52,8 +52,14 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     fallbackBridge.close();
 
     const { createMockAdapter, installMockTransport } = await import('@open-jsbridge/web/mock');
-    const isolated = core.createBridge({ adapter: createMockAdapter() });
+    const { createReverseHandlers } = await import('@open-jsbridge/web/reverse');
+    const mockAdapter = createMockAdapter({ supportsReverse: true });
+    const isolated = core.createBridge({ adapter: mockAdapter });
+    const reverse = createReverseHandlers(isolated);
+    reverse.handle('page.getShareInfo', () => ({ title: 'Open JSBridge' }));
     assert.deepEqual(await isolated.call('conformance.echo', { text: 'core' }), { text: 'core' });
+    assert.deepEqual(await mockAdapter.callWeb('page.getShareInfo'), { title: 'Open JSBridge' });
+    isolated.close();
 
     const auto = await import('@open-jsbridge/web/auto');
     for (const name of ['app', 'device', 'media', 'network', 'ui']) {
@@ -91,16 +97,19 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     import { media } from '@open-jsbridge/web/media';
     import { createMockAdapter } from '@open-jsbridge/web/mock';
     import { network } from '@open-jsbridge/web/network';
+    import { createReverseHandlers, type ReverseHandlers } from '@open-jsbridge/web/reverse';
     import { ui } from '@open-jsbridge/web/ui';
 
     const isolated: Bridge = createBridge({ adapter: createMockAdapter(), fallback: new BrowserFallbackAdapter() });
+    const reverse: ReverseHandlers = createReverseHandlers(isolated);
+    const unhandle = reverse.handle('page.ping', () => ({ ok: true }));
     const automatic: Bridge = auto.bridge;
     const off = app.onForegrounded((value: null) => value);
     const info = device.getInfo();
     const status = network.getStatus();
     const shown: Promise<Record<string, never>> = ui.toast.show({ text: 'auto' });
     const selection: Promise<ChooseMediaResult> = media.chooseMedia();
-    export { isolated, automatic, off, info, status, shown, selection };
+    export { isolated, reverse, unhandle, automatic, off, info, status, shown, selection };
   `);
   const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
   const flags = ['--noEmit', '--strict', '--target', 'ES2020', 'consumer.ts'];

@@ -6,8 +6,10 @@ import {
 const HELLO_METHOD = 'bridge.hello';
 const SUBSCRIBE_METHOD = 'bridge.subscribe';
 const UNSUBSCRIBE_METHOD = 'bridge.unsubscribe';
+const REGISTER_WEB_METHODS = 'bridge.registerWebMethods';
 const CANCEL_METHOD = 'bridge.cancel';
 const NAME_PATTERN = /^(?!rpc\.)[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+const WEB_METHOD_PATTERN = /^(?!rpc\.|bridge\.|ojsb\.)[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
 const VERSION_SUFFIX = /@([1-9][0-9]*)$/;
 const DEFAULT_LIMITS = Object.freeze({
   maxMessageBytes: 1_048_576,
@@ -55,6 +57,12 @@ export interface HostCoreLimits {
   defaultTimeoutMs?: number;
 }
 
+export interface CallWebOptions {
+  timeout?: number;
+  signal?: AbortSignal;
+  traceId?: string;
+}
+
 export interface HostCoreOptions {
   platform?: string;
   name?: string;
@@ -65,14 +73,17 @@ export interface HostCoreOptions {
   deniedEvents?: readonly string[];
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
+  supportsReverse?: boolean;
   limits?: HostCoreLimits;
 }
 
 export interface HostCore {
   readonly sid: string | undefined;
   readonly name: string;
+  readonly webMethods: ReadonlySet<string>;
   receive(raw: string): Promise<string | null>;
   emit(name: string, payload: JsonValue): boolean;
+  callWeb<T = JsonValue>(method: string, params?: JsonObject, options?: CallWebOptions): Promise<T>;
   register(method: string, handler: HostHandler, options?: RegisterHandlerOptions): () => void;
   unregister(method: string): boolean;
   setReceiver(onMessage: ((raw: string) => void) | undefined): void;
@@ -94,8 +105,20 @@ interface InflightCall {
   cancelled: boolean;
 }
 
+interface ReversePendingCall {
+  sid: string;
+  timer?: ReturnType<typeof setTimeout>;
+  stopSignal?: () => void;
+  resolve: (value: JsonValue) => void;
+  reject: (error: HostError) => void;
+}
+
 function isQualifiedName(name: unknown): name is string {
   return typeof name === 'string' && NAME_PATTERN.test(name);
+}
+
+function isWebMethodName(name: unknown): name is string {
+  return typeof name === 'string' && WEB_METHOD_PATTERN.test(name);
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -158,6 +181,17 @@ function readEventNames(params?: JsonObject): string[] | undefined {
   }
 }
 
+function readWebMethods(params?: JsonObject): string[] | undefined {
+  const methods = params?.methods;
+  if (
+    Array.isArray(methods) &&
+    methods.every(isWebMethodName) &&
+    new Set(methods).size === methods.length
+  ) {
+    return methods;
+  }
+}
+
 function isPlainJsonValue(value: unknown, ancestors: Set<object>): boolean {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
     return true;
@@ -197,6 +231,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
   };
   const supportsCancel = options.supportsCancel === true;
   const supportsCallbacks = options.supportsCallbacks === true;
+  const supportsReverse = options.supportsReverse === true;
   const allowedEvents = new Set(options.events?.filter(isQualifiedName));
   const deniedEvents = new Set(options.deniedEvents?.filter(isQualifiedName));
   const advertisedEvents = [...new Set([...allowedEvents, ...deniedEvents])];
@@ -207,9 +242,12 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
   const subscriptions = new Set<string>();
   const inflight = new Map<string, InflightCall>();
   const cancelledIds = new Set<string>();
+  const registeredWebMethods = new Set<string>();
+  const reversePending = new Map<string, ReversePendingCall>();
 
   let activeSid: string | undefined;
   let receiver: ((raw: string) => void) | undefined;
+  let reverseCounter = 0;
 
   function exceedsMessageLimit(raw: string): boolean {
     return raw.length > limits.maxMessageBytes || utf8.encode(raw).byteLength > limits.maxMessageBytes;
@@ -239,17 +277,51 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     return encodeEnvelope({ jsb: '1.0', meta, rpc: { jsonrpc: '2.0', id, result } });
   }
 
+  function settleReverse(id: string): ReversePendingCall | undefined {
+    const call = reversePending.get(id);
+    if (!call) return;
+    reversePending.delete(id);
+    if (call.timer !== undefined) clearTimeout(call.timer);
+    call.stopSignal?.();
+    return call;
+  }
+
+  function postReverseCancel(id: string, sid: string, reason?: string): void {
+    const receiveMessage = receiver;
+    if (activeSid !== sid || !receiveMessage) return;
+    const raw = encodeEnvelope({
+      jsb: '1.0',
+      meta: { sid },
+      rpc: {
+        jsonrpc: '2.0',
+        method: CANCEL_METHOD,
+        params: { requestId: id, ...(reason === undefined ? {} : { reason }) },
+      },
+    });
+    if (!exceedsMessageLimit(raw) && activeSid === sid && receiver === receiveMessage) {
+      receiveMessage(raw);
+    }
+  }
+
   function reset(): void {
     activeSid = undefined;
     helloIds.clear();
     requestIds.clear();
     subscriptions.clear();
     cancelledIds.clear();
+    registeredWebMethods.clear();
     for (const call of inflight.values()) {
       call.cancelled = true;
       call.controller.abort();
     }
     inflight.clear();
+    const pendingReverse = [...reversePending.values()];
+    reversePending.clear();
+    for (const call of pendingReverse) {
+      if (call.timer !== undefined) clearTimeout(call.timer);
+      call.stopSignal?.();
+      call.reject(new HostError(ErrorCode.Cancelled, 'Session invalidated'));
+    }
     for (const entry of registry.values()) {
       entry.activeCount = 0;
     }
@@ -294,6 +366,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     const features: string[] = [];
     if (supportsCancel) features.push('cancel');
     if (supportsCallbacks) features.push('callbacks');
+    if (supportsReverse) features.push('reverse');
     return success(
       request.id,
       {
@@ -383,7 +456,20 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     }
 
     const { rpc, meta } = envelope;
-    if (!('method' in rpc)) return null;
+    if (!('method' in rpc)) {
+      if (activeSid && meta?.sid === activeSid && typeof rpc.id === 'string') {
+        const call = reversePending.get(rpc.id);
+        if (call && call.sid === activeSid) {
+          settleReverse(rpc.id);
+          if ('error' in rpc) {
+            call.reject(new HostError(rpc.error.code, rpc.error.message, rpc.error.data));
+          } else {
+            call.resolve(rpc.result);
+          }
+        }
+      }
+      return null;
+    }
     if (!('id' in rpc)) {
       handleCancelNotification(envelope);
       return null;
@@ -415,6 +501,30 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
         return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, replySid, traceId);
       }
       return controlSubscription(name, rpc, replySid, traceId);
+    }
+
+    const isRegisterWebMethods =
+      name === REGISTER_WEB_METHODS &&
+      (explicitVersion === undefined || explicitVersion === 1);
+
+    if (isRegisterWebMethods) {
+      if (!supportsReverse) {
+        return failure(rpc.id, ErrorCode.MethodNotFound, 'Method not found', undefined, replySid, traceId);
+      }
+      if (meta.timeout === 0) {
+        return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid request timeout', undefined, replySid, traceId);
+      }
+      const methods = readWebMethods(rpc.params);
+      if (!methods) {
+        return failure(rpc.id, ErrorCode.InvalidParams, 'Invalid web methods params', undefined, replySid, traceId);
+      }
+      const response = success(rpc.id, { registered: methods }, replySid, traceId);
+      if (exceedsMessageLimit(response)) {
+        return failure(rpc.id, ErrorCode.PayloadTooLarge, 'Payload too large', undefined, replySid, traceId);
+      }
+      registeredWebMethods.clear();
+      for (const method of methods) registeredWebMethods.add(method);
+      return response;
     }
 
     const entry = registry.get(name);
@@ -553,13 +663,106 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     return true;
   }
 
+  function callWeb<T = JsonValue>(
+    method: string,
+    params?: JsonObject,
+    callOptions?: CallWebOptions,
+  ): Promise<T> {
+    if (!supportsReverse) {
+      return Promise.reject(new HostError(ErrorCode.MethodNotFound, 'Reverse calls not enabled'));
+    }
+    const callSid = activeSid;
+    const receiveMessage = receiver;
+    if (!callSid || !receiveMessage) {
+      return Promise.reject(new HostError(ErrorCode.Unavailable, 'Bridge unavailable'));
+    }
+    if (typeof method !== 'string' || !isWebMethodName(parseMethod(method).name)) {
+      return Promise.reject(new HostError(ErrorCode.InvalidParams, 'Invalid web method name'));
+    }
+    if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params))) {
+      return Promise.reject(new HostError(ErrorCode.InvalidParams, 'Params must be a JSON object'));
+    }
+    const timeout = callOptions?.timeout ?? limits.defaultTimeoutMs;
+    if (!isPositiveSafeInteger(timeout)) {
+      return Promise.reject(new HostError(ErrorCode.InvalidParams, 'Invalid call timeout'));
+    }
+    const traceId = callOptions?.traceId;
+    if (traceId !== undefined && typeof traceId !== 'string') {
+      return Promise.reject(new HostError(ErrorCode.InvalidParams, 'Invalid traceId'));
+    }
+    const signal = callOptions?.signal;
+    if (signal?.aborted) {
+      return Promise.reject(new HostError(ErrorCode.Cancelled, 'Reverse call cancelled'));
+    }
+
+    const id = `n-${++reverseCounter}`;
+    const meta: JsonObject = {
+      sid: callSid,
+      ts: Date.now(),
+      timeout,
+      ...(traceId === undefined ? {} : { traceId }),
+    };
+    let raw: string;
+    try {
+      raw = encodeEnvelope({
+        jsb: '1.0',
+        meta,
+        rpc: {
+          jsonrpc: '2.0',
+          id,
+          method,
+          ...(params === undefined ? {} : { params }),
+        },
+      });
+    } catch {
+      return Promise.reject(new HostError(ErrorCode.InvalidParams, 'Call could not be encoded'));
+    }
+    if (exceedsMessageLimit(raw)) {
+      return Promise.reject(new HostError(ErrorCode.PayloadTooLarge, 'Payload too large'));
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      const entry: ReversePendingCall = {
+        sid: callSid,
+        resolve: (value) => resolve(value as T),
+        reject,
+      };
+      entry.timer = setTimeout(() => {
+        if (!settleReverse(id)) return;
+        postReverseCancel(id, callSid, 'timeout');
+        reject(new HostError(ErrorCode.Timeout, 'Reverse call timed out'));
+      }, Math.min(timeout, 2_147_483_647));
+      if (signal) {
+        const onAbort = () => {
+          if (!settleReverse(id)) return;
+          postReverseCancel(id, callSid, 'abort');
+          reject(new HostError(ErrorCode.Cancelled, 'Reverse call cancelled'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        entry.stopSignal = () => signal.removeEventListener('abort', onAbort);
+      }
+      reversePending.set(id, entry);
+      try {
+        receiveMessage(raw);
+      } catch {
+        if (settleReverse(id)) {
+          reject(new HostError(ErrorCode.Unavailable, 'Failed to deliver reverse call'));
+        }
+      }
+    });
+  }
+
   return {
     get sid() {
       return activeSid;
     },
     name: String(hostInfo.name),
+    get webMethods(): ReadonlySet<string> {
+      return registeredWebMethods;
+    },
     receive,
     emit,
+    callWeb,
     register,
     unregister,
     setReceiver(onMessage) {
