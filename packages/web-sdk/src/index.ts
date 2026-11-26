@@ -1,4 +1,5 @@
 export * from './bridge.js';
+export type { BrowserFallbackOptions, PolyfillHandler } from './fallback.js';
 export type { DeviceInfo } from './device.js';
 export type { ErrorCodeMap, EventMap, MethodMap } from './generated/spec.js';
 export type { ChooseMediaParams, ChooseMediaResult, ImageResource } from './media.js';
