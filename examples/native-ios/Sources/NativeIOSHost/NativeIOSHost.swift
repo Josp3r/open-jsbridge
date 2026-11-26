@@ -489,14 +489,17 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             else { return false }
             return await self.wire.sendProgress(for: work.call, chunk: chunk) { raw in
                 // A progress frame must reach the receiver before the original WithReply is completed.
-                let received = try? await webView.callAsyncJavaScript(
-                    """
-                    return window.location.origin === allowed &&
-                      window.__OJSB_DELIVER__?.(candidate, raw, true) === true;
-                    """,
-                    arguments: ["allowed": origin, "candidate": document, "raw": raw], in: nil, contentWorld: .page
-                )
-                return received as? Bool == true
+                return await withCheckedContinuation { receipt in
+                    webView.callAsyncJavaScript(
+                        """
+                        return window.location.origin === allowed &&
+                          window.__OJSB_DELIVER__?.(candidate, raw, true) === true;
+                        """,
+                        arguments: ["allowed": origin, "candidate": document, "raw": raw], in: nil, in: .page
+                    ) { result in
+                        receipt.resume(returning: (try? result.get()) as? Bool == true)
+                    }
+                }
             }
         }
         let task = Task { @MainActor [weak self] in
