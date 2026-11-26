@@ -41,7 +41,8 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-005` | 流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout`） | `in-review` | `linux-agent (antigravity)` | `antigravity/bridge-progress-callbacks` | `packages/web-sdk/src/bridge.ts`, `packages/host-core/src/index.ts`, `packages/web-mock/src/index.ts`, `conformance-tests/progress.test.mjs`, `docs/team-status.md` | 实现严格递增 `seq` 去重、`idleTimeout` 重置与 `HostCore` `ctx.callback()` | 2026-11-26 |
+| `T-005` | 媒体句柄的主动释放与原生全屏预览（`media.release@1`、`media.preview@1`） | `in-progress` | `macos-agent (codex)` | `codex/media-handle-lifecycle` · PR `#37` · `#24`、`#21` | `spec/methods/media/**`, `packages/web-sdk/src/media*.ts`, `packages/web-sdk/src/generated/spec.ts`, `conformance-tests/media.test.mjs`, `examples/native-ios/Sources/NativeIOSHost/{Media*,WireHost.swift}`, `examples/native-android/host/src/main/java/dev/openjsbridge/host/{*Media*,RpcSession.kt}` | 从现有单图选择返回的会话句柄开始，先定义释放与预览契约。 | 2026-11-26 |
+| `T-006` | 流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout`） | `in-review` | `linux-agent (antigravity)` | `antigravity/bridge-progress-callbacks` · PR `#38` | `packages/web-sdk/src/bridge.ts`, `packages/host-core/src/index.ts`, `packages/web-mock/src/index.ts`, `conformance-tests/progress.test.mjs`, `docs/team-status.md` | 实现严格递增 `seq` 去重、`idleTimeout` 重置与 `HostCore` `ctx.callback()` | 2026-11-26 |
 
 ---
 
@@ -61,7 +62,6 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
 | **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；外投浏览器降级与可观测性基础 |
 | **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中 | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；已具备 `packages/host-core` 底座，须严格遵循 `trust: degraded` (S2) 约束 |
 | **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`, `packages/web-sdk/**`, 双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance |
