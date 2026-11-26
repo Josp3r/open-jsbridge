@@ -7,7 +7,7 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `1a1d401`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `4acf1aa`（最后更新日期：`2026-11-26`）
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
@@ -41,7 +41,8 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-004` | 提取参考 `host-core` + 增强 `@open-jsbridge/web/mock` | `in-review` | `linux-agent (antigravity)` | `antigravity/host-core-and-mock` | `packages/host-core/**`, `packages/web-mock/**`, `scripts/web-package.json`, `conformance-tests/host-core.test.mjs`, `docs/team-status.md` | 抽出传输无关参考状态机，补齐 `media.chooseMedia`、`bridge.cancel`、`register`、`failNext`、`latency` | 2026-11-26 |
+| `T-005` | 媒体句柄的主动释放与原生全屏预览（`media.release@1`、`media.preview@1`） | `in-progress` | `macos-agent (codex)` | `codex/media-handle-lifecycle` · PR `#37` · `#24`、`#21` | `spec/methods/media/**`, `packages/web-sdk/src/media*.ts`, `packages/web-sdk/src/generated/spec.ts`, `conformance-tests/media.test.mjs`, `examples/native-ios/Sources/NativeIOSHost/{Media*,WireHost.swift}`, `examples/native-android/host/src/main/java/dev/openjsbridge/host/{*Media*,RpcSession.kt}` | 从现有单图选择返回的会话句柄开始，先定义释放与预览契约。 | 2026-11-26 |
+| `T-006` | 流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout`） | `in-review` | `linux-agent (antigravity)` | `antigravity/bridge-progress-callbacks` · PR `#38` | `packages/web-sdk/src/bridge.ts`, `packages/host-core/src/index.ts`, `packages/web-mock/src/index.ts`, `conformance-tests/progress.test.mjs`, `docs/team-status.md` | 实现严格递增 `seq` 去重、`idleTimeout` 重置与 `HostCore` `ctx.callback()` | 2026-11-26 |
 
 ---
 
@@ -61,12 +62,10 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
-| **流式回调协议 `bridge.progress`（`onCallback`）** | 中 | `linux-agent` | `spec/protocol/**`, `packages/web-sdk/src/bridge.ts`, `packages/host-core/**`, `conformance-tests/**` | [docs/protocol.md](protocol.md) §8；是 `transfer.progress` 与持续流能力的前置依赖（注意 Web core ≤ 7 KiB 门禁） |
 | **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；外投浏览器降级与可观测性基础 |
+| **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中 | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；已具备 `packages/host-core` 底座，须严格遵循 `trust: degraded` (S2) 约束 |
 | **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`, `packages/web-sdk/**`, 双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance |
 | **`transfer.upload` 契约 RFC 与安全设计** | 中低 | `linux-agent` / `macos-agent` | `docs/protocol.md`, `spec/rfcs/**`（新建） | Refs #24；需先明确上传域名 ACL、宿主鉴权 header 注入、压缩参数与取消/错误码语义 |
-| **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中 | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；已具备 `packages/host-core` 底座，须严格遵循 `trust: degraded` (S2) 约束 |
 
 ---
 
@@ -87,7 +86,7 @@
   - 编码器在入队前做严格 JSON 快照，拒绝 `Date`、访问器、稀疏数组、循环引用、超出安全整数范围的数字等非标准 JSON 值（`-32600` / `-32602`）。
 - **[D-004 | 2026-11-26 | #19, #27, #31] Web SDK `0.2.0` 包边界与体积门禁**
   - 仅发布 ESM + TypeScript 声明，零运行时依赖；主入口 `@open-jsbridge/web` 只导出 `createBridge` 与核心类型/错误码，不自动初始化默认单例（默认单例在 `@open-jsbridge/web/auto`，按需能力在 `/app`、`/device`、`/network`、`/ui`、`/media`）。
-  - 任何对 `packages/web-sdk` 或 `packages/protocol` 的修改都必须通过 `npm run size:web`（主入口 min+gzip ≤ 7 KiB；当前基线实测 `6498 / 7168 bytes`，剩余约 670 bytes 空间）。
+  - 任何对 `packages/web-sdk` 或 `packages/protocol` 的修改都必须通过 `npm run size:web`（主入口 min+gzip ≤ 7 KiB）。
 - **[D-005 | 2026-11-25 | #29] Android Photo Picker 兼容策略**
   - 选图强制使用 iOS PHPicker / AndroidX `PickVisualMedia`，禁止为选图申请整库相册权限。
   - Android API 24–32 若设备缺少系统或已安装的 Photo Picker 回移版本，握手时**不声明** `media.chooseMedia`；回移配置由接入 App 自行声明（见 [docs/native-android.md](native-android.md)）。
@@ -106,6 +105,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | `T-004` 提取参考 `packages/host-core` 并增强 `@open-jsbridge/web/mock` | `#36` (`4acf1aa`) |
 | 2026-11-26 | `T-003` 补齐 `docs/native-capability-catalog.md` 的 `#21` 边界说明并同步 `0.2.0` 看板 | `#35` (`1a1d401`) |
 | 2026-11-26 | `T-002` 新增 `packages/codegen`（Spec Lint + TS 类型生成）与 CI 漂移检查 | `#34` (`ca340e8`) |
 | 2026-11-26 | 修复 `scripts/pack-web.mjs` 对 npm 12 `npm pack --json` 返回格式的兼容 | `#33` (`1a1b580`) |
