@@ -7,15 +7,15 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `1a1b580`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `ca340e8`（最后更新日期：`2026-11-26`）
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
-  - 三端 SDK 候选版本：Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android` 均对齐 **`0.2.0` 候选**（npm 线上稳定版仍为 `0.1.0`，`0.2.0` 走 `next` 频道）
+  - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
 - **首批 v1 标准能力（7 / 7 已合入 `main`）**：
   - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`
   - 事件：`network.statusChanged`、`app.foregrounded`、`app.backgrounded`
-- **当前发版 / 验收阻塞项**：
-  - 正式 SwiftPM `0.2.0` 标签与 Maven Central 发布等待 **Android 10–12 真机 Photo Picker 验收**完成（详见 [docs/native-release.md](native-release.md) 与 [CHANGELOG.md](../CHANGELOG.md)）。
+- **当前发版 / 验收跟进项**：
+  - Maven Central 正式发布仍需留意 Android 10–12 真机 Photo Picker 验收（详见 [docs/native-release.md](native-release.md) 与 [CHANGELOG.md](../CHANGELOG.md)）。
 - **主干活跃 Issue**：
   - `#21`：v1 标准能力集（首批 7 项与 26 项后续候选）
   - `#24`：媒体句柄 + 原生预览/上传方案（首批单图选图已落地，预览/上传/释放待后续推进）
@@ -41,7 +41,7 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-002` | Schema Lint 与 TS Codegen 脚手架（`packages/codegen`） | `in-review` | `linux-agent (antigravity)` | `antigravity/codegen-ts` | `packages/codegen/**`, `scripts/codegen.mjs`, `packages/web-sdk/src/generated/**`, `packages/web-sdk/src/index.ts`, `conformance-tests/codegen.test.mjs`, `package.json`, `.github/workflows/conformance.yml` | 已实现 spec lint + Ajv 2020-12 校验 + TS 类型生成与 CI 漂移检查 | 2026-11-26 |
+| `T-003` | Issue `#21` 文档验收收口与 `0.2.0` 看板同步 | `in-review` | `linux-agent (antigravity)` | `antigravity/issue-21-catalog-boundaries` · Refs `#21` | `docs/native-capability-catalog.md`, `docs/team-status.md` | 补齐目录中的 `#21` 链接与边界说明，核查 `AndroidBridge` 默认无 JSI 回退 | 2026-11-26 |
 
 ---
 
@@ -61,8 +61,7 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **提取参考 `host-core` + 增强 `@open-jsbridge/web/mock`** | 高 | `linux-agent` / `macos-agent` | `packages/web-mock/**`, `conformance-tests/**` | 补齐 `media.chooseMedia`、`bridge.cancel`、`latency`/`failNext` mock，为 RN 方案 A 与差分测试打底 |
-| **Issue #21 文档验收收口与 `TODO.md` 核对** | 高 | `linux-agent` / `macos-agent` | `docs/native-capability-catalog.md`, `README.md`, `TODO.md` | 核对 #21 验收项（明确 `request`/WebSocket/Canvas 不进桥、厂商前缀、`wx-compat` 定位）及 `SEC-JSI-DEFAULT-001` 回归状态 |
+| **提取参考 `host-core` + 增强 `@open-jsbridge/web/mock`** | 高 | `linux-agent` / `macos-agent` | `packages/host-core/**`, `packages/web-mock/**`, `conformance-tests/**` | 补齐 `media.chooseMedia`、`bridge.cancel`、`latency`/`failNext` mock，为 RN 方案 A 与差分测试打底 |
 | **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
 | **流式回调协议 `bridge.progress`（`onCallback`）** | 中 | `linux-agent` | `spec/protocol/**`, `packages/web-sdk/src/bridge.ts`, `packages/web-mock/**`, `conformance-tests/**` | [docs/protocol.md](protocol.md) §8；是 `transfer.progress` 与持续流能力的前置依赖（注意 Web core ≤ 7 KiB 门禁） |
 | **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；外投浏览器降级与可观测性基础 |
@@ -97,6 +96,8 @@
   - `conformance-tests/shim-docs.test.mjs` 会直接解析并执行 `docs/native-ios.md`、`docs/native-android.md`、`docs/flutter.md` 中的 `js` 代码块；调整这三个文档示例时务必运行 `npm test`。
 - **[D-007 | 2026-11-26 | #33 已修复] npm 12 下 `scripts/pack-web.mjs` 兼容问题**
   - npm `12.x` 下 `npm pack --json` 返回按包名索引的对象映射而非数组；`#33` 已在 `scripts/pack-web.mjs` 兼容 npm ≤ 11 数组与 npm 12+ 对象两种格式。
+- **[D-008 | 2026-11-26 | #34] `spec/` 修改必须同步 TS Codegen**
+  - 新增或修改 `spec/schemas/`、`spec/methods/` 或 `spec/protocol/errors.json` 后，必须运行 `npm run codegen:ts` 更新 `packages/web-sdk/src/generated/spec.ts`，CI 已接入 `npm run codegen:check` 拦截漂移与不合规 schema。
 
 ---
 
@@ -106,6 +107,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | `T-002` 新增 `packages/codegen`（Spec Lint + TS 类型生成）与 CI 漂移检查 | `#34` (`ca340e8`) |
 | 2026-11-26 | 修复 `scripts/pack-web.mjs` 对 npm 12 `npm pack --json` 返回格式的兼容 | `#33` (`1a1b580`) |
 | 2026-11-26 | `T-001` 建立多 Agent 协作规范 `AGENTS.md`、中心状态看板与零冲突交接单模板 | `#32` (`15dd06d`) |
 | 2026-11-26 | Web SDK `0.2.0` 发布与迁移说明（`docs/migrate-0.2.0.md`） | `#31` (`52d94f5`) |
