@@ -16,6 +16,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.WeakHashMap
 import java.util.concurrent.Executor
 
@@ -176,13 +177,17 @@ class AndroidBridge private constructor(
             ) return null
 
             val main = Handler(Looper.getMainLooper())
-            val scope = CoroutineScope(SupervisorJob() + Executor { main.post(it) }.asCoroutineDispatcher())
+            val webViewDispatcher = Executor { main.post(it) }.asCoroutineDispatcher()
+            val scope = CoroutineScope(SupervisorJob() + webViewDispatcher)
             val transport = DocumentTransport(
                 canonicalOrigins, enableEcho, modules, businessMethods = methods,
                 runBusiness = { call, complete ->
                     val job = scope.launch {
                         val result = try {
-                            val value = call.handler(call.params)
+                            val route = call.progress
+                            val value = call.handler { chunk ->
+                                withContext(webViewDispatcher) { route.send(chunk) }
+                            }
                             ensureActive()
                             Result.success(value)
                         } catch (error: Throwable) {

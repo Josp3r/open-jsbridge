@@ -58,6 +58,82 @@ class BusinessMethodTest {
     }
 
     @Test
+    fun callbacksNegotiationRequiresStreamingRegistrationAnAsyncRunnerAndPeerSupport() {
+        val streaming = BusinessMethod.streaming(METHOD) { _, _ -> JsonNull.INSTANCE }
+        val ordinary = BusinessMethod(METHOD) { JsonNull.INSTANCE }
+        fun advertised(method: BusinessMethod, async: Boolean, wants: Boolean): Boolean {
+            val host = RpcSession(false, businessMethods = listOf(method), supportsCancellation = async)
+            val reply = envelope(host.receive(hello(wantsCallbacks = wants)))
+            val capabilities = reply.getAsJsonObject("rpc").getAsJsonObject("result").getAsJsonObject("capabilities")
+            return JsonPrimitive("callbacks") in capabilities.getAsJsonArray("features")
+        }
+
+        assertTrue(advertised(streaming, async = true, wants = true))
+        assertFalse(advertised(ordinary, async = true, wants = true))
+        assertFalse(advertised(streaming, async = false, wants = true))
+        assertFalse(advertised(streaming, async = true, wants = false))
+    }
+
+    @Test
+    fun progressUsesTheNegotiatedSessionAndTheCallingMethodsOwnDeclaration() {
+        val host = RpcSession(false, supportsCancellation = true, businessMethods = listOf(
+            BusinessMethod.streaming(STREAM) { _, _ -> JsonNull.INSTANCE },
+            BusinessMethod(METHOD) { JsonNull.INSTANCE },
+        ))
+        val first = envelope(host.receive(hello(wantsCallbacks = true))).getAsJsonObject("rpc").getAsJsonObject("result")
+        val sid = first.get("sid").asString
+        val call = defer(host, request("upload", sid, "$STREAM@1"))
+        val ordinary = defer(host, request("config", sid))
+        assertNull(host.progressNotification(ordinary, 0, JsonNull.INSTANCE))
+        val invalidHello = host.receive(hello("unsupported", version = 2))
+        assertEquals(-32004, error(invalidHello).get("code").asInt)
+
+        val firstProgress = envelope(host.progressNotification(call, 0, null))
+        assertEquals(sid, firstProgress.getAsJsonObject("meta").get("sid").asString)
+        assertEquals(
+            envelope("""{"jsonrpc":"2.0","method":"bridge.progress","params":{"requestId":"upload","seq":0}}"""),
+            firstProgress.getAsJsonObject("rpc"),
+        )
+        val next = envelope(host.progressNotification(call, 1, JsonNull.INSTANCE))
+        assertEquals(JsonNull.INSTANCE, next.getAsJsonObject("rpc").getAsJsonObject("params").get("chunk"))
+
+        val renewed = envelope(host.receive(hello("without-callbacks"))).getAsJsonObject("rpc").getAsJsonObject("result")
+        assertEquals(sid, renewed.get("sid").asString)
+        assertFalse(JsonPrimitive("callbacks") in renewed.getAsJsonObject("capabilities").getAsJsonArray("features"))
+        assertNull(host.progressNotification(call, 2, null))
+        val newCall = defer(host, request("next-upload", sid, STREAM))
+        assertNull(host.progressNotification(newCall, 0, null))
+    }
+
+    @Test
+    fun invalidOrOversizedProgressLeavesTheOriginalRequestUsable() {
+        val host = RpcSession(false, supportsCancellation = true, businessMethods = listOf(
+            BusinessMethod.streaming(STREAM) { _, _ -> JsonNull.INSTANCE },
+        ))
+        val result = envelope(host.receive(hello(wantsCallbacks = true))).getAsJsonObject("rpc").getAsJsonObject("result")
+        val call = defer(host, request("upload", result.get("sid").asString, STREAM))
+        assertNull(host.progressNotification(call, -1, null))
+        assertNull(host.progressNotification(call, 9_007_199_254_740_992L, null))
+        for (invalid in listOf(
+            JsonPrimitive(Double.NaN),
+            JsonPrimitive(9_007_199_254_740_992L),
+            JsonArray().apply { add(this) },
+            JsonPrimitive("界".repeat(24_000)),
+            JsonPrimitive("x".repeat(RpcSession.MAX_MESSAGE_BYTES - 1)),
+        )) {
+            assertNull(host.progressNotification(call, 0, invalid))
+        }
+        val chunk = envelope("""{"written":3}""")
+        val progress = envelope(host.progressNotification(call, 0, chunk)).getAsJsonObject("rpc")
+        assertEquals(chunk, progress.getAsJsonObject("params").get("chunk"))
+        val reply = envelope(host.finishBusinessCall(call, Result.success(JsonPrimitive("done")))).getAsJsonObject("rpc")
+        assertEquals("upload", reply.get("id").asString)
+        assertEquals("done", reply.get("result").asString)
+        host.close()
+        assertNull(host.progressNotification(call, 1, chunk))
+    }
+
+    @Test
     fun oversizedBusinessCapabilitiesAreRejectedWithoutActivatingSession() {
         val name = "acme." + "a".repeat(RpcSession.MAX_MESSAGE_BYTES)
         val host = RpcSession(false, businessMethods = listOf(BusinessMethod(name) { JsonNull.INSTANCE }))
@@ -170,8 +246,10 @@ class BusinessMethodTest {
     private fun establish(host: RpcSession): String =
         envelope(host.receive(hello())).getAsJsonObject("rpc").getAsJsonObject("result").get("sid").asString
 
-    private fun hello() =
-        """{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"hello","method":"bridge.hello","params":{"protocols":[1]}}}"""
+    private fun hello(id: String = "hello", wantsCallbacks: Boolean = false, version: Int = 1): String {
+        val wants = if (wantsCallbacks) ""","wants":["callbacks"]""" else ""
+        return """{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"$id","method":"bridge.hello","params":{"protocols":[$version]$wants}}}"""
+    }
 
     private fun request(
         id: String,
@@ -193,5 +271,6 @@ class BusinessMethodTest {
 
     private companion object {
         const val METHOD = "acme.app.getConfig"
+        const val STREAM = "acme.app.upload"
     }
 }
