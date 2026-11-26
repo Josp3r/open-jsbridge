@@ -467,7 +467,7 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 
 ### 11.3 来源白名单与可选策略扩展
 
-参考宿主使用一个或多个精确 HTTPS origin 作为来源白名单，只有匹配的主文档可见注入的 bridge。可信 origin、主 frame、WebView、document 和 sid 校验仍适用。注册表和握手描述哪些方法与事件可用。下列 `rules` JSON 为可选配置提案，参考宿主尚未实现。
+参考宿主使用一个或多个精确 HTTPS origin 作为来源白名单，只有匹配的主文档可见注入的 bridge。可信 origin、主 frame、WebView、document 和 sid 校验仍适用。注册表和握手描述哪些方法与事件可用。下列 `rules` JSON 为可选策略扩展：TypeScript 参考 `packages/host-core` 已通过 `createAclPolicy` 实现（含 `rateLimit` 与权限链异常隔离，见 #54），iOS 与 Android 原生参考宿主尚未实现。
 
 ```jsonc
 {

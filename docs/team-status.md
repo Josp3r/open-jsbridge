@@ -7,25 +7,32 @@
 > gh issue view 41 -R Josp3r/open-jsbridge --comments
 > gh pr list -R Josp3r/open-jsbridge --state open --limit 20
 > ```
-> 本文件专注沉淀**持久化团队信息**：当前基线、环境能力矩阵、待认领候选池、共享决策/避坑清单与近期已完成里程碑。
+> 本文件专注沉淀**持久化团队信息**：当前基线、环境能力矩阵、三端能力对齐矩阵、待认领候选池、待决议事项、共享决策/避坑清单与近期已完成里程碑。
+>
+> **维护约定**：每合入一个改变能力边界或候选池的功能 PR 后，收尾 Agent 应顺手（或在下一个文档 PR 中）同步本文件 §1、§3、§4、§7，避免后续会话认领已完成的任务。
 
 ---
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `9d2600f`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `a56de2c`（最后更新日期：`2026-11-26`）
+- **本地验证基线**（`linux-agent`，`a56de2c`）：`npm test` 236/236、`npm run codegen:check` 通过、`npm run size:web` **`7127 / 7168 bytes`（仅剩 41 bytes，见 §5 O-001）**
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
-- **首批 v1 标准能力（7 / 7 已合入 `main`）**：
-  - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`
+  - `0.2.0` 之后合入的能力尚未发版，记录在 [CHANGELOG.md](../CHANGELOG.md) 的 `Unreleased` 段；下一版本范围见 §5 O-003
+- **v1 标准能力（三端已合入 `main`）**：
+  - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`
   - 事件：`network.statusChanged`、`app.foregrounded`、`app.backgrounded`
+- **已定契约、原生宿主未完成**：`transfer.upload@1`（RFC #44 + Schema/Web/Mock #58；iOS 图片预处理 #47 已合入，详见 §3）
+- **Web SDK 子路径**：`/auto`、`/app`、`/device`、`/network`、`/ui`、`/media`、`/transfer`、`/reverse`、`/fallback`、`/mock`
+- **仓内参考实现（未单独发布）**：`packages/host-core`、`packages/devtools`、`packages/react-native`、`packages/codegen`、`packages/flutter`（`publish_to: none`）
 - **当前发版 / 验收跟进项**：
-  - Maven Central 正式发布仍需留意 Android 10–12 真机 Photo Picker 验收（详见 [docs/native-release.md](native-release.md) 与 [CHANGELOG.md](../CHANGELOG.md)）。
+  - Maven Central 正式发布仍需 Android 10–12 真机 Photo Picker 验收（详见 [docs/native-release.md](native-release.md)），**目前无认领人**（见 §5 O-004）。
 - **主干活跃 Issue**：
   - `#41`：**置顶多 Agent 实时认领锁与跨端交接控制面**
-  - `#21`：v1 标准能力集（首批 7 项与 26 项后续候选）
-  - `#24`：媒体句柄 + 原生预览/上传方案（首批单图选图已落地，预览/上传/释放待后续推进）
+  - `#21`：v1 标准能力集（首批 7 项与后续候选）
+  - `#24`：媒体句柄 + 原生预览/上传方案（选图、主动释放已三端落地；上传契约已定、原生投递未完成；预览未开始）
 
 ---
 
@@ -41,23 +48,57 @@
 
 ---
 
-## 3. 待认领候选池（Backlog / Ready to Claim）
+## 3. 三端能力对齐矩阵（Parity Matrix）
+
+> `✅` 已合入 `main`；`🚧` 部分完成或进行中；`—` 未实现。Web 侧能力能否使用仍以握手声明为准，原生宿主未实现时不会声明对应能力。
+
+| 能力 | Web SDK | Mock / `host-core` | iOS 参考宿主 | Android 参考宿主 | 备注 |
+|---|---|---|---|---|---|
+| 首批 7 项 v1 能力 | ✅ | ✅ | ✅ | ✅ | `0.2.0` |
+| `media.release@1` | ✅ #56 | ✅ #56 | ✅ #55 | ✅ #57 | #49 契约 |
+| `bridge.progress` 流式回调 | ✅ #38 | ✅ #38 | — | — | Android 仅把入站 `bridge.progress` 当通知忽略；Flutter 已实现 |
+| Host → Web 反向调用（§9.2） | ✅ #46（`/reverse`） | ✅ #46 | — | — | Flutter / RN 经 host-core 支持 |
+| `transfer.upload@1` | ✅ #58（`/transfer`） | ✅ #58 | 🚧 图片预处理 #47 | 🚧 图片预处理认领中 | 网络投递 + RPC 注册未认领；依赖原生 `bridge.progress` |
+| `rules` ACL / 限流（§11.3） | n/a | ✅ #54 | — | — | 原生宿主仍只支持精确 HTTPS origin 白名单 |
+| `media.preview@1` | — | — | — | — | 无契约 |
+
+---
+
+## 4. 待认领候选池（Backlog / Ready to Claim）
 
 认领前请先查阅置顶 Issue [#41](https://github.com/Josp3r/open-jsbridge/issues/41) 确认是否已被其他 Agent 抢占；选定后直接在 `#41` 发 `CLAIM` 评论即可开工（无需为认领专门修改本文件）。
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
-| **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；注意主入口剩余约 453 bytes 的 7 KiB 体积预算 |
-| **反向调用（`bridge.handle` / Host → Web）** | 中 | `linux-agent` | `packages/web-sdk/src/bridge.ts`, `packages/host-core/**`, `conformance-tests/**` | [docs/protocol.md](protocol.md) §9.2；注意 7 KiB 体积门禁 |
-| **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`, `packages/web-sdk/**`, 双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance |
-| **Flutter 方案 A 宿主（`open_jsbridge_flutter`）** | 中低 | `macos-agent` / 具备 Flutter SDK 环境 | `packages/flutter/**`（或独立目录） | [docs/flutter.md](flutter.md)；遵循 S2 与 conformance 矩阵 |
-
-> 当前由 `macos-agent (codex)` 正在推进的 `transfer.upload` RFC（`PR #39`）等实时认领状态以置顶 Issue [#41](https://github.com/Josp3r/open-jsbridge/issues/41) 为准。
+| **原生 `bridge.progress` 发送端（iOS + Android）** | 高 | `linux-agent`（Android）+ `macos-agent`（iOS） | `RpcSession.kt`、`WireHost.swift`（**均为热点文件，须串行**）及对应测试 | `transfer.upload` 原生落地的前置；对齐 [docs/protocol.md](protocol.md) 与 `conformance-tests/progress.test.mjs` 语义 |
+| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | 高 | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；依赖上一项及双端图片预处理（iOS #47 已合入，Android 认领中） |
+| **原生反向调用（§9.2）** | 中 | `linux-agent` + `macos-agent` 接力 | 双端宿主会话层（热点文件） | Web/host-core 已于 #46 落地；原生未实现前不得声明能力 |
+| **Flutter Dart 测试接入 CI** | 中 | 具备 Flutter SDK 的环境 | `.github/workflows/conformance.yml` | `packages/flutter/test/flutter_host_test.dart` 目前未在 CI 执行，仅有 Node 侧 shim 测试 |
+| **M0 收尾：补两条原生回归用例** | 中 | `macos-agent`（iOS）/ `linux-agent`（Android） | `examples/native-ios/Tests/**`、`examples/native-android/host/src/test/**` | 见 [TODO.md](../TODO.md) M0：iOS 权限链抛错时 handler 零调用并返回 `-32603`；Android 缺少 WebMessageListener 时 `attach` 返回 `null` |
+| **`media.preview@1` 契约** | 中 | `macos-agent` / `linux-agent` | `spec/methods/media/**`、双端宿主 | Refs #24；先出契约 PR，再分端实现 |
+| **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中低 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`、`packages/web-sdk/**`、双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance；**受 §5 O-001 体积预算约束** |
+| **原生 `rules` ACL** | 低 | 按需 | 双端宿主安全模块 | host-core 已于 #54 实现；原生是否跟进待维护者确认 |
 
 ---
 
-## 4. 共享决策与避坑清单（Shared Decisions & Gotchas）
+## 5. 待决议事项（Open Decisions）
+
+> 以下事项需要维护者拍板后再转为 `D-xxx` 决策；在决议前，相关候选任务请勿自行选择方案。
+
+- **[O-001 | 2026-11-26] Web SDK 主入口体积余量仅剩 41 bytes**
+  - 现状：主入口 `7127 / 7168 bytes`，此前候选池中的"约 453 bytes"说法已过期。任何需要改动 `packages/web-sdk/src/bridge.ts` 或 `packages/protocol` 的功能几乎都会触发门禁。
+  - 可选方向：(a) 上调门禁上限；(b) 把更多逻辑迁到按需子路径；(c) 先做一轮主入口瘦身。
+- **[O-002 | 2026-11-26] 新增包 / 新命名空间的准入流程**
+  - 背景：`wx-compat` 在 #50 合入后数分钟即被 #52 回滚，D-010 为事后补录。
+  - 建议：新增 `packages/*`、新 Web 子路径或新标准命名空间前，先在 Issue 中取得维护者确认，再认领编码。
+- **[O-003 | 2026-11-26] 下一版本（`0.3.0`）范围与发版节奏**
+  - `0.2.0` 之后已累积插件管线、fallback、反向调用、流式回调、`media.release`、`transfer.upload`（Web/Mock）等能力，但原生宿主只跟进了 `media.release`。需确定下一版本是否以"原生对齐"为门槛。
+- **[O-004 | 2026-11-26] Android 10–12 真机 Photo Picker 验收无负责人**
+  - Maven Central 正式发布被该项阻塞，需指定具备真机条件的会话或维护者负责。
+
+---
+
+## 6. 共享决策与避坑清单（Shared Decisions & Gotchas）
 
 > 记录已拍板的架构结论和真实踩坑经验，供所有新会话直接复用；新增条目请附日期与来源 PR/Issue。
 
@@ -72,9 +113,11 @@
   - 参考宿主仅支持一个或多个**精确 HTTPS origin**（`https://host[:port]`），禁止前缀/子串匹配；`rules` JSON 细粒度 ACL 仍属未实现的可选提案。
   - 解码器仅过滤任意层级的 `__proto__` 字段，**必须保留 `constructor` 与 `prototype` 等业务 JSON 键名**。
   - 编码器在入队前做严格 JSON 快照，拒绝 `Date`、访问器、稀疏数组、循环引用、超出安全整数范围的数字等非标准 JSON 值（`-32600` / `-32602`）。
+  - **补充（2026-11-26 · #54）**：`rules` JSON（含 `rateLimit` 与权限链异常隔离 `SEC-ACL-ERROR-001`）已在 TypeScript 参考 `packages/host-core`（`createAclPolicy`）实现；**iOS / Android 原生参考宿主仍未实现**，上述精确 origin 约束对原生宿主继续有效。
 - **[D-004 | 2026-11-26 | #19, #27, #31] Web SDK `0.2.0` 包边界与体积门禁**
   - 仅发布 ESM + TypeScript 声明，零运行时依赖；主入口 `@open-jsbridge/web` 只导出 `createBridge` 与核心类型/错误码，不自动初始化默认单例（默认单例在 `@open-jsbridge/web/auto`，按需能力在 `/app`、`/device`、`/network`、`/ui`、`/media`）。
   - 任何对 `packages/web-sdk` 或 `packages/protocol` 的修改都必须通过 `npm run size:web`（主入口 min+gzip ≤ 7 KiB；当前基线 `7127 / 7168 bytes`）。
+  - **补充（2026-11-26 · #43, #46, #58）**：插件管线 `use` / `onMetric` 位于主入口；`/fallback`、`/reverse`、`/transfer` 为新增按需子路径。主入口余量仅 41 bytes，见 §5 O-001。
 - **[D-005 | 2026-11-25 | #29] Android Photo Picker 兼容策略**
   - 选图强制使用 iOS PHPicker / AndroidX `PickVisualMedia`，禁止为选图申请整库相册权限。
   - Android API 24–32 若设备缺少系统或已安装的 Photo Picker 回移版本，握手时**不声明** `media.chooseMedia`；回移配置由接入 App 自行声明（见 [docs/native-android.md](native-android.md)）。
@@ -91,12 +134,28 @@
 
 ---
 
-## 5. 近期已完成（Recently Completed）
+## 7. 近期已完成（Recently Completed）
 
 > 仅保留近期关键里程碑条目，完整历史见 `git log` 与 [CHANGELOG.md](../CHANGELOG.md)。
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | iOS 参考宿主接入 `media.release@1`（批量释放、会话配额回收） | `#55` (`a56de2c`) |
+| 2026-11-26 | Android 参考宿主接入 `media.release@1` | `#57` (`b1393f9`) |
+| 2026-11-26 | `transfer.upload@1` Schema、`@open-jsbridge/web/transfer` 与 Mock `uploadMedia` | `#58` (`915256b`) |
+| 2026-11-26 | Web `/media` 与 Mock 支持 `media.release@1` | `#56` (`f3aba04`) |
+| 2026-11-26 | `host-core` 实现 §11.3 `rules` ACL、限流与 `SEC-ACL-ERROR-001` | `#54` (`a45ad0b`) |
+| 2026-11-26 | Web demo 补齐 ES 模块服务、`?devtools=1` 浮层与 HTTP 模块图测试 | `#53` (`515972b`) |
+| 2026-11-26 | 回滚 `wx-compat` 并记录 D-010 | `#52` (`5457802`)，回滚 `#50` |
+| 2026-11-26 | Codegen 新增 Swift / Kotlin / Dart 生成目标 | `#51` (`617a18c`) |
+| 2026-11-26 | `media.release@1` 契约 | `#49` (`a0d266d`) |
+| 2026-11-26 | `packages/devtools`（记录器、HAR 导出、Shadow DOM 浮层） | `#48` (`594237f`) |
+| 2026-11-26 | iOS 前台上传图片预处理 | `#47` (`d2a2ac0`) |
+| 2026-11-26 | Host → Web 反向调用（§9.2，Web `/reverse` + host-core） | `#46` (`0f917cd`) |
+| 2026-11-26 | Flutter 方案 A Dart 宿主核心与 shim | `#45` (`fb33a6e`) |
+| 2026-11-26 | `transfer.upload` 前台图片上传 RFC（`spec/rfcs/transfer-upload.md`） | `#44` (`40f6795`) |
+| 2026-11-26 | Web SDK 插件管线（`use` / `onMetric`）与 `/fallback` | `#43` (`c56e6a9`) |
+| 2026-11-26 | 实时认领与交接迁移到置顶 Issue `#41` | `#42` (`ce3a69e`) |
 | 2026-11-26 | React Native 方案 A 宿主核心（`packages/react-native`、`OJSB_RN_SHIM`、二次编码、S2 门禁） | `#40` (`9d2600f`) |
 | 2026-11-26 | 流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout` + `HostCore` `ctx.callback`） | `#38` (`c49083d`) |
 | 2026-11-26 | 提取参考 `packages/host-core` 并增强 `@open-jsbridge/web/mock` | `#36` (`4acf1aa`) |
