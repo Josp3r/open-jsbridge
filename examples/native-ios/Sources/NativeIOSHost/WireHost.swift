@@ -3,13 +3,30 @@ import Foundation
 
 /// The reference host manages one active session per WebView document.
 final class WireHost {
-    struct BusinessCall {
-        let handler: NativeIOSHost.BusinessMethod.Handler
-        let params: [String: Any]
+    final class BusinessCall {
+        private let handler: NativeIOSHost.BusinessMethod.StreamingHandler
+        private let params: [String: Any]
         let isMedia: Bool
         fileprivate let id: String
         fileprivate let sid: String
         fileprivate let meta: [String: String]
+        fileprivate var nextSeq: Int?
+
+        fileprivate init(handler: @escaping NativeIOSHost.BusinessMethod.StreamingHandler, params: [String: Any],
+                         isMedia: Bool, id: String, sid: String, meta: [String: String], callbacks: Bool) {
+            self.handler = handler
+            self.params = params
+            self.isMedia = isMedia
+            self.id = id
+            self.sid = sid
+            self.meta = meta
+            nextSeq = callbacks ? 0 : nil
+        }
+
+        @MainActor
+        func run(progress: NativeIOSHost.ProgressReporter? = nil) async throws -> Any {
+            try await handler(params, progress ?? .init { _ in false })
+        }
 
         func matches(requestID: String) -> Bool {
             id.utf8.elementsEqual(requestID.utf8)
@@ -34,18 +51,19 @@ final class WireHost {
 
     private let platform: String
     private let methods: [String: [String: [Int]]]
-    private let businessMethods: [String: NativeIOSHost.BusinessMethod.Handler]
+    private let businessMethods: [String: NativeIOSHost.BusinessMethod]
     private let events: [String]
     private let businessEvents: Set<String>
     private let networkType: () -> NetworkConnection
     private let media: MediaStore?
     private var subscriptions: [String: EventSubscription] = [:]
     private(set) var sid: String?
+    private var callbacksEnabled = false
     private var handshakeIDs = Set<Data>()
     private var requestIDs = Set<Data>()
 
     init(platform: String, options: NativeIOSHost.Options = .init(),
-         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler] = [:], businessEvents: [String] = [],
+         businessMethods: [String: NativeIOSHost.BusinessMethod] = [:], businessEvents: [String] = [],
          enableEcho: Bool = true, supportsMedia: Bool = true, supportsAppLifecycle: Bool = true,
          networkType: @escaping () -> NetworkConnection = { .unknown }) {
         self.platform = platform
@@ -80,6 +98,7 @@ final class WireHost {
     func reset() {
         media?.reset()
         sid = nil
+        callbacksEnabled = false
         subscriptions.removeAll()
         handshakeIDs.removeAll()
         requestIDs.removeAll()
@@ -173,19 +192,23 @@ final class WireHost {
         if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
 
         let isMedia = name == MediaStore.chooseMethod
+        let businessMethod = businessMethods[name]
+        var handler = businessMethod?.handler
         if isMedia {
             guard Self.validMediaParams(params) else {
                 return failure(-32602, "Invalid params", id: id, meta: responseMeta)
             }
             if mediaBusy { return failure(-32010, "Busy", id: id, meta: responseMeta) }
-            guard chooseMedia != nil, onBusinessCall != nil else {
+            guard let chooseMedia, onBusinessCall != nil else {
                 return mediaFailure(MediaProfileError.unavailable, id: id, meta: responseMeta)
             }
+            handler = { params, _ in try await chooseMedia(params) }
         }
-        if let handler = isMedia ? chooseMedia : businessMethods[name] {
+        if let handler {
             guard let onBusinessCall else { return failure(-32603, "Internal error", id: id, meta: responseMeta) }
             onBusinessCall(BusinessCall(handler: handler, params: params as? [String: Any] ?? [:],
-                                        isMedia: isMedia, id: id, sid: sid, meta: responseMeta))
+                                        isMedia: isMedia, id: id, sid: sid, meta: responseMeta,
+                                        callbacks: callbacksEnabled && businessMethod?.supportsCallbacks == true))
             return nil
         }
 
@@ -266,7 +289,22 @@ final class WireHost {
         }
     }
 
+    @MainActor
+    func sendProgress(for call: BusinessCall, chunk: Any? = nil, deliver: (String) async -> Bool) async -> Bool {
+        guard sid == call.sid, let seq = call.nextSeq, seq <= 9_007_199_254_740_991 else { return false }
+        var params: [String: Any] = ["requestId": call.id, "seq": seq]
+        if let chunk { params["chunk"] = chunk }
+        guard JSONSerialization.isValidJSONObject(params), Self.isPortableJSON(params),
+              let raw = serialize(rpc: ["jsonrpc": "2.0", "method": "bridge.progress", "params": params],
+                                  meta: ["sid": call.sid]), raw.utf8.count <= Self.maxMessageBytes,
+              await deliver(raw) else { return false }
+        // Completion or cancellation may have closed the stream while WebKit was delivering the frame.
+        if call.nextSeq == seq { call.nextSeq = seq + 1 }
+        return true
+    }
+
     func finishBusinessCall(_ call: BusinessCall, result: Result<Any, Error>) -> String? {
+        call.nextSeq = nil
         guard sid == call.sid else { return nil }
         switch result {
         case .success(let value):
@@ -325,6 +363,7 @@ final class WireHost {
     }
 
     func cancelBusinessCall(_ call: BusinessCall) -> String? {
+        call.nextSeq = nil
         guard sid == call.sid else { return nil }
         return failure(-32002, "Call cancelled", id: call.id, meta: call.meta)
     }
@@ -463,6 +502,12 @@ final class WireHost {
             return failure(-32004, "Unsupported protocol", id: id, meta: responseMeta, data: ["supported": [1]])
         }
 
+        let wants = params?["wants"] as? [String] ?? []
+        let callbacks = self.sid == nil
+            ? wants.contains("callbacks") && businessMethods.values.contains(where: \.supportsCallbacks)
+            : callbacksEnabled
+        var features = media != nil || !businessMethods.isEmpty ? ["cancel"] : []
+        if callbacks { features.append("callbacks") }
         let sid = self.sid ?? UUID().uuidString.lowercased()
         let result: [String: Any] = [
             "jsb": "1.0",
@@ -471,7 +516,7 @@ final class WireHost {
             "capabilities": [
                 "methods": methods,
                 "events": events,
-                "features": media != nil || !businessMethods.isEmpty ? ["cancel"] : []
+                "features": features
             ],
             "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": 15_000]
         ]
@@ -485,6 +530,7 @@ final class WireHost {
             return failure(-32006, "Payload too large", id: id, meta: responseMeta)
         }
         self.sid = sid
+        callbacksEnabled = callbacks
         return reply
     }
 

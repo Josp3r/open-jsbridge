@@ -95,6 +95,87 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
+    func testStreamingMethodDeliversProgressBeforeItsFinalReply() async throws {
+        let (webView, delegate) = makeWebView()
+        var sendAfterReturn: (@MainActor () async -> Bool)?
+        let stream = try NativeIOSHost.BusinessMethod("acme.job.run", streaming: { _, progress in
+            sendAfterReturn = { await progress.send("late") }
+            let beforeReceiver = await progress.send("too early")
+            _ = try await webView.evaluateJavaScript("""
+                window.progressFrames = [];
+                window.__OJSB_RECEIVE__ = raw => {
+                    window.progressFrames.push(JSON.parse(raw));
+                    if (window.progressFrames.length === 1) throw new Error('Test receiver failed after delivery');
+                };
+                true
+                """)
+            let first = await progress.send(["bytes": 10])
+            let second = await progress.send(NSNull())
+            // Start the last send on the main actor and let the method return while WebKit is delivering it.
+            await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+                Task { @MainActor in
+                    started.resume()
+                    let sent = await progress.send()
+                    XCTAssertEqual(sent, first)
+                }
+            }
+            return [beforeReceiver, first, second]
+        })
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: origin, methods: [stream])
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+        await loadPage(in: webView, with: delegate, at: origin)
+
+        let result = try await request("bridge.hello", id: "hello", params: [
+            "protocols": [1], "wants": ["callbacks"]
+        ], in: webView) as? [String: Any]
+        let sid = try XCTUnwrap(result?["sid"] as? String)
+        let features = (result?["capabilities"] as? [String: Any])?["features"] as? [String]
+        XCTAssertTrue(features?.contains("callbacks") == true)
+
+        let observed = try await webView.callAsyncJavaScript("""
+            const pending = window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                jsb: '1.0', meta: {sid}, rpc: {jsonrpc: '2.0', method: 'acme.job.run@1', id: 'job'}
+            }));
+            const raw = await Promise.race([pending, new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Timed out waiting for streaming method')), 3000))]);
+            const {rpc} = JSON.parse(raw);
+            return {notifications: window.progressFrames.slice(), id: rpc.id, result: rpc.result};
+            """, arguments: ["sid": sid], in: nil, contentWorld: .page) as? [String: Any]
+        XCTAssertEqual(observed?["id"] as? String, "job")
+        XCTAssertEqual(observed?["result"] as? [Bool], [false, true, true])
+        let notifications = try XCTUnwrap(observed?["notifications"] as? [[String: Any]])
+        let params = try notifications.enumerated().map { seq, envelope -> [String: Any] in
+            XCTAssertEqual(envelope["jsb"] as? String, "1.0")
+            XCTAssertEqual((envelope["meta"] as? [String: Any])?["sid"] as? String, sid)
+            let rpc = try XCTUnwrap(envelope["rpc"] as? [String: Any])
+            XCTAssertEqual(rpc["jsonrpc"] as? String, "2.0")
+            XCTAssertEqual(rpc["method"] as? String, "bridge.progress")
+            XCTAssertNil(rpc["id"])
+            let params = try XCTUnwrap(rpc["params"] as? [String: Any])
+            XCTAssertEqual(params["requestId"] as? String, "job")
+            XCTAssertEqual(params["seq"] as? Int, seq)
+            return params
+        }
+        XCTAssertEqual(params.count, 3)
+        guard params.count == 3 else { return }
+        XCTAssertEqual(params[0]["chunk"] as? [String: Int], ["bytes": 10])
+        XCTAssertTrue(params[1]["chunk"] is NSNull)
+        XCTAssertNil(params[2]["chunk"])
+
+        let finished = try XCTUnwrap(sendAfterReturn)
+        let sent = await finished()
+        XCTAssertFalse(sent)
+
+        await loadPage(in: webView, with: delegate, at: origin.appendingPathComponent("without-callbacks"))
+        let nextSID = try await hello(in: webView)
+        let next = try await request("acme.job.run", id: "job", sid: nextSID, in: webView)
+        XCTAssertEqual(next as? [Bool], [false, false, false])
+        let frameCount = try await webView.evaluateJavaScript("window.progressFrames.length") as? Int
+        XCTAssertEqual(frameCount, 0)
+    }
+
+    @MainActor
     func testReleaseAppPublishesOnlySubscribedBusinessEventsForCurrentDocument() async throws {
         let name = "acme.app.configChanged"
         let unknown = "acme.app.unknown"
@@ -277,8 +358,10 @@ final class ReleaseIOSTests: XCTestCase {
         let started = expectation(description: "Business handler started in the first document")
         let returned = expectation(description: "Business handler returned after cancellation")
         var heldResponse: CheckedContinuation<Void, Never>?
-        let business = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+        var sendOldProgress: (@MainActor () async -> Bool)?
+        let business = try NativeIOSHost.BusinessMethod("acme.app.getConfig", streaming: { params, progress in
             if params["hold"] as? Bool == true {
+                sendOldProgress = { await progress.send("old") }
                 await withCheckedContinuation { continuation in
                     heldResponse = continuation
                     started.fulfill()
@@ -288,7 +371,7 @@ final class ReleaseIOSTests: XCTestCase {
                 return ["source": "old"]
             }
             return ["source": "current"]
-        }
+        })
         let (webView, delegate) = makeWebView()
         let attachment = try NativeIOSHost.attach(to: webView, allowing: origin, methods: [business])
         delegate.attachment = attachment
@@ -299,7 +382,8 @@ final class ReleaseIOSTests: XCTestCase {
         XCTAssertTrue(webView.navigationDelegate === delegate)
 
         await loadPage(in: webView, with: delegate, at: origin)
-        let first = try await hello(in: webView)
+        let first = try await hello(in: webView, wants: ["callbacks"])
+        try await captureFirstEvent(in: webView)
         _ = try await webView.callAsyncJavaScript("""
             void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({jsb: '1.0', meta: {sid}, rpc: {
                 jsonrpc: '2.0', id: 'business', method: 'acme.app.getConfig', params: {hold: true}
@@ -307,10 +391,22 @@ final class ReleaseIOSTests: XCTestCase {
             return true;
             """, arguments: ["sid": first], in: nil, contentWorld: .page)
         await fulfillment(of: [started], timeout: 5)
+        let send = try XCTUnwrap(sendOldProgress)
+        let sentBeforeNavigation = await send()
+        XCTAssertTrue(sentBeforeNavigation)
+        let firstProgress = try await nextEvent(in: webView)
+        XCTAssertEqual(firstProgress["requestId"] as? String, "business")
 
         await loadPage(in: webView, with: delegate, at: origin.appendingPathComponent("next"))
-        let second = try await hello(in: webView)
+        let second = try await hello(in: webView, wants: ["callbacks"])
         XCTAssertNotEqual(first, second)
+        _ = try await webView.evaluateJavaScript("""
+            window.oldProgress = [];
+            window.__OJSB_RECEIVE__ = raw => window.oldProgress.push(raw);
+            true
+            """)
+        let sentAfterNavigation = await send()
+        XCTAssertFalse(sentAfterNavigation)
         let stale = try await request("acme.app.getConfig", id: "stale", sid: first, in: webView)
         XCTAssertTrue(stale is NSNull)
 
@@ -320,6 +416,8 @@ final class ReleaseIOSTests: XCTestCase {
         await fulfillment(of: [returned], timeout: 5)
         let current = try await request("acme.app.getConfig@1", id: "business", sid: second, in: webView) as? [String: String]
         XCTAssertEqual(current, ["source": "current"])
+        let oldProgress = try await webView.evaluateJavaScript("window.oldProgress") as? [String]
+        XCTAssertEqual(oldProgress, [])
         XCTAssertTrue(webView.navigationDelegate === delegate)
     }
 
@@ -328,8 +426,10 @@ final class ReleaseIOSTests: XCTestCase {
         let started = expectation(description: "Every business slot is in use")
         var cancelledReturned: XCTestExpectation?
         var held = [Int: CheckedContinuation<Void, Never>]()
-        let business = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
+        var sendFirstProgress: (@MainActor () async -> Bool)?
+        let business = try NativeIOSHost.BusinessMethod("acme.app.getConfig", streaming: { params, progress in
             guard let index = params["index"] as? Int else { throw NativeIOSHost.BusinessMethodError.invalidParams }
+            if index == 0 { sendFirstProgress = { await progress.send("first") } }
             await withCheckedContinuation { continuation in
                 held[index] = continuation
                 started.fulfill()
@@ -339,7 +439,7 @@ final class ReleaseIOSTests: XCTestCase {
                 cancelledReturned?.fulfill()
             }
             return ["index": index]
-        }
+        })
         let (webView, delegate) = makeWebView()
         let attachment = try NativeIOSHost.attach(to: webView, allowing: origin,
                                                   options: .init(deviceInfo: true), methods: [business])
@@ -350,13 +450,17 @@ final class ReleaseIOSTests: XCTestCase {
         }
 
         await loadPage(in: webView, with: delegate, at: origin)
-        let helloResult = try await request("bridge.hello", id: "hello", in: webView)
+        let helloResult = try await request("bridge.hello", id: "hello", params: [
+            "protocols": [1], "wants": ["callbacks"]
+        ], in: webView)
         let handshake = try XCTUnwrap(helloResult as? [String: Any])
         let sid = try XCTUnwrap(handshake["sid"] as? String)
         let limits = try XCTUnwrap(handshake["limits"] as? [String: Int])
         let limit = try XCTUnwrap(limits["maxInflight"])
         started.expectedFulfillmentCount = limit
         _ = try await webView.callAsyncJavaScript("""
+            window.progressRequestIds = [];
+            window.__OJSB_RECEIVE__ = raw => window.progressRequestIds.push(JSON.parse(raw).rpc.params.requestId);
             window.postBridgeFrame = (rpc, session = sid, traceId) =>
                 window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
                     jsb: '1.0', meta: {sid: session, traceId}, rpc: {jsonrpc: '2.0', ...rpc}
@@ -368,6 +472,9 @@ final class ReleaseIOSTests: XCTestCase {
             """, arguments: ["sid": sid, "limit": limit], in: nil, contentWorld: .page)
         await fulfillment(of: [started], timeout: 10)
         XCTAssertEqual(held.count, limit)
+        let send = try XCTUnwrap(sendFirstProgress)
+        let sentBeforeCancellation = await send()
+        XCTAssertTrue(sentBeforeCancellation)
 
         let invalidResult = try await webView.callAsyncJavaScript("""
             const cancel = {method: 'bridge.cancel', params: {requestId: 'held-0'}};
@@ -401,6 +508,8 @@ final class ReleaseIOSTests: XCTestCase {
         XCTAssertEqual(meta, ["sid": sid, "traceId": "business-trace"])
         XCTAssertEqual(rpc["id"] as? String, "held-0")
         XCTAssertEqual((rpc["error"] as? [String: Any])?["code"] as? Int, -32002)
+        let sentAfterCancellation = await send()
+        XCTAssertFalse(sentAfterCancellation)
 
         let capabilities = try XCTUnwrap(handshake["capabilities"] as? [String: Any])
         XCTAssertTrue((capabilities["features"] as? [String])?.contains("cancel") == true)
@@ -411,6 +520,8 @@ final class ReleaseIOSTests: XCTestCase {
         await fulfillment(of: [returned], timeout: 5)
         let afterLateReturn = try await request("device.getInfo", id: "after-late-return", sid: sid, in: webView)
         XCTAssertEqual((afterLateReturn as? [String: String])?["os"], "ios")
+        let progressIDs = try await webView.evaluateJavaScript("window.progressRequestIds") as? [String]
+        XCTAssertEqual(progressIDs, ["held-0"])
     }
 
     @MainActor
@@ -522,8 +633,10 @@ final class ReleaseIOSTests: XCTestCase {
     }
 
     @MainActor
-    private func hello(in webView: WKWebView) async throws -> String {
-        let result = try await request("bridge.hello", id: "hello", in: webView) as? [String: Any]
+    private func hello(in webView: WKWebView, wants: [String] = []) async throws -> String {
+        let result = try await request("bridge.hello", id: "hello", params: [
+            "protocols": [1], "wants": wants
+        ], in: webView) as? [String: Any]
         return try XCTUnwrap(result?["sid"] as? String)
     }
 

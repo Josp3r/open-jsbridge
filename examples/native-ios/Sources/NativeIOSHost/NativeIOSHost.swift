@@ -97,9 +97,9 @@ public enum NativeIOSHost {
             throw AttachmentError.webViewAlreadyLoaded
         }
 
-        var handlers: [String: BusinessMethod.Handler] = [:]
+        var handlers: [String: BusinessMethod] = [:]
         for method in methods {
-            guard handlers.updateValue(method.handler, forKey: method.name) == nil else {
+            guard handlers.updateValue(method, forKey: method.name) == nil else {
                 throw BusinessMethodError.duplicateName(method.name)
             }
         }
@@ -290,6 +290,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
 
     private struct BusinessWork {
         let call: WireHost.BusinessCall
+        let progress: NativeIOSHost.ProgressReporter
         let task: Task<Void, Never>
         let reply: (String?) -> Void
     }
@@ -314,7 +315,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     weak var webView: WKWebView?
 
     init(origins: [AllowedOrigin], options: NativeIOSHost.Options,
-         businessMethods: [String: NativeIOSHost.BusinessMethod.Handler], businessEvents: [String] = [],
+         businessMethods: [String: NativeIOSHost.BusinessMethod], businessEvents: [String] = [],
          enableEcho: Bool, handlerName: String,
          watchNetwork: NetworkModule.Watch?,
          scheduleReply: @escaping NativeIOSHost.ReplyScheduler) {
@@ -482,11 +483,27 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         let id = UUID()
         let document = delivery.document
         let navigation = navigationEpoch
+        let progress = NativeIOSHost.ProgressReporter { [weak self] chunk in
+            guard let self, let work = self.businessWork[id], self.navigationEpoch == navigation,
+                  self.activeDocument == document, let origin = self.activeOrigin, let webView = self.webView
+            else { return false }
+            return await self.wire.sendProgress(for: work.call, chunk: chunk) { raw in
+                // A progress frame must reach the receiver before the original WithReply is completed.
+                let received = try? await webView.callAsyncJavaScript(
+                    """
+                    return window.location.origin === allowed &&
+                      window.__OJSB_DELIVER__?.(candidate, raw, true) === true;
+                    """,
+                    arguments: ["allowed": origin, "candidate": document, "raw": raw], in: nil, contentWorld: .page
+                )
+                return received as? Bool == true
+            }
+        }
         let task = Task { @MainActor [weak self] in
             guard !Task.isCancelled, self?.activeDocument == document, self?.navigationEpoch == navigation else { return }
             let result: Result<Any, Error>
             do {
-                result = .success(try await call.handler(call.params))
+                result = .success(try await call.run(progress: progress))
             } catch {
                 result = .failure(error)
             }
@@ -496,9 +513,9 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                 work.reply(nil)
                 return
             }
-            self.queueReply(response, document: document, send: work.reply)
+            self.queueReply(response, document: document, send: work.reply, progress: work.progress)
         }
-        businessWork[id] = BusinessWork(call: call, task: task, reply: delivery.reply)
+        businessWork[id] = BusinessWork(call: call, progress: progress, task: task, reply: delivery.reply)
     }
 
     private func cancel(_ requestID: String, document: String) {
@@ -511,21 +528,24 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
             work.reply(nil)
             return
         }
-        queueReply(response, document: document, send: work.reply)
+        queueReply(response, document: document, send: work.reply, progress: work.progress)
     }
 
     private func queueReply(_ response: String, document: String, send: @escaping (String?) -> Void,
-                            acknowledge: (() -> Void)? = nil) {
+                            acknowledge: (() -> Void)? = nil, progress: NativeIOSHost.ProgressReporter? = nil) {
         let id = deferredReplies.insert(response, document: document, navigation: navigationEpoch, send: send)
-        scheduleReply(response) { [weak self] in
-            guard let self, self.deferredReplies.complete(id, document: self.activeDocument, navigation: self.navigationEpoch)
-            else { return false }
-            if let acknowledge {
-                acknowledge()
-                self.updateEventObservation()
+        let schedule: () -> Void = { [weak self] in
+            self?.scheduleReply(response) { [weak self] in
+                guard let self, self.deferredReplies.complete(id, document: self.activeDocument, navigation: self.navigationEpoch)
+                else { return false }
+                if let acknowledge {
+                    acknowledge()
+                    self.updateEventObservation()
+                }
+                return true
             }
-            return true
         }
+        if let progress { progress.whenDrained(schedule) } else { schedule() }
     }
 
     private func updateEventObservation() {
@@ -589,20 +609,23 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
           });
           const pending = [];
           let receive;
+          // Once the receiver has seen a frame, its exception must not make native reuse the sequence.
+          const dispatch = raw => {
+            try { receive(raw); }
+            catch (error) { queueMicrotask(() => { throw error; }); }
+          };
           Object.defineProperty(window, '__OJSB_RECEIVE__', {
             get: () => receive,
             set(callback) {
               receive = typeof callback === 'function' ? callback : undefined;
-              while (receive && pending.length) {
-                try { receive(pending.shift()); }
-                catch (error) { queueMicrotask(() => { throw error; }); }
-              }
+              while (receive && pending.length) dispatch(pending.shift());
             }
           });
           Object.defineProperty(window, '__OJSB_DELIVER__', {
-            value(candidate, raw) {
+            value(candidate, raw, requireReceiver = false) {
               if (candidate !== documentToken) return false;
-              if (receive) receive(raw);
+              if (receive) dispatch(raw);
+              else if (requireReceiver) return false;
               else if (pending.length < 256) pending.push(raw);
               return true;
             }
