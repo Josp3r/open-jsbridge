@@ -42,10 +42,17 @@ internal class RpcSession(
     private var sid: String? = null
     private val helloIds = HashSet<String>()
     private val requestIds = HashSet<String>()
-    private val methods = buildMap<String, (JsonObject?) -> JsonObject> {
+    private val media = modules.media?.takeIf { supportsCancellation }?.newSession()
+    private val methods = buildMap<String, (JsonObject?) -> JsonElement> {
         if (enableEcho) put(ECHO) { params -> params ?: JsonObject() }
         modules.device?.let { device -> put(DEVICE_INFO, query(device::info)) }
         modules.network?.let { network -> put(NETWORK_STATUS, query { network.status().snapshot() }) }
+        media?.let { session ->
+            put(MEDIA_RELEASE) { params ->
+                session.release(releaseIds(params))
+                JsonNull.INSTANCE
+            }
+        }
         modules.toast?.let { toast ->
             put(TOAST_SHOW) { params ->
                 val text = params?.get("text").asStringOrNull()
@@ -58,7 +65,6 @@ internal class RpcSession(
         }
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
-    private val media = modules.media?.takeIf { supportsCancellation }?.newSession()
     private val canCancel = supportsCancellation && (this.businessMethods.isNotEmpty() || media != null)
     val maxMessageBytes = MAX_MESSAGE_BYTES
     private val observedEvents = buildMap<String, ((JsonElement) -> Unit) -> (() -> Unit)?> {
@@ -382,6 +388,8 @@ internal class RpcSession(
         private const val NETWORK_STATUS = "network.getStatus"
         private const val TOAST_SHOW = "ui.toast.show"
         private const val MEDIA_CHOOSE = "media.chooseMedia"
+        private const val MEDIA_RELEASE = "media.release"
+        private val MEDIA_ID = Regex("[0-9a-f]{32}")
         private val CHOOSE_KEYS = setOf("mediaType", "sourceType", "count")
         private const val SUBSCRIBE = "bridge.subscribe"
         private const val UNSUBSCRIBE = "bridge.unsubscribe"
@@ -421,6 +429,17 @@ internal class RpcSession(
 
         private fun JsonElement?.isSingleChoice(expected: String): Boolean =
             this is JsonArray && size() == 1 && get(0).asStringOrNull() == expected
+
+        private fun releaseIds(params: JsonObject?): List<String> {
+            val ids = params?.get("ids") as? JsonArray
+            if (params?.size() != 1 || ids == null || ids.size() !in 1..32) {
+                throw InvalidNativeParamsException("Invalid params")
+            }
+            return ids.map { item ->
+                item.asStringOrNull()?.takeIf(MEDIA_ID::matches)
+                    ?: throw InvalidNativeParamsException("Invalid params")
+            }
+        }
 
         private fun validMeta(meta: JsonObject) =
             (!meta.has("sid") || meta.get("sid").asStringOrNull()?.isNotEmpty() == true) &&

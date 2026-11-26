@@ -85,6 +85,28 @@ SDK 通过系统选择器读取用户选中的图片，无需相册或存储权�
 
 页面收到当前文档的媒体 `id` 和 `thumbUrl`，用缩略图 URL 显示选择结果。原图暂存在宿主私有目录，每个会话最多 20 MiB，5 分钟内有效。换页、宿主销毁或到期时自动清理。关闭系统选择器返回 `cancelled`。SDK 取消请求后忽略迟到的系统结果，系统界面由用户关闭。[会话媒体协议](../../docs/protocol.md#101-原生句柄和缩略图)
 
+仅需展示缩略图时，页面可以提前归还原图占用的会话配额。`media.release@1` 与选图共用 `Options(media = true)`、`mediaPicker` 和系统选择器可用性检查。页面在握手后分别检查两项能力，便可兼容只支持选图的宿主。
+
+```ts
+import { bridge, media } from '@open-jsbridge/web/auto'
+
+export async function chooseThumbnail(preview: HTMLImageElement): Promise<void> {
+  await bridge.ready()
+  if (!bridge.has('media.chooseMedia', 1)) return
+
+  const selection = await media.chooseMedia()
+  if (selection.status === 'cancelled') return
+
+  const { id, thumbUrl } = selection.files[0]
+  preview.src = thumbUrl
+  if (bridge.has('media.release', 1)) {
+    await media.release({ ids: [id] })
+  }
+}
+```
+
+一次可提交 1–32 个句柄。成功返回 `null`，回收的配额可立即用于下一次选图，已显示的 `thumbUrl` 仍按原有效期和页面生命周期撤销。重复提交同一句柄只回收一次，已过期或当前会话查无记录的句柄会被跳过。若任一句柄格式错误，整批返回 `-32602`，原有句柄均保留。[主动释放契约](../../spec/methods/media/release.json)
+
 ## 在模拟器验证
 
 准备 JDK 17、Android SDK Platform 35、Build Tools 34.0.0 和 Platform Tools。命令行使用 `JAVA_HOME` 和 `ANDROID_HOME`，并将 `platform-tools` 加入 `PATH`。启动一台 API 24+ 且支持上述 WebView 功能的 Android Emulator。Windows 使用 `gradlew.bat`。

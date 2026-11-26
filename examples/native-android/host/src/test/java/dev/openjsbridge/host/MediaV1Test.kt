@@ -1,6 +1,6 @@
 package dev.openjsbridge.host
 
-import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
@@ -43,16 +43,119 @@ class MediaV1Test {
             assertEquals("[]", capabilities.getAsJsonArray("features").toString())
             assertEquals(65_536, hello.limit())
             assertEquals(-32601, client.call(CHOOSE).errorCode())
+            assertEquals(-32601, client.call(RELEASE).errorCode())
         }
 
         val client = Client(Fixture().module)
         val hello = client.confirm()
         val capabilities = hello.getAsJsonObject("capabilities")
-        assertEquals(setOf(CHOOSE), capabilities.getAsJsonObject("methods").keySet())
+        assertEquals(setOf(CHOOSE, RELEASE), capabilities.getAsJsonObject("methods").keySet())
         assertEquals(obj("""{"versions":[1]}"""), capabilities.getAsJsonObject("methods").get(CHOOSE))
+        assertEquals(obj("""{"versions":[1]}"""), capabilities.getAsJsonObject("methods").get(RELEASE))
         assertEquals(listOf("cancel"), capabilities.getAsJsonArray("features").map { it.asString })
         assertEquals(65_536, hello.limit())
         assertEquals(-32601, client.call("$CHOOSE@2").errorCode())
+        assertEquals(-32601, client.call("$RELEASE@2").errorCode())
+    }
+
+    @Test fun releaseRejectsTheWholeInvalidBatchBeforeDeletingAnyFile() {
+        val fixture = Fixture().apply { image(4) }
+        val client = Client(fixture.module)
+        client.confirm()
+        val id = client.call(CHOOSE).selectedFile().mediaId()
+        for (params in listOf("null", "[]")) {
+            assertEquals(params, -32600, client.call(RELEASE, params).errorCode())
+        }
+        for (params in listOf(
+            null, "{}", """{"ids":[]}""", """{"ids":"$id"}""", """{"ids":["$id",null]}""",
+            """{"ids":["$id",false]}""", """{"ids":["$id","${"A".repeat(32)}"]}""",
+            """{"ids":["$id","${id.dropLast(1)}"]}""", """{"ids":["$id","${id}0"]}""",
+            """{"ids":["$id"],"sid":"other-document"}""", releaseParams(List(33) { id }),
+        )) {
+            assertEquals(params, -32602, client.call(RELEASE, params).errorCode())
+            assertEquals(params, 1, fixture.fileCount())
+        }
+        client.call("$RELEASE@1", releaseParams(List(32) { id })).assertNullResult()
+        assertEquals(0, fixture.fileCount())
+    }
+
+    @Test fun releaseReturnsOnlyTheSelectedHandlesQuotaOnceAndAcceptsExpiredHandles() {
+        val fixture = Fixture().apply { image(LIMIT - 4) }
+        val client = Client(fixture.module)
+        client.confirm()
+        val retained = client.call(CHOOSE).selectedFile().mediaId()
+        fixture.image(2)
+        val first = client.call(CHOOSE).selectedFile().mediaId()
+        val second = client.call(CHOOSE).selectedFile().mediaId()
+        assertEquals(-32006, client.call(CHOOSE).errorCode())
+
+        val batch = releaseParams(listOf(first, "0".repeat(32), second, first))
+        client.call(RELEASE, batch).assertNullResult()
+        client.call(RELEASE, batch).assertNullResult()
+        assertEquals((LIMIT - 4).toLong(), fixture.dir.listFiles()!!.single().length())
+        fixture.image(5)
+        assertEquals(-32006, client.call(CHOOSE).errorCode())
+        fixture.image(4)
+        val replacement = client.call(CHOOSE).selectedFile().mediaId()
+        fixture.advance(TTL)
+        assertEquals(0, fixture.fileCount())
+        client.call(RELEASE, releaseParams(listOf(retained, replacement))).assertNullResult()
+    }
+
+    @Test fun failedUnlinkKeepsTheHandleAndQuotaUntilReleaseCanBeRetried() {
+        val fixture = Fixture().apply { image(LIMIT) }
+        val client = Client(fixture.module)
+        client.confirm()
+        val params = releaseParams(listOf(client.call(CHOOSE).selectedFile().mediaId()))
+        val blocker = blockUnlink(fixture.dir.listFiles()!!.single())
+
+        assertEquals(-32603, client.call(RELEASE, params).errorCode())
+        fixture.image(1)
+        assertEquals(-32006, client.call(CHOOSE).errorCode())
+        assertTrue(blocker.delete())
+        client.call(RELEASE, params).assertNullResult()
+        assertEquals(0, fixture.fileCount())
+        fixture.image(LIMIT)
+        assertEquals(LIMIT, client.call(CHOOSE).selectedFile().get("size").asInt)
+    }
+
+    @Test fun expiredHandleWithBlockedCleanupDoesNotPreventReleasingALiveHandle() {
+        val fixture = Fixture().apply { image(4) }
+        val client = Client(fixture.module)
+        client.confirm()
+        val expired = client.call(CHOOSE).selectedFile().mediaId()
+        val expiredFile = fixture.dir.listFiles()!!.single()
+        fixture.advance(TTL - 1)
+        val live = client.call(CHOOSE).selectedFile().mediaId()
+        val liveFile = fixture.dir.listFiles()!!.single { it != expiredFile }
+        blockUnlink(expiredFile)
+        fixture.advance(1, fireTimers = false)
+
+        client.call(RELEASE, releaseParams(listOf(expired, live))).assertNullResult()
+        assertTrue("Live original must be unlinked", !liveFile.exists())
+    }
+
+    @Test fun releaseUsesOnlyTheCallingDocumentStore() {
+        val fixture = Fixture().apply { image(4) }
+        val owner = Client(fixture.module)
+        val other = Client(fixture.module)
+        owner.confirm()
+        other.confirm("b".repeat(32))
+        val owned = owner.call(CHOOSE).selectedFile().mediaId()
+        fixture.image(7)
+        val otherId = other.call(CHOOSE).selectedFile().mediaId()
+
+        val params = releaseParams(listOf(owned))
+        val request = owner.request("release-owned", RELEASE, params)
+        assertNull(owner.send(request, origin = "$ORIGIN:8080"))
+        assertNull(owner.send(request, main = false))
+        assertNull(owner.send(request, token = other.token))
+        assertNull(other.send(other.request("wrong-session", RELEASE, params, sid = owner.sid)))
+        assertEquals(2, fixture.fileCount())
+        other.call(RELEASE, releaseParams(listOf(owned, otherId))).assertNullResult()
+        assertEquals(4L, fixture.dir.listFiles()!!.single().length())
+        owner.call(RELEASE, params).assertNullResult()
+        assertEquals(0, fixture.fileCount())
     }
 
     @Test fun chooseParamsAreStrictAndSystemDismissalIsASuccess() {
@@ -414,11 +517,22 @@ class MediaV1Test {
     private companion object {
         const val ORIGIN = "https://media.example.test"
         const val CHOOSE = "media.chooseMedia"
+        const val RELEASE = "media.release"
         const val THUMBNAIL_LIMIT = 32 * 1024
         const val LIMIT = 20 * 1024 * 1024
         const val TTL = 5 * 60 * 1000L
         val JPEG = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte())
         fun obj(raw: String) = JsonParser.parseString(raw).asJsonObject
+        fun blockUnlink(file: File): File {
+            assertTrue(file.delete())
+            assertTrue(file.mkdir())
+            return File(file, "child").also { assertTrue(it.createNewFile()) }
+        }
+        fun releaseParams(ids: List<String>) = """{"ids":[${ids.joinToString(",") { JsonPrimitive(it).toString() }}]}"""
+        fun JsonObject.assertNullResult() {
+            assertEquals("Expected an explicit null result: $this", JsonNull.INSTANCE, get("result"))
+            assertTrue("Unexpected error in success response: $this", !has("error"))
+        }
         fun JsonObject.result() = getAsJsonObject("result") ?: error("No result: $this")
         fun JsonObject.errorCode() = getAsJsonObject("error")?.get("code")?.asInt ?: error("No error: $this")
         fun JsonObject.limit() = getAsJsonObject("limits").get("maxMessageBytes").asInt
