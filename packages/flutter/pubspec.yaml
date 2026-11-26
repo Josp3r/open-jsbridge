@@ -1,0 +1,7 @@
+name: open_jsbridge_flutter
+description: Pure Dart Scheme A host core, shims, and transport adapters for Open JSBridge (jsb 1.0).
+version: 0.2.0
+publish_to: none
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
