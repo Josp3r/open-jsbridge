@@ -2,7 +2,13 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { generateTypeScript, lintSpecBundle } from '../dist/packages/codegen/src/index.js';
+import {
+  generateDart,
+  generateKotlin,
+  generateSwift,
+  generateTypeScript,
+  lintSpecBundle,
+} from '../dist/packages/codegen/src/index.js';
 
 const repoRoot = fileURLToPath(new URL('../', import.meta.url));
 const defaultSpecDir = resolve(repoRoot, 'spec');
@@ -82,12 +88,29 @@ export function validateSpecSchemasWithAjv(bundle) {
   return issues;
 }
 
+export function generateForTarget(bundle, target, options = {}) {
+  switch (target) {
+    case 'ts':
+      return generateTypeScript(bundle);
+    case 'swift':
+      return generateSwift(bundle);
+    case 'kotlin':
+      return generateKotlin(bundle, { packageName: options.packageName });
+    case 'dart':
+      return generateDart(bundle, { packageImport: options.packageImport });
+    default:
+      throw new Error(`Unsupported target "${target}" (supported: ts, swift, kotlin, dart)`);
+  }
+}
+
 function parseArgs(argv) {
   const options = {
     specDir: defaultSpecDir,
     lint: false,
     target: undefined,
-    out: defaultTsOut,
+    out: undefined,
+    packageName: undefined,
+    packageImport: undefined,
     check: false,
   };
 
@@ -98,6 +121,8 @@ function parseArgs(argv) {
     else if (arg === '--spec') options.specDir = resolve(argv[++i] ?? '');
     else if (arg === '--target') options.target = argv[++i];
     else if (arg === '--out') options.out = resolve(argv[++i] ?? '');
+    else if (arg === '--package') options.packageName = argv[++i];
+    else if (arg === '--dart-import') options.packageImport = argv[++i];
     else throw new Error(`Unknown option: ${arg}`);
   }
   return options;
@@ -125,32 +150,37 @@ function runCli() {
   }
 
   if (options.target === undefined) return;
-  if (options.target !== 'ts') {
-    throw new Error(`Unsupported target "${options.target}" (currently supported: ts)`);
+  const outPath = options.out ?? (options.target === 'ts' ? defaultTsOut : undefined);
+  if (!outPath) {
+    throw new Error(`Missing required --out <path> for target "${options.target}"`);
   }
 
-  const generated = generateTypeScript(bundle);
+  const generated = generateForTarget(bundle, options.target, {
+    packageName: options.packageName,
+    packageImport: options.packageImport,
+  });
+
   if (options.check) {
     let existing = '';
     try {
-      existing = readFileSync(options.out, 'utf8');
+      existing = readFileSync(outPath, 'utf8');
     } catch {
-      console.error(`[codegen] Missing generated file: ${options.out}. Run \`npm run codegen:ts\`.`);
+      console.error(`[codegen] Missing generated file: ${outPath}.`);
       process.exitCode = 1;
       return;
     }
     if (existing !== generated) {
-      console.error(`[codegen] Out-of-date generated file: ${options.out}. Run \`npm run codegen:ts\`.`);
+      console.error(`[codegen] Out-of-date generated file: ${outPath}.`);
       process.exitCode = 1;
       return;
     }
-    console.log(`Codegen check passed: ${relative(repoRoot, options.out)} is up to date.`);
+    console.log(`Codegen check passed: ${relative(repoRoot, outPath)} is up to date.`);
     return;
   }
 
-  mkdirSync(dirname(options.out), { recursive: true });
-  writeFileSync(options.out, generated, 'utf8');
-  console.log(`Generated ${relative(repoRoot, options.out)}`);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, generated, 'utf8');
+  console.log(`Generated ${relative(repoRoot, outPath)}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
