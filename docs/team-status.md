@@ -7,7 +7,7 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `4acf1aa`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `c49083d`（最后更新日期：`2026-11-26`）
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
@@ -41,8 +41,8 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-006` | 流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout`） | `in-review` | `linux-agent (antigravity)` | `antigravity/bridge-progress-callbacks` · PR `#38` | `packages/web-sdk/src/bridge.ts`, `packages/host-core/src/index.ts`, `packages/web-mock/src/index.ts`, `conformance-tests/progress.test.mjs`, `docs/team-status.md` | 实现严格递增 `seq` 去重、`idleTimeout` 重置与 `HostCore` `ctx.callback()` | 2026-11-26 |
-| `T-007` | `transfer.upload` 前台上传契约 RFC 与安全设计 | `in-progress` | `macos-agent (codex)` | `codex/transfer-upload-rfc` · #24 | `spec/rfcs/transfer-upload.md`、`docs/protocol.md` §10.2 | 定义上传目标白名单、宿主鉴权、图片压缩、进度、取消与错误语义。 | 2026-11-26 |
+| `T-007` | `transfer.upload` 前台上传契约 RFC 与安全设计 | `in-progress` | `macos-agent (codex)` | `codex/transfer-upload-rfc` · PR `#39` · `#24` | `spec/rfcs/transfer-upload.md`, `docs/protocol.md` §10.2 | 定义上传目标白名单、宿主鉴权、图片压缩、进度、取消与错误语义。 | 2026-11-26 |
+| `T-008` | React Native 方案 A 宿主（`packages/react-native`） | `in-review` | `linux-agent (antigravity)` | `antigravity/react-native-host` | `packages/react-native/**`, `conformance-tests/react-native.test.mjs`, `docs/team-status.md` | 基于 `HostCore` 实现 `createReactNativeHost`、`OJSB_RN_SHIM`、二次编码防注入、精确 HTTPS 白名单与 S2 默认关闭门禁 | 2026-11-26 |
 
 ---
 
@@ -64,7 +64,6 @@
 |---|---|---|---|---|
 | **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览；原认领 T-005 已撤回（#37） |
 | **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；外投浏览器降级与可观测性基础 |
-| **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中 | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；已具备 `packages/host-core` 底座，须严格遵循 `trust: degraded` (S2) 约束 |
 | **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`, `packages/web-sdk/**`, 双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance |
 
 ---
@@ -105,6 +104,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | `T-006` 实现流式回调协议 `bridge.progress`（`onCallback` + `idleTimeout` + `HostCore` `ctx.callback`） | `#38` (`c49083d`) |
 | 2026-11-26 | `T-004` 提取参考 `packages/host-core` 并增强 `@open-jsbridge/web/mock` | `#36` (`4acf1aa`) |
 | 2026-11-26 | `T-003` 补齐 `docs/native-capability-catalog.md` 的 `#21` 边界说明并同步 `0.2.0` 看板 | `#35` (`1a1d401`) |
 | 2026-11-26 | `T-002` 新增 `packages/codegen`（Spec Lint + TS 类型生成）与 CI 漂移检查 | `#34` (`ca340e8`) |
