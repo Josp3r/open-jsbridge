@@ -45,6 +45,10 @@
     "./media": {
       "types": "./packages/web-sdk/src/media-profile.d.ts",
       "import": "./packages/web-sdk/src/media-profile.js"
+    },
+    "./transfer": {
+      "types": "./packages/web-sdk/src/transfer-profile.d.ts",
+      "import": "./packages/web-sdk/src/transfer-profile.js"
     }
   },
   "files": [

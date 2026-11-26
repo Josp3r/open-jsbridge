@@ -10,3 +10,11 @@ export type {
   ReleaseMediaResult,
 } from './media.js';
 export type { NetworkStatus } from './events.js';
+export type {
+  UploadCallOptions,
+  UploadCompressOptions,
+  UploadParams,
+  UploadProgress,
+  UploadRequest,
+  UploadResult,
+} from './transfer.js';
