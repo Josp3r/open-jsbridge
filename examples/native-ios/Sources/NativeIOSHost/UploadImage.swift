@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -25,14 +26,12 @@ enum UploadImage {
         }
         guard data.count <= MediaStore.maxBytes else { throw Failure.tooLarge }
 
-        let sampled = try orientedImage(from: data, maxEdge: maxEdge)
-        guard !isCancelled() else { throw CancellationError() }
-        let pixels = try opaquePixels(from: sampled)
+        let pixels = try decodePixels(from: data, maxEdge: maxEdge, isCancelled: isCancelled)
         guard !isCancelled() else { throw CancellationError() }
         return try JPEGOutput(isCancelled: isCancelled).encode(pixels, quality: quality)
     }
 
-    private static func orientedImage(from data: Data, maxEdge: Int) throws -> CGImage {
+    private static func decodePixels(from data: Data, maxEdge: Int, isCancelled: () -> Bool) throws -> CGImage {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, options),
               CGImageSourceGetStatus(source) == .statusComplete,
@@ -45,16 +44,30 @@ enum UploadImage {
             throw Failure.unsupportedImage
         }
         let limit = min(maxEdge, max(width, height))
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: limit
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary),
-              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
-              image.width <= limit, image.height <= limit else { throw Failure.unsupportedImage }
-        return image
+        let image: CGImage?
+        let orientation: CGImagePropertyOrientation
+        if (identifier as String) == UTType.jpeg.identifier, max(width, height) <= maxEdge {
+            // Thumbnail decoding can silently fill in a missing part of a JPEG scan.
+            // Decode directly when the original already fits our pixel budget.
+            image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+            let raw = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+            orientation = CGImagePropertyOrientation(rawValue: raw) ?? .up
+        } else {
+            let thumbnailOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: limit
+            ]
+            image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary)
+            orientation = .up
+        }
+        guard let image, image.width <= limit, image.height <= limit else { throw Failure.unsupportedImage }
+        guard !isCancelled() else { throw CancellationError() }
+        let pixels = try opaquePixels(from: image, orientation: orientation)
+        // Some JPEG scan errors become visible to ImageIO only after the pixels are drawn.
+        guard CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else { throw Failure.unsupportedImage }
+        return pixels
     }
 
     /// ImageIO can recover a truncated JPEG scan and report it as complete. Walk the
@@ -88,17 +101,20 @@ enum UploadImage {
         }
     }
 
-    private static func opaquePixels(from image: CGImage) throws -> CGImage {
+    private static func opaquePixels(from image: CGImage, orientation: CGImagePropertyOrientation) throws -> CGImage {
         // A new sRGB bitmap carries only pixels into the JPEG, including for transparent inputs.
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let transform = orientation == .up ? .identity : CIImage(cgImage: image).orientationTransform(for: orientation)
+        let orientedBounds = bounds.applying(transform)
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: image.width, height: image.height,
+              let context = CGContext(data: nil, width: Int(orientedBounds.width), height: Int(orientedBounds.height),
                                       bitsPerComponent: 8, bytesPerRow: 0, space: space,
                                       bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
             throw Failure.encodingFailed
         }
-        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
-        context.fill(bounds)
+        context.fill(orientedBounds)
+        context.concatenate(transform)
         context.draw(image, in: bounds)
         guard let pixels = context.makeImage() else { throw Failure.encodingFailed }
         return pixels

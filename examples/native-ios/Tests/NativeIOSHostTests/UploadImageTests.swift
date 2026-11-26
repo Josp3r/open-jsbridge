@@ -37,15 +37,18 @@ final class UploadImageTests: XCTestCase {
         ]
         for (orientation, corners) in cases {
             let original = try encode([image], as: .jpeg, properties: [kCGImagePropertyOrientation: orientation])
-            let output = try UploadImage.prepare(data: original, maxEdge: 48)
-            let jpeg = try decodeJPEG(output)
-            XCTAssertEqual(jpeg.width, orientation <= 4 ? 48 : 32, "orientation \(orientation)")
-            XCTAssertEqual(jpeg.height, orientation <= 4 ? 32 : 48, "orientation \(orientation)")
-            XCTAssertEqual(try properties(of: output)[kCGImagePropertyOrientation] as? Int ?? 1, 1)
-            for (index, expected) in corners.enumerated() {
-                let x = (index % 2 * 2 + 1) * jpeg.width / 4
-                let y = (index / 2 * 2 + 1) * jpeg.height / 4
-                try assertPixel(jpeg, x: x, y: y, is: expected, message: "orientation \(orientation), corner \(index)")
+            for (longEdge, shortEdge) in [(96, 64), (48, 32)] {
+                let sample = "orientation \(orientation), maxEdge \(longEdge)"
+                let output = try UploadImage.prepare(data: original, maxEdge: longEdge)
+                let jpeg = try decodeJPEG(output)
+                XCTAssertEqual(jpeg.width, orientation <= 4 ? longEdge : shortEdge, sample)
+                XCTAssertEqual(jpeg.height, orientation <= 4 ? shortEdge : longEdge, sample)
+                XCTAssertEqual(try properties(of: output)[kCGImagePropertyOrientation] as? Int ?? 1, 1, sample)
+                for (index, expected) in corners.enumerated() {
+                    let x = (index % 2 * 2 + 1) * jpeg.width / 4
+                    let y = (index / 2 * 2 + 1) * jpeg.height / 4
+                    try assertPixel(jpeg, x: x, y: y, is: expected, message: "\(sample), corner \(index)")
+                }
             }
         }
     }
@@ -131,6 +134,25 @@ final class UploadImageTests: XCTestCase {
         truncated.append(comment)
         truncated.append(jpeg[2..<(jpeg.count / 2)])
         XCTAssertThrowsError(try UploadImage.prepare(data: truncated)) {
+            XCTAssertEqual($0 as? UploadImage.Failure, .unsupportedImage)
+        }
+    }
+
+    func testJPEGRejectsIncompleteScanEvenWhenItsEndMarkerIsPreserved() throws {
+        let original = try makeMediaJPEG(width: 96, height: 64)
+        let prepared = try decodeJPEG(UploadImage.prepare(data: original))
+        XCTAssertEqual(prepared.width, 96)
+        XCTAssertEqual(prepared.height, 64)
+
+        let scan = try XCTUnwrap(original.range(of: Data([0xff, 0xda])))
+        let length = Int(original[scan.upperBound]) * 256 + Int(original[scan.upperBound + 1])
+        let scanStart = scan.upperBound + length
+        let endMarker = original.suffix(2)
+        XCTAssertEqual(endMarker, Data([0xff, 0xd9]))
+        // Remove half of the entropy-coded scan while preserving all headers and the real EOI.
+        let middle = scanStart + (endMarker.startIndex - scanStart) / 2
+        let incomplete = original.prefix(middle) + endMarker
+        XCTAssertThrowsError(try UploadImage.prepare(data: incomplete)) {
             XCTAssertEqual($0 as? UploadImage.Failure, .unsupportedImage)
         }
     }
