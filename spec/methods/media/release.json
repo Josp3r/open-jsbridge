@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ojsb:method/media.release",
+  "title": "media.release",
+  "description": "提前释放 media.chooseMedia 签发给当前文档会话的原生媒体句柄。此方法为可选能力，调用方以当前握手通告为准。宿主回收暂存的原图及其占用的配额，页面已取得的缩略图仍遵循 Web 对象 URL 的生命周期。",
+  "x-ojsb-kind": "method",
+  "x-ojsb-version": 1,
+  "x-ojsb-since": "1.0",
+  "params": {
+    "type": "object",
+    "description": "宿主先按协议校验信封、WebView、精确 HTTPS 来源、主 frame、document、sid 和方法权限，再校验整批参数。合法会话的方法授权被拒时返回 -32003。通过上述校验后，方法参数不符合本 Schema 时返回 -32602，整批句柄保持原状。",
+    "properties": {
+      "ids": {
+        "type": "array",
+        "description": "每项计入批量上限。宿主只在调用方的会话存储中移除匹配的句柄，同一 ID 重复出现只释放一次。已释放、过期或在本会话中查无记录的 ID 均跳过；其他会话的资源保持原状。",
+        "items": { "$ref": "ojsb:schema/media.id" },
+        "minItems": 1,
+        "maxItems": 32
+      }
+    },
+    "required": ["ids"],
+    "additionalProperties": false
+  },
+  "result": {
+    "type": "null",
+    "description": "成功后所列句柄均已在当前会话失效，新请求可安全重试。若实现前台上传，句柄释放与上传登记须在同一会话中排序，仍在使用该句柄的上传按上传 RFC 以 -32003 结束并停止进度通知。"
+  }
+}

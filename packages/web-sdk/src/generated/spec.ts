@@ -104,6 +104,13 @@ export type MediaChooseMediaResult = {
   }];
 };
 
+/** 提前释放 media.chooseMedia 签发给当前文档会话的原生媒体句柄。此方法为可选能力，调用方以当前握手通告为准。宿主回收暂存的原图及其占用的配额，页面已取得的缩略图仍遵循 Web 对象 URL 的生命周期。 */
+export interface MediaReleaseParams {
+  ids: MediaId[];
+}
+
+export type MediaReleaseResult = null;
+
 /** 获取宿主 App 当前默认网络路径的类型。 */
 export type NetworkGetStatusParams = Record<string, never>;
 
@@ -126,6 +133,7 @@ export interface MethodMap {
   "conformance.echo": { params: ConformanceEchoParams; result: ConformanceEchoResult };
   "device.getInfo": { params: DeviceGetInfoParams; result: DeviceGetInfoResult };
   "media.chooseMedia": { params: MediaChooseMediaParams; result: MediaChooseMediaResult };
+  "media.release": { params: MediaReleaseParams; result: MediaReleaseResult };
   "network.getStatus": { params: NetworkGetStatusParams; result: NetworkGetStatusResult };
   "ui.toast.show": { params: UiToastShowParams; result: UiToastShowResult };
 }
