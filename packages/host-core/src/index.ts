@@ -35,6 +35,7 @@ export interface HostHandlerContext {
   readonly version: number;
   readonly traceId?: string;
   readonly signal: AbortSignal;
+  callback(chunk?: JsonValue): boolean;
 }
 
 export type HostHandler = (
@@ -63,6 +64,7 @@ export interface HostCoreOptions {
   events?: readonly string[];
   deniedEvents?: readonly string[];
   supportsCancel?: boolean;
+  supportsCallbacks?: boolean;
   limits?: HostCoreLimits;
 }
 
@@ -194,6 +196,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
       : DEFAULT_LIMITS.defaultTimeoutMs,
   };
   const supportsCancel = options.supportsCancel === true;
+  const supportsCallbacks = options.supportsCallbacks === true;
   const allowedEvents = new Set(options.events?.filter(isQualifiedName));
   const deniedEvents = new Set(options.deniedEvents?.filter(isQualifiedName));
   const advertisedEvents = [...new Set([...allowedEvents, ...deniedEvents])];
@@ -288,6 +291,9 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     for (const [name, entry] of registry) {
       advertisedMethods[name] = { versions: [...entry.versions] };
     }
+    const features: string[] = [];
+    if (supportsCancel) features.push('cancel');
+    if (supportsCallbacks) features.push('callbacks');
     return success(
       request.id,
       {
@@ -297,7 +303,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
         capabilities: {
           methods: advertisedMethods,
           events: advertisedEvents,
-          features: supportsCancel ? ['cancel'] : [],
+          features,
         },
         limits,
       },
@@ -446,6 +452,51 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
     inflight.set(rpc.id, call);
     entry.activeCount += 1;
 
+    let nextSeq = 0;
+    const emitProgress = (chunk?: JsonValue): boolean => {
+      const receiveMessage = receiver;
+      if (
+        !supportsCallbacks ||
+        activeSid !== replySid ||
+        call.cancelled ||
+        inflight.get(rpc.id) !== call ||
+        !receiveMessage
+      ) {
+        return false;
+      }
+      if (chunk !== undefined && !isPlainJsonValue(chunk, new Set())) return false;
+      let progressRaw: string;
+      try {
+        progressRaw = encodeEnvelope({
+          jsb: '1.0',
+          meta: { sid: replySid },
+          rpc: {
+            jsonrpc: '2.0',
+            method: 'bridge.progress',
+            params: {
+              requestId: rpc.id,
+              seq: nextSeq,
+              ...(chunk === undefined ? {} : { chunk }),
+            },
+          },
+        });
+      } catch {
+        return false;
+      }
+      if (
+        exceedsMessageLimit(progressRaw) ||
+        receiver !== receiveMessage ||
+        activeSid !== replySid ||
+        call.cancelled ||
+        inflight.get(rpc.id) !== call
+      ) {
+        return false;
+      }
+      nextSeq += 1;
+      receiveMessage(progressRaw);
+      return true;
+    };
+
     try {
       const ctx: HostHandlerContext = {
         sid: replySid,
@@ -454,6 +505,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
         version: resolvedVersion,
         ...(traceId === undefined ? {} : { traceId }),
         signal: controller.signal,
+        callback: emitProgress,
       };
       const maybePromise = entry.handler(rpc.params, ctx);
       const value = maybePromise instanceof Promise ? await maybePromise : maybePromise;

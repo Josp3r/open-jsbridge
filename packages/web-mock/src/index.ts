@@ -51,6 +51,7 @@ export interface MockAdapterOptions {
   ) => MockChooseMediaWireResult | Promise<MockChooseMediaWireResult>;
   handlers?: Record<string, HostHandler>;
   supportsCancel?: boolean;
+  supportsCallbacks?: boolean;
   /** Fixed delay (ms) or inclusive [minMs, maxMs] range applied before handler execution. */
   latency?: number | readonly [number, number];
   limits?: HostCoreLimits;
@@ -133,6 +134,7 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
     events: options?.events,
     deniedEvents: options?.deniedEvents,
     supportsCancel: options?.supportsCancel,
+    supportsCallbacks: options?.supportsCallbacks,
     limits: options?.limits,
   });
 

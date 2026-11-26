@@ -20,11 +20,13 @@ export interface BridgeOptions {
   queueLimit?: number;
 }
 
-export interface CallOptions {
+export interface CallOptions<C = unknown> {
   timeout?: number;
   signal?: AbortSignal;
   traceId?: string;
   version?: number;
+  onCallback?: (chunk: C, seq: number) => void;
+  idleTimeout?: boolean;
 }
 
 export interface Bridge {
@@ -34,7 +36,7 @@ export interface Bridge {
   reconnect(): Promise<HostInfo>;
   close(): void;
   has(method: string, version?: number): boolean;
-  call<T = unknown>(method: string, params?: JsonObject, options?: CallOptions): Promise<T>;
+  call<T = unknown, C = unknown>(method: string, params?: JsonObject, options?: CallOptions<C>): Promise<T>;
   hasEvent(name: string): boolean;
   on<E extends keyof StandardEvents>(name: E, listener: EventListener<StandardEvents[E]>): EventSubscription;
   on<T = unknown>(name: string, listener: EventListener<T>): EventSubscription;
@@ -47,6 +49,10 @@ interface PendingCall {
   eventControl: boolean;
   traceId: string | undefined;
   deadline: number | undefined;
+  timeoutMs: number | undefined;
+  idleTimeout: boolean;
+  onCallback: ((chunk: unknown, seq: number) => void) | undefined;
+  lastSeq: number;
   onDispatch: (() => void) | undefined;
   session?: Session;
   stopTimer?: () => void;
@@ -158,21 +164,24 @@ class WebBridge implements Bridge {
 
   off<T = unknown>(name: string, listener?: EventListener<T>): void { this.events.off(name, listener); }
 
-  call<T = unknown>(method: string, params?: JsonObject, options: CallOptions = {}): Promise<T> {
+  call<T = unknown, C = unknown>(method: string, params?: JsonObject, options: CallOptions<C> = {}): Promise<T> {
     return this.request(method, params, options);
   }
 
-  private request<T>(
+  private request<T, C = unknown>(
     method: string,
     params: JsonObject | undefined,
-    options: CallOptions,
+    options: CallOptions<C>,
     control?: EventControl,
   ): Promise<T> {
-    const { signal, traceId, version } = options;
+    const { signal, traceId, version, onCallback, idleTimeout } = options;
     if (typeof method !== 'string') {
       return Promise.reject(new BridgeError(ErrorCode.InvalidParams, 'Expected a string method', { traceId }));
     }
     const context = { method, traceId };
+    if (onCallback !== undefined && typeof onCallback !== 'function') {
+      return Promise.reject(new BridgeError(ErrorCode.InvalidParams, 'Expected a function onCallback', context));
+    }
     if (this.closed) return Promise.reject(new BridgeError(ErrorCode.Cancelled, 'Bridge closed', context));
     if (signal?.aborted) return Promise.reject(new BridgeError(ErrorCode.Cancelled, 'Call cancelled', context));
     if (this.state === 'unavailable') {
@@ -225,7 +234,10 @@ class WebBridge implements Bridge {
     const deadline = waitForSlot ? undefined : performance.now() + timeout;
     return new Promise<T>((resolve, reject) => {
       const pending: PendingCall = {
-        request, traceId, deadline, eventControl, onDispatch: control?.onDispatch, reject,
+        request, traceId, deadline, timeoutMs: waitForSlot ? undefined : timeout,
+        idleTimeout: idleTimeout === true,
+        onCallback: onCallback as ((chunk: unknown, seq: number) => void) | undefined,
+        lastSeq: -1, eventControl, onDispatch: control?.onDispatch, reject,
         resolve: (value) => {
           control?.onReply(value);
           resolve(value as T);
@@ -360,7 +372,7 @@ class WebBridge implements Bridge {
     const request = encodeEnvelope({
       jsb: '1.0',
       rpc: { jsonrpc: '2.0', id, method: 'bridge.hello', params: {
-        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.2.0' }, wants: ['cancel', 'events'],
+        protocols: [1], sdk: { name: 'open-jsbridge', version: '0.2.0' }, wants: ['cancel', 'events', 'callbacks'],
       } },
     });
     const stopTimer = atDeadline(deadline, () => {
@@ -476,6 +488,28 @@ class WebBridge implements Bridge {
     void receipt.then(release, release);
   }
 
+  private deliverProgress(params: JsonObject | undefined, activeSession: Session): void {
+    if (!params) return;
+    const { requestId, seq, chunk } = params;
+    if (typeof requestId !== 'string' || !requestId ||
+        typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) return;
+    const call = this.pending.get(requestId);
+    if (call?.session !== activeSession) return;
+    if (call.deadline !== undefined && performance.now() >= call.deadline) {
+      this.fail(requestId, ErrorCode.Timeout, 'Call timed out', true);
+      return;
+    }
+    if (seq <= call.lastSeq) return;
+    call.lastSeq = seq;
+    if (call.idleTimeout && call.timeoutMs !== undefined) {
+      call.stopTimer?.();
+      this.startTimeout(call, performance.now() + call.timeoutMs);
+    }
+    if (!call.onCallback) return;
+    try { call.onCallback(chunk, seq); }
+    catch (error) { queueMicrotask(() => { throw error; }); }
+  }
+
   private receive(raw: string, replyId?: string): void {
     const activeSession = this.session;
     if (typeof raw !== 'string' || exceedsMessageLimit(raw, activeSession?.maxMessageBytes ?? handshakeMaxMessageBytes)) return;
@@ -483,8 +517,10 @@ class WebBridge implements Bridge {
     try { envelope = decodeEnvelope(raw); } catch { return; }
     const { rpc, meta } = envelope;
     if ('method' in rpc) {
-      if (replyId === undefined && rpc.method === 'bridge.event' && !('id' in rpc) &&
-          activeSession && activeSession.sid === meta?.sid) this.events.deliver(rpc.params);
+      if (replyId === undefined && !('id' in rpc) && activeSession && activeSession.sid === meta?.sid) {
+        if (rpc.method === 'bridge.event') this.events.deliver(rpc.params);
+        else if (rpc.method === 'bridge.progress') this.deliverProgress(rpc.params, activeSession);
+      }
       return;
     }
     if (typeof rpc.id !== 'string' || (replyId !== undefined && replyId !== rpc.id)) return;
