@@ -146,15 +146,17 @@ test('nested plain JSON including shared references survives encode and decode',
   assert.deepEqual(decodeEnvelope(encodeEnvelope(frame)), frame);
 });
 
-test('decoding omits reserved own keys from nested JSON objects', () => {
+test('decoding drops __proto__ but preserves nested business fields', () => {
   const record = Object.fromEntries([
     ['label', 'keep'],
     ['__proto__', 'reserved name'],
-    ['constructor', 'reserved name'],
-    ['prototype', 'reserved name'],
+    ['constructor', { name: 'business data' }],
+    ['prototype', { available: true }],
   ]);
   const frame = nestedRequest({ items: [record] });
-  const expected = nestedRequest({ items: [{ label: 'keep' }] });
+  const expected = nestedRequest({
+    items: [{ label: 'keep', constructor: { name: 'business data' }, prototype: { available: true } }],
+  });
   assert.deepEqual(decodeEnvelope(JSON.stringify(frame)), expected);
   const badNumber = nestedRequest({ constructor: Number.MAX_SAFE_INTEGER + 1 });
   assert.throws(() => decodeEnvelope(JSON.stringify(badNumber)), { code: -32600 });

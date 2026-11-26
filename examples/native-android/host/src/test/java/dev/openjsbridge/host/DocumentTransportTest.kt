@@ -22,7 +22,8 @@ class DocumentTransportTest {
         val challenge = transport.onPageCommitVisible("$ORIGIN/demo")!!.nonce
         val confirmation = "commit:$challenge:$token"
 
-        assertNull(transport.exchange(confirmation, "http://10.0.2.2:4174", true, proxy))
+        assertNull(transport.exchange(confirmation, "https://10.0.2.2:4174", true, proxy))
+        assertNull(transport.exchange(confirmation, "http://10.0.2.2:4173", true, proxy))
         assertNull(transport.exchange(confirmation, ORIGIN, false, proxy))
         assertNull(transport.exchange(frame(token, hello("early")), ORIGIN, true, proxy))
         assertEquals("ready:$challenge:$token", transport.exchange(confirmation, ORIGIN, true, proxy))
@@ -35,7 +36,8 @@ class DocumentTransportTest {
         val first = "https://first.example.test"
         val second = "https://second.example.test:8443"
         val excluded = "https://second.example.test"
-        val host = DocumentTransport(listOf("HTTPS://FIRST.EXAMPLE.TEST:443/", second), enableEcho = true)
+        val origins = DocumentTransport.exactOrigins(listOf("HTTPS://FIRST.EXAMPLE.TEST:443/", second))
+        val host = DocumentTransport(origins, enableEcho = true)
         fun helloAt(origin: String, id: String): String {
             val response = host.exchange(frame(token, hello(id)), origin, true, proxy)!!
             return envelope(response).getAsJsonObject("rpc").getAsJsonObject("result").get("sid").asString
@@ -83,10 +85,20 @@ class DocumentTransportTest {
 
     @Test
     fun rejectsInvalidAndAmbiguousOrigins() {
-        for (origin in listOf("https:/path", "https:opaque", "https://example.test:",
+        for (origin in listOf("http://example.test", "HTTP://example.test:443/", "https:/path", "https:opaque", "https://example.test:",
             "https://127.001.0.1", "https://127.0.0.1.", "https://0x7f000001", "https://[fe80::1%25eth0]")) {
             assertNull(origin, DocumentTransport.exactOrigin(origin))
         }
+    }
+
+    @Test
+    fun canonicalDebugOriginCanConfirmItsDocument() {
+        val debugOrigin = "http://10.0.2.2:4173"
+        val host = DocumentTransport(listOf(debugOrigin), enableEcho = true)
+        val challenge = host.onPageCommitVisible("$debugOrigin/demo")!!.nonce
+        val confirmation = "commit:$challenge:$token"
+        assertNull(host.exchange(confirmation, "http://10.0.2.2:4174", true, proxy))
+        assertEquals("ready:$challenge:$token", host.exchange(confirmation, debugOrigin, true, proxy))
     }
 
     @Test
@@ -527,7 +539,7 @@ class DocumentTransportTest {
     }
 
     private companion object {
-        const val ORIGIN = "http://10.0.2.2:4173"
+        const val ORIGIN = "https://10.0.2.2:4173"
         const val BUSINESS_METHOD = "acme.app.getConfig"
     }
 }
