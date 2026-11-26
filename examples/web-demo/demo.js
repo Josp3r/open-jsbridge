@@ -26,7 +26,9 @@ const description = document.querySelector('#demo-description');
 const operation = document.querySelector('#operation');
 const request = document.querySelector('#request');
 const response = document.querySelector('#response');
-const nativeMode = new URLSearchParams(window.location.search).get('host') === 'native';
+const query = new URLSearchParams(window.location.search);
+const nativeMode = query.get('host') === 'native';
+const devtoolsMode = query.get('devtools') === '1';
 const observeMock = !nativeMode && !('__OJSB_TRANSPORT__' in window);
 
 const format = (value) => JSON.stringify(value, null, 2);
@@ -185,6 +187,11 @@ try {
     inspector.hidden = true;
     workbench.dataset.host = 'injected';
     description.textContent = '使用 WebView 注入的通道。首次调用会自动握手，页面随后显示宿主支持的能力。';
+  }
+  if (devtoolsMode && typeof document.createElement === 'function') {
+    void import('../../dist/packages/devtools/src/index.js')
+      .then(({ attachDevtools }) => { attachDevtools(bridge, { mount: true }); })
+      .catch(() => {});
   }
   syncControls();
 } catch (error) {

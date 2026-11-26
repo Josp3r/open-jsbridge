@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { setImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
 
 function demoPage(t, search) {
   const elements = new Map();
@@ -85,4 +89,77 @@ test('shared demo uses the injected Native transport for calls and events', asyn
     'bridge.hello', 'conformance.echo', 'device.getInfo', 'network.getStatus',
     'bridge.subscribe', 'bridge.unsubscribe',
   ]);
+});
+
+test('web-demo HTTP server serves the complete ES module graph without 404s and rejects disallowed paths', async (t) => {
+  const child = spawn(process.execPath, ['examples/web-demo/serve.mjs', '0'], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => {
+    child.kill('SIGTERM');
+  });
+
+  const baseUrl = await new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => reject(new Error(`web-demo server timed out: ${stderr}`)), 5000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      const match = /http:\/\/127\.0\.0\.1:\d+\//.exec(stdout);
+      if (match) {
+        clearTimeout(timer);
+        resolve(match[0]);
+      }
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`web-demo server exited early (${code}): ${stderr}`));
+    });
+  });
+
+  // Static page and CSS assets
+  for (const [pathname, expectedType] of [
+    ['/', 'text/html; charset=utf-8'],
+    ['/styles.css', 'text/css; charset=utf-8'],
+    ['/tokens.css', 'text/css; charset=utf-8'],
+  ]) {
+    const res = await fetch(new URL(pathname, baseUrl));
+    assert.equal(res.status, 200, `${pathname} should return 200`);
+    assert.equal(res.headers.get('content-type'), expectedType);
+  }
+
+  // Recursively walk every static and dynamic ES module import reachable from /demo.js and /dist/packages/web-sdk/src/reverse.js
+  const visited = new Set();
+  const queue = ['/demo.js', '/dist/packages/web-sdk/src/reverse.js', '/dist/packages/web-sdk/src/fallback.js'];
+  const importPattern = /(?:(?:import|export)\s+(?:[^'"]*?\s+from\s+)?|import\s*\(\s*)['"](\.\.?\/[^'"]+\.js)['"]/g;
+
+  while (queue.length > 0) {
+    const pathname = queue.shift();
+    if (visited.has(pathname)) continue;
+    visited.add(pathname);
+
+    const url = new URL(pathname, baseUrl);
+    const res = await fetch(url);
+    assert.equal(res.status, 200, `Expected 200 for imported module ${pathname}`);
+    assert.equal(res.headers.get('content-type'), 'text/javascript; charset=utf-8');
+    const source = await res.text();
+    for (const match of source.matchAll(importPattern)) {
+      const resolved = new URL(match[1], url).pathname;
+      if (!visited.has(resolved)) queue.push(resolved);
+    }
+  }
+
+  assert.equal(visited.has('/dist/packages/host-core/src/index.js'), true);
+  assert.equal(visited.has('/dist/packages/web-sdk/src/reverse-slot.js'), true);
+  assert.equal(visited.has('/dist/packages/devtools/src/index.js'), true);
+
+  // Disallowed methods & paths
+  const postRes = await fetch(new URL('/', baseUrl), { method: 'POST' });
+  assert.equal(postRes.status, 405);
+  const missingRes = await fetch(new URL('/package.json', baseUrl));
+  assert.equal(missingRes.status, 404);
 });
