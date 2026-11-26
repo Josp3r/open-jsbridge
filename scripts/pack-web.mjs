@@ -27,7 +27,17 @@ try {
     npm, 'pack', '--offline', '--ignore-scripts', '--json',
     '--cache', join(staging, '.npm-cache'), '--pack-destination', staging, staging,
   ], { cwd: root, encoding: 'utf8' });
-  const [{ filename }] = JSON.parse(report);
+  const parsed = JSON.parse(report);
+  // npm <= 11 returns an array of pack entries; npm 12+ returns an object keyed by package name.
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object'
+      ? (typeof parsed.filename === 'string' ? [parsed] : Object.values(parsed))
+      : [];
+  const filename = entries.length === 1 && typeof entries[0]?.filename === 'string'
+    ? entries[0].filename
+    : undefined;
+  if (!filename) throw new Error('Unexpected npm pack --json output');
   const archive = join(output, filename);
   await rename(join(staging, filename), archive);
   console.log(archive);
