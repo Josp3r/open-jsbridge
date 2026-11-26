@@ -89,7 +89,7 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
   `], { cwd: consumer, stdio: 'pipe' });
 
   await writeFile(join(consumer, 'consumer.ts'), `
-    import { createBridge, type Bridge, type ChooseMediaResult } from '@open-jsbridge/web';
+    import { createBridge, type Bridge, type ChooseMediaResult, type ReleaseMediaResult } from '@open-jsbridge/web';
     import * as auto from '@open-jsbridge/web/auto';
     import { app } from '@open-jsbridge/web/app';
     import { device } from '@open-jsbridge/web/device';
@@ -109,7 +109,8 @@ test('the packed ESM SDK separates the factory and the shared page singleton', a
     const status = network.getStatus();
     const shown: Promise<Record<string, never>> = ui.toast.show({ text: 'auto' });
     const selection: Promise<ChooseMediaResult> = media.chooseMedia();
-    export { isolated, reverse, unhandle, automatic, off, info, status, shown, selection };
+    const released: Promise<ReleaseMediaResult> = media.release({ ids: ['0123456789abcdef0123456789abcdef'] });
+    export { isolated, reverse, unhandle, automatic, off, info, status, shown, selection, released };
   `);
   const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
   const flags = ['--noEmit', '--strict', '--target', 'ES2020', 'consumer.ts'];

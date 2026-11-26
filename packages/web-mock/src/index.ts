@@ -12,6 +12,9 @@ const DEVICE_INFO_METHOD = 'device.getInfo';
 const NETWORK_STATUS_METHOD = 'network.getStatus';
 const TOAST_METHOD = 'ui.toast.show';
 const MEDIA_CHOOSE_METHOD = 'media.chooseMedia';
+const MEDIA_RELEASE_METHOD = 'media.release';
+const MEDIA_ID_PATTERN = /^[0-9a-f]{32}$/;
+const MAX_MEDIA_RELEASE_IDS = 32;
 const networkTypes = ['wifi', 'cellular', 'ethernet', 'other', 'none', 'unknown'] as const;
 
 export interface MockMediaImageWire {
@@ -49,6 +52,10 @@ export interface MockAdapterOptions {
     params: JsonObject | undefined,
     ctx: HostHandlerContext,
   ) => MockChooseMediaWireResult | Promise<MockChooseMediaWireResult>;
+  releaseMedia?: (
+    ids: readonly string[],
+    ctx: HostHandlerContext,
+  ) => void | Promise<void>;
   handlers?: Record<string, HostHandler>;
   supportsCancel?: boolean;
   supportsCallbacks?: boolean;
@@ -98,6 +105,19 @@ function validateMediaChooseParams(params: JsonObject | undefined): string | und
     } else {
       return 'Invalid media params';
     }
+  }
+}
+
+function validateMediaReleaseParams(params: JsonObject | undefined): string | undefined {
+  if (!params || Object.keys(params).length !== 1) return 'Invalid media release params';
+  const ids = params.ids;
+  if (
+    !Array.isArray(ids) ||
+    ids.length < 1 ||
+    ids.length > MAX_MEDIA_RELEASE_IDS ||
+    !ids.every((id) => typeof id === 'string' && MEDIA_ID_PATTERN.test(id))
+  ) {
+    return 'Invalid media release params';
   }
 }
 
@@ -172,7 +192,7 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
 
   register(ECHO_METHOD, (params) => params ?? {});
 
-  const { deviceInfo, getNetworkStatus, showToast, chooseMedia, handlers } = options ?? {};
+  const { deviceInfo, getNetworkStatus, showToast, chooseMedia, releaseMedia, handlers } = options ?? {};
   if (deviceInfo) {
     const { os, osVersion } = deviceInfo;
     if ((os === 'ios' || os === 'android') && typeof osVersion === 'string' && osVersion.length > 0) {
@@ -204,6 +224,17 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
       MEDIA_CHOOSE_METHOD,
       async (params, ctx) => (await chooseMedia(params, ctx)) as unknown as JsonValue,
       { concurrency: 'serial', validateParams: validateMediaChooseParams },
+    );
+  }
+  if (releaseMedia) {
+    register(
+      MEDIA_RELEASE_METHOD,
+      async (params, ctx) => {
+        const ids = [...new Set(params?.ids as string[])];
+        await releaseMedia(ids, ctx);
+        return null;
+      },
+      { validateParams: validateMediaReleaseParams },
     );
   }
   if (handlers) {
