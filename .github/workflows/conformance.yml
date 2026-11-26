@@ -22,6 +22,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run codegen:check
       - run: npm test
       - run: npm run size:web
       - run: node --test examples/native-android/test/shim.test.mjs

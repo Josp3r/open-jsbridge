@@ -7,7 +7,7 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `52d94f5`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `1a1b580`（最后更新日期：`2026-11-26`）
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 三端 SDK 候选版本：Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android` 均对齐 **`0.2.0` 候选**（npm 线上稳定版仍为 `0.1.0`，`0.2.0` 走 `next` 频道）
@@ -41,7 +41,7 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-001` | 建立多 Agent 中心化协作规范与状态看板 | `in-review` | `linux-agent (antigravity)` | `antigravity/multi-agent-team-docs` | `AGENTS.md`, `docs/team-status.md`, `docs/handoffs/README.md`, `README.md`, `TODO.md` | 初始建档完成，待推送并合入 `main` | 2026-11-26 |
+| `T-002` | Schema Lint 与 TS Codegen 脚手架（`packages/codegen`） | `in-review` | `linux-agent (antigravity)` | `antigravity/codegen-ts` | `packages/codegen/**`, `scripts/codegen.mjs`, `packages/web-sdk/src/generated/**`, `packages/web-sdk/src/index.ts`, `conformance-tests/codegen.test.mjs`, `package.json`, `.github/workflows/conformance.yml` | 已实现 spec lint + Ajv 2020-12 校验 + TS 类型生成与 CI 漂移检查 | 2026-11-26 |
 
 ---
 
@@ -61,7 +61,6 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **Schema Lint 与 TS Codegen 脚手架（`packages/codegen`）** | 高 | `linux-agent` / `macos-agent` | `packages/codegen/**`, `spec/**`, `package.json` | [docs/conformance.md](conformance.md) §1；建立单一事实来源的类型生成与破坏性变更检查 |
 | **提取参考 `host-core` + 增强 `@open-jsbridge/web/mock`** | 高 | `linux-agent` / `macos-agent` | `packages/web-mock/**`, `conformance-tests/**` | 补齐 `media.chooseMedia`、`bridge.cancel`、`latency`/`failNext` mock，为 RN 方案 A 与差分测试打底 |
 | **Issue #21 文档验收收口与 `TODO.md` 核对** | 高 | `linux-agent` / `macos-agent` | `docs/native-capability-catalog.md`, `README.md`, `TODO.md` | 核对 #21 验收项（明确 `request`/WebSocket/Canvas 不进桥、厂商前缀、`wx-compat` 定位）及 `SEC-JSI-DEFAULT-001` 回归状态 |
 | **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
@@ -96,8 +95,8 @@
   - Android API 24–32 若设备缺少系统或已安装的 Photo Picker 回移版本，握手时**不声明** `media.chooseMedia`；回移配置由接入 App 自行声明（见 [docs/native-android.md](native-android.md)）。
 - **[D-006 | 长期约束] 文档内 Shim 代码块受单测保护**
   - `conformance-tests/shim-docs.test.mjs` 会直接解析并执行 `docs/native-ios.md`、`docs/native-android.md`、`docs/flutter.md` 中的 `js` 代码块；调整这三个文档示例时务必运行 `npm test`。
-- **[D-007 | 2026-11-26 | 环境避坑] npm 12 下 `scripts/pack-web.mjs` 兼容问题**
-  - 在 npm `12.x` 环境下，`npm pack --json` 输出格式变更会导致 `scripts/pack-web.mjs:30`（`const [{ filename }] = JSON.parse(report)`）抛出 `TypeError: object is not iterable`，进而使 `conformance-tests/web-package.test.mjs` 失败（其余 171/172 用例不受影响）。后续可在独立小 PR 中兼容数组与对象两种返回形态。
+- **[D-007 | 2026-11-26 | #33 已修复] npm 12 下 `scripts/pack-web.mjs` 兼容问题**
+  - npm `12.x` 下 `npm pack --json` 返回按包名索引的对象映射而非数组；`#33` 已在 `scripts/pack-web.mjs` 兼容 npm ≤ 11 数组与 npm 12+ 对象两种格式。
 
 ---
 
@@ -107,6 +106,8 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | 修复 `scripts/pack-web.mjs` 对 npm 12 `npm pack --json` 返回格式的兼容 | `#33` (`1a1b580`) |
+| 2026-11-26 | `T-001` 建立多 Agent 协作规范 `AGENTS.md`、中心状态看板与零冲突交接单模板 | `#32` (`15dd06d`) |
 | 2026-11-26 | Web SDK `0.2.0` 发布与迁移说明（`docs/migrate-0.2.0.md`） | `#31` (`52d94f5`) |
 | 2026-11-26 | 三端 `0.2.0` 候选发布工程化与 Android Photo Picker 回移文档 | `#27` (`d7149c2`) |
 | 2026-11-25 | 强制精确 HTTPS origin 白名单并保留业务 JSON 键名 | `#30` (`2dec3e2`) |

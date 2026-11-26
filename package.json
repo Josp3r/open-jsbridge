@@ -5,6 +5,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint \"packages/**/*.ts\"",
+    "spec:lint": "npm run build --silent && node scripts/codegen.mjs --lint",
+    "codegen:ts": "npm run build --silent && node scripts/codegen.mjs --target ts --out packages/web-sdk/src/generated/spec.ts",
+    "codegen:check": "npm run build --silent && node scripts/codegen.mjs --lint --target ts --out packages/web-sdk/src/generated/spec.ts --check",
     "size:web": "npm run build --silent && node scripts/check-web-size.mjs",
     "pack:web": "node scripts/pack-web.mjs",
     "build:sdk-consumer": "node scripts/build-sdk-consumer.mjs",
