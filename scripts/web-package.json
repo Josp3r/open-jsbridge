@@ -40,6 +40,7 @@
     }
   },
   "files": [
+    "packages/host-core/src",
     "packages/protocol/src",
     "packages/web-mock/src",
     "packages/web-sdk/src"

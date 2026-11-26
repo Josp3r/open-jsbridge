@@ -7,7 +7,7 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `ca340e8`（最后更新日期：`2026-11-26`）
+- **最新主干基线**：`main` @ `1a1d401`（最后更新日期：`2026-11-26`）
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
@@ -41,7 +41,7 @@
 
 | Task ID | 任务 | 状态 | 认领方 | 分支 / PR / Issue | 独占 Scope（文件/目录） | 备注 / 交接单 | 更新日期 |
 |---|---|---|---|---|---|---|---|
-| `T-003` | Issue `#21` 文档验收收口与 `0.2.0` 看板同步 | `in-review` | `linux-agent (antigravity)` | `antigravity/issue-21-catalog-boundaries` · Refs `#21` | `docs/native-capability-catalog.md`, `docs/team-status.md` | 补齐目录中的 `#21` 链接与边界说明，核查 `AndroidBridge` 默认无 JSI 回退 | 2026-11-26 |
+| `T-004` | 提取参考 `host-core` + 增强 `@open-jsbridge/web/mock` | `in-review` | `linux-agent (antigravity)` | `antigravity/host-core-and-mock` | `packages/host-core/**`, `packages/web-mock/**`, `scripts/web-package.json`, `conformance-tests/host-core.test.mjs`, `docs/team-status.md` | 抽出传输无关参考状态机，补齐 `media.chooseMedia`、`bridge.cancel`、`register`、`failNext`、`latency` | 2026-11-26 |
 
 ---
 
@@ -61,13 +61,12 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **提取参考 `host-core` + 增强 `@open-jsbridge/web/mock`** | 高 | `linux-agent` / `macos-agent` | `packages/host-core/**`, `packages/web-mock/**`, `conformance-tests/**` | 补齐 `media.chooseMedia`、`bridge.cancel`、`latency`/`failNext` mock，为 RN 方案 A 与差分测试打底 |
 | **媒体句柄闭环：`media.release@1` + `media.preview@1`** | 中高 | `linux-agent` + `macos-agent` 接力 | `spec/methods/media/**`, `packages/web-sdk/src/media*`, `examples/native-android/**`, `examples/native-ios/**` | Refs #24, #21；补齐单图选择后的主动释放与原生全屏预览 |
-| **流式回调协议 `bridge.progress`（`onCallback`）** | 中 | `linux-agent` | `spec/protocol/**`, `packages/web-sdk/src/bridge.ts`, `packages/web-mock/**`, `conformance-tests/**` | [docs/protocol.md](protocol.md) §8；是 `transfer.progress` 与持续流能力的前置依赖（注意 Web core ≤ 7 KiB 门禁） |
+| **流式回调协议 `bridge.progress`（`onCallback`）** | 中 | `linux-agent` | `spec/protocol/**`, `packages/web-sdk/src/bridge.ts`, `packages/host-core/**`, `conformance-tests/**` | [docs/protocol.md](protocol.md) §8；是 `transfer.progress` 与持续流能力的前置依赖（注意 Web core ≤ 7 KiB 门禁） |
 | **Web SDK 插件管线（`use(plugin)` / `onMetric`）与 `BrowserFallbackAdapter`** | 中 | `linux-agent` | `packages/web-sdk/src/**`, `conformance-tests/**` | [docs/web-sdk.md](web-sdk.md) §3 & §6.2；外投浏览器降级与可观测性基础 |
 | **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`, `packages/web-sdk/**`, 双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance |
 | **`transfer.upload` 契约 RFC 与安全设计** | 中低 | `linux-agent` / `macos-agent` | `docs/protocol.md`, `spec/rfcs/**`（新建） | Refs #24；需先明确上传域名 ACL、宿主鉴权 header 注入、压缩参数与取消/错误码语义 |
-| **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中低（依赖 `host-core`） | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；复用 `host-core` 并严格遵循 `trust: degraded` (S2) 约束 |
+| **React Native 方案 A 宿主（`@open-jsbridge/react-native`）** | 中 | `linux-agent` / `macos-agent` | `packages/react-native/**` | [docs/react-native.md](react-native.md)；已具备 `packages/host-core` 底座，须严格遵循 `trust: degraded` (S2) 约束 |
 
 ---
 
@@ -107,6 +106,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-26 | `T-003` 补齐 `docs/native-capability-catalog.md` 的 `#21` 边界说明并同步 `0.2.0` 看板 | `#35` (`1a1d401`) |
 | 2026-11-26 | `T-002` 新增 `packages/codegen`（Spec Lint + TS 类型生成）与 CI 漂移检查 | `#34` (`ca340e8`) |
 | 2026-11-26 | 修复 `scripts/pack-web.mjs` 对 npm 12 `npm pack --json` 返回格式的兼容 | `#33` (`1a1b580`) |
 | 2026-11-26 | `T-001` 建立多 Agent 协作规范 `AGENTS.md`、中心状态看板与零冲突交接单模板 | `#32` (`15dd06d`) |
