@@ -67,14 +67,14 @@
 - **[D-002 | 2026-11-25 | #21, #28] 方法与事件命名冻结基线**
   - 新增标准能力方法使用 `domain.verbNoun`（已有 `ui.toast.show` 保留原名）。
   - 标准事件使用「名词 + 过去分词」（如 `network.statusChanged`），命名空间已指明主语时可用过去分词（`app.foregrounded`、`app.backgrounded`）。旧事件名 `network.changed` 已直接删除，禁止回退或混用。
-  - `request`、WebSocket、Canvas 不进桥；支付、登录等走厂商命名空间（如 `wechat.pay.request`）；`wx-compat` 规划为可选薄适配层，不进核心包。
+  - `request`、WebSocket、Canvas 不进桥；支付、登录等走厂商命名空间（如 `wechat.pay.request`）；官方仓不维护第三方方言兼容包（见 `D-010`）。
 - **[D-003 | 2026-11-25 | #30] 安全来源与 JSON 键名保留约束**
   - 参考宿主仅支持一个或多个**精确 HTTPS origin**（`https://host[:port]`），禁止前缀/子串匹配；`rules` JSON 细粒度 ACL 仍属未实现的可选提案。
   - 解码器仅过滤任意层级的 `__proto__` 字段，**必须保留 `constructor` 与 `prototype` 等业务 JSON 键名**。
   - 编码器在入队前做严格 JSON 快照，拒绝 `Date`、访问器、稀疏数组、循环引用、超出安全整数范围的数字等非标准 JSON 值（`-32600` / `-32602`）。
 - **[D-004 | 2026-11-26 | #19, #27, #31] Web SDK `0.2.0` 包边界与体积门禁**
   - 仅发布 ESM + TypeScript 声明，零运行时依赖；主入口 `@open-jsbridge/web` 只导出 `createBridge` 与核心类型/错误码，不自动初始化默认单例（默认单例在 `@open-jsbridge/web/auto`，按需能力在 `/app`、`/device`、`/network`、`/ui`、`/media`）。
-  - 任何对 `packages/web-sdk` 或 `packages/protocol` 的修改都必须通过 `npm run size:web`（主入口 min+gzip ≤ 7 KiB；当前基线 `6715 / 7168 bytes`，剩余约 453 bytes）。
+  - 任何对 `packages/web-sdk` 或 `packages/protocol` 的修改都必须通过 `npm run size:web`（主入口 min+gzip ≤ 7 KiB；当前基线 `7127 / 7168 bytes`）。
 - **[D-005 | 2026-11-25 | #29] Android Photo Picker 兼容策略**
   - 选图强制使用 iOS PHPicker / AndroidX `PickVisualMedia`，禁止为选图申请整库相册权限。
   - Android API 24–32 若设备缺少系统或已安装的 Photo Picker 回移版本，握手时**不声明** `media.chooseMedia`；回移配置由接入 App 自行声明（见 [docs/native-android.md](native-android.md)）。
@@ -86,6 +86,8 @@
   - 新增或修改 `spec/schemas/`、`spec/methods/` 或 `spec/protocol/errors.json` 后，必须运行 `npm run codegen:ts` 更新 `packages/web-sdk/src/generated/spec.ts`，CI 已接入 `npm run codegen:check` 拦截漂移与不合规 schema。
 - **[D-009 | 2026-11-26 | #41] 实时认领锁与交接走置顶 GitHub Issue `#41`**
   - 为彻底消除 `main` 分支合入前的可见性 Gap 及并行 PR 对 `docs/team-status.md` 的合并冲突，所有瞬态 `CLAIM` / `HANDOFF` / `DONE` / `RELEASE` 统一以 Append-only 评论发到 Issue `#41`（60m TTL + Comment ID 乐观锁仲裁），本文件仅保留持久化基线、候选池与共享决策。
+- **[D-010 | 2026-11-26 | #50 Revert] 官方仓库不维护第三方方言兼容包（如 `wx-compat`）**
+  - 为保持 Open JSBridge 单一标准心智、避免给开发者造成「多套规范并存」或「兼容微信全量运行时」的误解，官方仓库不提供 `wx-compat` 一类第三方方言封装包；有存量迁移需求的接入方可在自有业务仓或外部社区自行封装异步薄层。
 
 ---
 
