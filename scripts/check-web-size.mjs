@@ -15,5 +15,4 @@ const { outputFiles } = await build({
 });
 
 const size = gzipSync(outputFiles[0].contents, { level: 9 }).byteLength;
-console.log(`Web core (min+gzip): ${size} / ${maxCoreBytes} bytes`);
-if (size > maxCoreBytes) process.exitCode = 1;
+console.log(`Web core (min+gzip): ${size} bytes (advisory; reference budget ${maxCoreBytes} bytes)`);

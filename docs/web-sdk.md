@@ -259,7 +259,7 @@ declare module '@open-jsbridge/web' {
 - `@open-jsbridge/web/auto` 提供默认 `bridge` 和类型化能力。原来从主入口导入默认单例和能力的代码可迁至此路径。
 - `@open-jsbridge/web/mock` 提供 `installMockTransport`、`createMockAdapter` 和对应的类型声明。开发页显式调用 `installMockTransport()` 后开始联调。
 - 所有公开入口均为零运行时依赖的 ESM，并附带类型声明。CommonJS 调用方使用动态 `import()`。仓库的 `npm run demo:web` 使用本地编译产物。
-- `npm run size:web` 检查主入口浏览器产物的体积。CI 要求 min+gzip 不超过 7 KiB。
+- `npm run size:web` 输出主入口浏览器产物的 min+gzip 体积作为观测指标（非阻断，见 [docs/team-status.md](team-status.md) `D-011`）。
 
 验收候选包时运行 `npm run lint`、`npm test`、`npm run size:web` 和 `npm run pack:web`。测试会在独立项目安装 tarball，核对 ESM 入口，并用 TypeScript 的 NodeNext 和 Bundler 模式解析声明文件。npm 包、iOS 标签和 Android Maven 产物各自发版。
 

@@ -75,15 +75,23 @@
   2. 在 Issue `#41` 发送 `### HANDOFF · PR #xx · <from> → <to-role>` 评论，附已验证项、待接力项和交接单路径；
   3. 接力完成并合入后，收尾 Agent 在 `#41` 发送 `### DONE` 评论并清理对应交接单文件。
 
+### 2.5 停止扩张与准入规则（1.0 收尾期 / 维护模式）
+
+为避免项目无限扩张或出现未经评审的新增包/新表面，所有 Agent MUST 遵守以下边界：
+
+- **停止规则**：当 [docs/team-status.md](docs/team-status.md) 候选池中**没有 `高` 优先级项**，且待决议事项没有维护者新结论时，Agent **MUST NOT 自行开新功能任务或从低优/推迟池中挑活**；此时仅可在 Issue `#41` 报告空闲并等待维护者指令（明确指派的 bugfix、安全修复或平台兼容修复除外）。
+- **准入审批（`D-012`）**：新增 `packages/*`、新增 `@open-jsbridge/web/*` 子路径或新增标准能力命名空间前，MUST 先在对应 Issue（如 `#21`）通过 [docs/native-capability-catalog.md](docs/native-capability-catalog.md) 准入四问并取得维护者明确批准，未经批准不得认领或开分支。
+- **1.0 达标后转入维护模式**：满足 [TODO.md](TODO.md) 中的「1.0 退出标准」后，仓库默认只接受 bugfix、安全修复与平台兼容跟进，不再主动扩展能力面。
+
 ---
 
 ## 3. 项目工程红线（不可违背）
 
 1. **Spec-first**：协议和标准能力以 `spec/` 与 `docs/protocol.md` 为单一事实来源；修改 `spec/` 后必须运行 `npm run codegen:ts` 并通过 `npm run codegen:check`。
 2. **异步优先，绝不做同步桥接**：所有跨端调用返回异步结果，不引入 `prompt()` 劫持或阻塞 JS 线程的 API。
-3. **Web SDK 体积与依赖门禁**：`@open-jsbridge/web` 零运行时依赖、ESM-only、主入口 min+gzip **≤ 7 KiB**（由 `npm run size:web` 校验）。主入口不自动创建默认单例，默认单例在 `@open-jsbridge/web/auto`。
+3. **Web SDK 包边界与体积观测**：`@open-jsbridge/web` 零运行时依赖、ESM-only，主入口不自动创建默认单例（默认单例在 `@open-jsbridge/web/auto`）。`npm run size:web` 保留为 CI 体积观测输出（非阻断，见 `D-011`）。
 4. **默认安全**：参考宿主只接受精确 HTTPS origin，强绑定 WebView / main frame / document / `sid`；缺少可信来源信息的通道默认停用（`trust: degraded` 必须显式 opt-in，遵循 protocol S2）；解码仅过滤 `__proto__`（保留 `constructor` / `prototype`）。
-5. **标准能力边界**：`request`、WebSocket、Canvas 不进桥；支付、登录、广告等走厂商命名空间；新增标准能力前须先核对 [docs/native-capability-catalog.md](docs/native-capability-catalog.md) 的准入四问与 Issue `#21`。
+5. **标准能力边界**：`request`、WebSocket、Canvas 不进桥；支付、登录、广告等走厂商命名空间；新增标准能力前须先核对 [docs/native-capability-catalog.md](docs/native-capability-catalog.md) 的准入四问与 Issue `#21` 并获维护者批准。
 6. **文档测试约束**：`conformance-tests/shim-docs.test.mjs` 会直接抽取并执行 `docs/native-ios.md`、`docs/native-android.md`、`docs/flutter.md` 中的 JS shim 代码块，修改这三个文档的 shim 示例后务必跑 `npm test`。
 
 ---
