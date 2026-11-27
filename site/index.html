@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open JSBridge — 协议优先、三端一致的 Hybrid JSBridge 标准（jsb 1.0）</title>
+  <meta name="description" content="Open JSBridge 1.0：冻结的 JSON-RPC 2.0 通信协议规范（jsb: 1.0）、零依赖 Web SDK 与 iOS/Android 安全参考宿主，含浏览器内实时交互式 Playground。">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">JB</span>
+        <span>Open JSBridge</span>
+        <span class="brand-version">1.0.0</span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="#architecture">协议架构</a>
+        <a href="#capabilities">1.0 能力</a>
+        <a href="#playground">在线 Playground</a>
+        <a href="#docs">文档索引</a>
+        <a class="nav-github" href="https://github.com/Josp3r/open-jsbridge" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <p class="hero-kicker">Spec-First · Frozen jsb 1.0 · Web / iOS / Android</p>
+          <h1>协议优先、三端一致的 Hybrid JSBridge 标准</h1>
+          <p class="hero-lead">
+            Open JSBridge 定义了跨 WebView 与原生宿主的异步 JSON-RPC 2.0 信封规范、能力协商与安全隔离模型。所有宿主注入同一份 <code>window.__OJSB_TRANSPORT__</code> 契约，Web 业务只写一份代码。
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#playground">打开在线 Playground</a>
+            <a class="btn btn-secondary" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/protocol.md" target="_blank" rel="noopener">阅读冻结协议规范</a>
+          </div>
+          <div class="facts-strip" aria-label="核心指标">
+            <div>
+              <span class="fact-value">jsb 1.0</span>
+              <span class="fact-label">协议规范已冻结</span>
+            </div>
+            <div>
+              <span class="fact-value">0 deps</span>
+              <span class="fact-label">ESM Web SDK · 7.1 KiB</span>
+            </div>
+            <div>
+              <span class="fact-value">10 项能力</span>
+              <span class="fact-label">Web / iOS / Android 对齐</span>
+            </div>
+            <div>
+              <span class="fact-value">7 / 7 CI</span>
+              <span class="fact-label">含双端真机级模拟器回归</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="code-panel" aria-label="快速接入代码">
+          <div class="code-panel-bar">
+            <div class="code-tabs" role="tablist" aria-label="平台代码切换">
+              <button id="tab-web" class="code-tab" type="button" role="tab" aria-selected="true" data-snippet="web">Web SDK</button>
+              <button id="tab-ios" class="code-tab" type="button" role="tab" aria-selected="false" data-snippet="ios">iOS SwiftPM</button>
+              <button id="tab-android" class="code-tab" type="button" role="tab" aria-selected="false" data-snippet="android">Android Gradle</button>
+            </div>
+            <button id="copy-snippet" class="copy-btn" type="button">Copy</button>
+          </div>
+          <pre id="quick-code" class="code-block"><code>import { bridge } from '@open-jsbridge/web/auto';
+import { device } from '@open-jsbridge/web/device';
+import { transfer } from '@open-jsbridge/web/transfer';
+
+await bridge.ready();
+const info = await device.getInfo();
+console.log(info.os, info.osVersion);</code></pre>
+          <div class="code-panel-foot">
+            <span id="quick-install"><code>npm install @open-jsbridge/web</code></span>
+            <a id="quick-doc-link" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/web-sdk.md" target="_blank" rel="noopener">接入指南 →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>三层解耦架构与工程红线</h2>
+            <p>Transport 通道差异由各平台 Host Shim 吸收；Envelope 与 Semantics 在 Web、iOS、Android、Flutter 与 React Native 之间保持一致。</p>
+          </div>
+        </div>
+
+        <figure class="arch-figure">
+          <svg class="arch-svg" viewBox="0 0 980 210" role="img" aria-label="Open JSBridge 三层协议架构图">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 10 5 L 0 9 z" fill="#0e5a6d"></path>
+              </marker>
+            </defs>
+
+            <rect x="12" y="22" width="210" height="166" rx="10" fill="#f7f6f2" stroke="#cbc6ba"></rect>
+            <text x="30" y="50" font-size="12" font-weight="700" fill="#0e5a6d" font-family="ui-monospace, monospace">WEB LAYER</text>
+            <rect x="30" y="66" width="174" height="44" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="44" y="92" font-size="13" font-weight="600" fill="#14171c">@open-jsbridge/web</text>
+            <rect x="30" y="124" width="174" height="46" rx="6" fill="#e6f2f5" stroke="#9ec4cf"></rect>
+            <text x="44" y="145" font-size="12" font-weight="700" fill="#09414f" font-family="ui-monospace, monospace">__OJSB_TRANSPORT__</text>
+            <text x="44" y="161" font-size="11" fill="#4c535f">Object.freeze + non-configurable</text>
+
+            <line x1="224" y1="147" x2="294" y2="147" stroke="#0e5a6d" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+            <text x="233" y="136" font-size="11" fill="#4c535f" font-family="ui-monospace, monospace">JSON-RPC</text>
+
+            <rect x="298" y="22" width="214" height="166" rx="10" fill="#f7f6f2" stroke="#cbc6ba"></rect>
+            <text x="316" y="50" font-size="12" font-weight="700" fill="#0e5a6d" font-family="ui-monospace, monospace">HOST CHANNELS</text>
+            <rect x="316" y="64" width="178" height="32" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="328" y="85" font-size="12.5" fill="#14171c">iOS · WKScriptMessageWithReply</text>
+            <rect x="316" y="104" width="178" height="32" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="328" y="125" font-size="12.5" fill="#14171c">Android · WebMessageListener</text>
+            <rect x="316" y="144" width="178" height="32" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="328" y="165" font-size="12.5" fill="#4c535f">Flutter / RN / Browser Mock</text>
+
+            <line x1="514" y1="105" x2="564" y2="105" stroke="#0e5a6d" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+
+            <rect x="568" y="22" width="194" height="166" rx="10" fill="#f7f6f2" stroke="#cbc6ba"></rect>
+            <text x="586" y="50" font-size="12" font-weight="700" fill="#0e5a6d" font-family="ui-monospace, monospace">CORE + SECURITY</text>
+            <rect x="586" y="66" width="158" height="46" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="598" y="86" font-size="12.5" font-weight="600" fill="#14171c">精确 HTTPS Origin</text>
+            <text x="598" y="103" font-size="11" fill="#4c535f">main frame · document · sid</text>
+            <rect x="586" y="124" width="158" height="46" rx="6" fill="#ffffff" stroke="#d5d1c7"></rect>
+            <text x="598" y="144" font-size="12.5" font-weight="600" fill="#14171c">Session 状态机</text>
+            <text x="598" y="161" font-size="11" fill="#4c535f">去重 · 取消 · 进度 · 回收</text>
+
+            <line x1="764" y1="105" x2="808" y2="105" stroke="#0e5a6d" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+
+            <rect x="812" y="22" width="156" height="166" rx="10" fill="#f7f6f2" stroke="#cbc6ba"></rect>
+            <text x="828" y="50" font-size="12" font-weight="700" fill="#0e5a6d" font-family="ui-monospace, monospace">CAPABILITIES</text>
+            <text x="828" y="80" font-size="12.5" fill="#14171c" font-family="ui-monospace, monospace">device.*</text>
+            <text x="828" y="102" font-size="12.5" fill="#14171c" font-family="ui-monospace, monospace">network.* / app.*</text>
+            <text x="828" y="124" font-size="12.5" fill="#14171c" font-family="ui-monospace, monospace">ui.toast.*</text>
+            <text x="828" y="146" font-size="12.5" fill="#14171c" font-family="ui-monospace, monospace">media.* / transfer.*</text>
+            <text x="828" y="168" font-size="12.5" fill="#0e5a6d" font-family="ui-monospace, monospace">acme.* (业务扩展)</text>
+          </svg>
+        </figure>
+
+        <div class="principles-grid">
+          <article class="principle-card">
+            <div class="principle-num">01 / SPEC-FIRST</div>
+            <h3>单一事实来源</h3>
+            <p>所有信封与方法以 <code>spec/</code> JSON Schema 为准，CI 通过 <code>codegen:check</code> 拦截类型与契约漂移。</p>
+          </article>
+          <article class="principle-card">
+            <div class="principle-num">02 / ASYNC-ONLY</div>
+            <h3>异步、超时与取消</h3>
+            <p>拒绝同步 <code>prompt()</code> 劫持。每次调用具备 deadline，支持 <code>AbortSignal</code> 与 <code>bridge.cancel</code> 释放原生槽位。</p>
+          </article>
+          <article class="principle-card">
+            <div class="principle-num">03 / DEFAULT SECURE</div>
+            <h3>默认拒绝与文档隔离</h3>
+            <p>精确 HTTPS origin + main frame + document + <code>sid</code> 强校验；缺少安全通道时返回 <code>null</code>，绝不启用不安全回退。</p>
+          </article>
+          <article class="principle-card">
+            <div class="principle-num">04 / CAPABILITIES</div>
+            <h3>能力协商而非猜版本</h3>
+            <p>握手返回已启用的方法、事件与特性列表，前端用 <code>bridge.has()</code> 检测，新增业务能力走厂商命名空间。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="capabilities" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>1.0.0 三端交付能力清单</h2>
+            <p>以下标准能力与核心控制协议已在 Web、iOS、Android 三端对齐并通过一致性与真机级模拟器回归测试。</p>
+          </div>
+          <a class="btn btn-secondary btn-sm" href="https://github.com/Josp3r/open-jsbridge/blob/main/CHANGELOG.md#100" target="_blank" rel="noopener">查看 1.0.0 CHANGELOG</a>
+        </div>
+
+        <div class="table-wrap">
+          <table class="cap-table">
+            <thead>
+              <tr>
+                <th>能力</th>
+                <th>类型</th>
+                <th>Web SDK</th>
+                <th>iOS</th>
+                <th>Android</th>
+                <th>契约与行为摘要</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="cap-name">device.getInfo@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /device</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>返回平台标识 <code>os</code> 与系统版本 <code>osVersion</code></td>
+              </tr>
+              <tr>
+                <td class="cap-name">network.getStatus@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /network</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>返回当前网络类型（<code>wifi</code> / <code>cellular</code> / <code>ethernet</code> / <code>none</code> 等）</td>
+              </tr>
+              <tr>
+                <td class="cap-name">ui.toast.show@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /ui</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>原生短文本提示（1–120 Unicode 码点），参数严格校验</td>
+              </tr>
+              <tr>
+                <td class="cap-name">media.chooseMedia@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /media</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>系统相册选图（PHPicker / PickVisualMedia，无整库权限），返回句柄与有界缩略图</td>
+              </tr>
+              <tr>
+                <td class="cap-name">media.release@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /media</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>按当前会话批量释放 1–32 个媒体句柄并归还 20 MiB 配额</td>
+              </tr>
+              <tr>
+                <td class="cap-name">transfer.upload@1</td>
+                <td><span class="cap-kind">Method</span></td>
+                <td><span class="status-yes">✓ /transfer</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>消费会话媒体句柄向白名单 HTTPS 端点单图前台 POST，支持进度回调与取消</td>
+              </tr>
+              <tr>
+                <td class="cap-name">bridge.progress</td>
+                <td><span class="cap-kind">Stream</span></td>
+                <td><span class="status-yes">✓ core</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>流式进度通知，严格递增 <code>seq</code> 并重置调用方 <code>idleTimeout</code></td>
+              </tr>
+              <tr>
+                <td class="cap-name">network.statusChanged</td>
+                <td><span class="cap-kind">Event</span></td>
+                <td><span class="status-yes">✓ /network</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>显式订阅后推送网络状态变化，本地引用计数多路复用</td>
+              </tr>
+              <tr>
+                <td class="cap-name">app.foregrounded / backgrounded</td>
+                <td><span class="cap-kind">Event</span></td>
+                <td><span class="status-yes">✓ /app</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>显式订阅后推送 App 前后台切换信号，载荷固定为 <code>null</code></td>
+              </tr>
+              <tr>
+                <td class="cap-name">acme.* 自定义业务扩展</td>
+                <td><span class="cap-kind">Custom</span></td>
+                <td><span class="status-yes">✓ bridge.call</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td><span class="status-yes">✓</span></td>
+                <td>支持业务方注册非保留命名空间下的异步/流式方法与自定义事件</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="cap-note">
+          仓内还附带 <code>packages/host-core</code>（含 §11.3 ACL 与反向调用）、<code>packages/flutter</code>（纯 Dart 宿主）、<code>packages/react-native</code>、<code>packages/devtools</code> 与四目标 <code>packages/codegen</code> 供参考和二次集成。
+        </p>
+      </div>
+    </section>
+
+    <section id="playground" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>在线交互式 Playground</h2>
+            <p>页面直接运行编译后的 <code>@open-jsbridge/web</code>、<code>@open-jsbridge/web/mock</code> 与 <code>@open-jsbridge/devtools</code>——每次点击都会产生真实的 <code>jsb 1.0</code> JSON-RPC 2.0 报文。</p>
+          </div>
+        </div>
+
+        <div class="playground-shell">
+          <div class="pg-toolbar">
+            <div class="pg-status-group">
+              <span id="pg-status" class="status-chip" data-state="idle">未握手</span>
+              <span id="pg-sid" class="pg-meta">sid: —</span>
+              <span id="pg-host" class="pg-meta">host: —</span>
+            </div>
+            <div class="pg-toolbar-actions">
+              <label for="pg-platform" class="pg-meta">模拟宿主</label>
+              <select id="pg-platform" class="pg-select" aria-label="选择模拟原生宿主平台">
+                <option value="ios">iOS 18.4 (ios-wk)</option>
+                <option value="android">Android 15 (android-wml)</option>
+              </select>
+              <button id="pg-reconnect" class="btn btn-secondary btn-sm" type="button">重建会话</button>
+              <button id="pg-devtools-toggle" class="btn btn-secondary btn-sm" type="button">Devtools 浮层</button>
+              <button id="pg-export-har" class="btn btn-secondary btn-sm" type="button">导出 HAR</button>
+            </div>
+          </div>
+
+          <div class="pg-grid">
+            <div class="pg-controls">
+              <div class="pg-group">
+                <h3 class="pg-group-title">1. 基础 RPC 与错误处理</h3>
+                <div class="pg-btn-row">
+                  <button id="btn-hello" class="btn btn-primary btn-sm" type="button">bridge.hello</button>
+                  <button id="btn-device" class="btn btn-secondary btn-sm" type="button">device.getInfo@1</button>
+                  <button id="btn-network" class="btn btn-secondary btn-sm" type="button">network.getStatus@1</button>
+                  <button id="btn-missing" class="btn btn-secondary btn-sm" type="button">触发 -32601 未注册方法</button>
+                </div>
+                <form id="toast-form" class="pg-input-row">
+                  <input id="toast-input" class="pg-input" type="text" maxlength="120" value="Hello from Open JSBridge 1.0" aria-label="Toast 文本">
+                  <button id="btn-toast" class="btn btn-secondary btn-sm" type="submit">ui.toast.show@1</button>
+                </form>
+              </div>
+
+              <div class="pg-group">
+                <h3 class="pg-group-title">2. 媒体句柄 + 流式上传（bridge.progress &amp; AbortSignal）</h3>
+                <div class="pg-btn-row">
+                  <button id="btn-choose-media" class="btn btn-secondary btn-sm" type="button">media.chooseMedia@1</button>
+                  <button id="btn-upload" class="btn btn-primary btn-sm" type="button" disabled>transfer.upload@1</button>
+                  <button id="btn-cancel-upload" class="btn btn-danger btn-sm" type="button" disabled>AbortSignal 取消上传</button>
+                  <button id="btn-release-media" class="btn btn-secondary btn-sm" type="button" disabled>media.release@1</button>
+                </div>
+                <div id="media-stage" class="media-stage" hidden>
+                  <img id="media-thumb" class="media-thumb" alt="选中图片的 JPEG 缩略图预览">
+                  <div id="media-info" class="media-info"></div>
+                </div>
+                <div id="upload-progress-wrap" class="progress-wrap" hidden>
+                  <div class="progress-bar-track">
+                    <div id="upload-progress-fill" class="progress-bar-fill"></div>
+                  </div>
+                  <div class="progress-meta">
+                    <span id="upload-progress-label">等待上传进度…</span>
+                    <span id="upload-progress-seq">seq: —</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pg-group">
+                <h3 class="pg-group-title">3. 事件订阅与宿主推送（bridge.subscribe / bridge.event）</h3>
+                <div class="pg-btn-row">
+                  <button id="btn-sub-network" class="btn btn-secondary btn-sm" type="button">订阅 network.statusChanged</button>
+                  <button id="btn-emit-network" class="btn btn-secondary btn-sm" type="button">模拟切换网络</button>
+                  <button id="btn-sub-app" class="btn btn-secondary btn-sm" type="button">订阅 app 前后台</button>
+                  <button id="btn-emit-app" class="btn btn-secondary btn-sm" type="button">模拟切后台/前台</button>
+                </div>
+              </div>
+
+              <div class="pg-group">
+                <h3 class="pg-group-title">最近一次 SDK 返回值 / 异常</h3>
+                <pre id="pg-result" class="pg-result-box">点击任意按钮开始体验实时握手与调用。</pre>
+              </div>
+            </div>
+
+            <div class="pg-inspector" aria-label="Wire JSON-RPC 实时报文检视器">
+              <div class="inspector-head">
+                <div class="inspector-filters" role="group" aria-label="报文过滤">
+                  <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">全部</button>
+                  <button class="filter-btn" type="button" data-filter="rpc" aria-pressed="false">RPC</button>
+                  <button class="filter-btn" type="button" data-filter="progress" aria-pressed="false">进度</button>
+                  <button class="filter-btn" type="button" data-filter="event" aria-pressed="false">事件</button>
+                </div>
+                <div class="pg-btn-row">
+                  <span id="frame-count" class="pg-meta">0 frames</span>
+                  <button id="btn-clear-frames" class="btn btn-secondary btn-sm" type="button">清空</button>
+                </div>
+              </div>
+              <ul id="frame-list" class="frame-list">
+                <li class="frame-empty">暂无 Wire 报文。触发一次调用后点击任意条目查看完整 JSON-RPC 信封。</li>
+              </ul>
+              <div class="frame-detail">
+                <pre id="frame-detail">// 选择上方任意一条 Wire 报文查看原始信封</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="docs" class="section">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <h2>文档与参考资源</h2>
+            <p>所有规范、平台接入文档、一致性测试规范与发版手册均随源码在 GitHub 仓库维护。</p>
+          </div>
+        </div>
+
+        <div class="docs-grid">
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/protocol.md" target="_blank" rel="noopener">
+            <span class="doc-tag">SPEC · FROZEN</span>
+            <h3>协议规范（jsb 1.0）</h3>
+            <p>信封结构、错误码表、握手协商、取消与流式进度、安全模型与生命周期。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/web-sdk.md" target="_blank" rel="noopener">
+            <span class="doc-tag">WEB SDK</span>
+            <h3>@open-jsbridge/web 指南</h3>
+            <p>主入口、按需子路径、插件管线、AbortSignal、bfcache 与浏览器降级。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/native-ios.md" target="_blank" rel="noopener">
+            <span class="doc-tag">IOS · SWIFTPM</span>
+            <h3>iOS 参考宿主指南</h3>
+            <p>WKScriptMessageHandlerWithReply、document token 校验、PHPicker 与上传端点授权。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/native-android.md" target="_blank" rel="noopener">
+            <span class="doc-tag">ANDROID · MAVEN</span>
+            <h3>Android 参考宿主指南</h3>
+            <p>WebMessageListener、DOCUMENT_START_SCRIPT、PickVisualMedia 回移与安全边界。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/native-profiles.md" target="_blank" rel="noopener">
+            <span class="doc-tag">PROFILES</span>
+            <h3>标准能力契约</h3>
+            <p>device / network / app / ui / media / transfer 的参数、结果、配额与错误约束。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/conformance.md" target="_blank" rel="noopener">
+            <span class="doc-tag">CONFORMANCE</span>
+            <h3>一致性测试与 Codegen</h3>
+            <p>wire.json / host-inbound-raw.json 跨端复用测试、CI 矩阵与四语言代码生成。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/flutter.md" target="_blank" rel="noopener">
+            <span class="doc-tag">FLUTTER</span>
+            <h3>Flutter 方案 A 宿主</h3>
+            <p>纯 Dart 协议核心、InAppWebView / webview_flutter 适配器与 S2 降级门禁。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/react-native.md" target="_blank" rel="noopener">
+            <span class="doc-tag">REACT NATIVE</span>
+            <h3>React Native 方案 A 宿主</h3>
+            <p>复用 host-core 的 react-native-webview 宿主适配与二次编码注入防线。</p>
+          </a>
+          <a class="doc-card" href="https://github.com/Josp3r/open-jsbridge/blob/main/docs/native-release.md" target="_blank" rel="noopener">
+            <span class="doc-tag">RELEASE 1.0.0</span>
+            <h3>三端发版与产物验收</h3>
+            <p>npm tarball、SwiftPM 精确版本标签与 Maven Central 产物校验流程。</p>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>Open JSBridge · MIT License · Protocol <code>jsb: 1.0</code> Frozen · SDK <code>1.0.0</code></span>
+      <div class="footer-links">
+        <a href="https://github.com/Josp3r/open-jsbridge" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/Josp3r/open-jsbridge/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+        <a href="https://github.com/Josp3r/open-jsbridge/issues" target="_blank" rel="noopener">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <div id="toast-banner" class="toast-banner" role="status" aria-live="polite" data-visible="false"></div>
+
+  <script type="module" src="./playground.js"></script>
+</body>
+</html>

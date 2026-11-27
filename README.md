@@ -1,160 +1,173 @@
 # Open JSBridge
 
-> 一套**协议优先（spec-first）**、三端行为一致、默认安全的 Hybrid 通信标准：
-> `spec/` 定义协议和 method schema。`packages/web-sdk/` 提供 Web SDK，`examples/native-ios/` 和 `examples/native-android/` 提供原生宿主和示例。
+> 一套**协议优先（spec-first）**、三端行为一致、默认安全的 Hybrid 通信标准。
+> 协议基线 `jsb: 1.0` 已正式冻结；Web SDK（`@open-jsbridge/web`）、iOS SwiftPM（`NativeIOSHost`）与 Android Maven（`io.github.josp3r:open-jsbridge-android`）均已对齐 **`1.0.0`**。
+
+[在线社区首页与交互式 Playground](https://josp3r.github.io/open-jsbridge/) · [协议规范（Frozen, `jsb: 1.0`）](docs/protocol.md) · [CHANGELOG](CHANGELOG.md#100) · [发版与产物验收](docs/native-release.md)
+
+---
 
 ## 1. 项目定位
 
-Open JSBridge（下文简称 **OJSB**）解决的是 **Web 页面与宿主 Native（iOS / Android）之间的双向 RPC + 事件通信**。它不是一个"某家 App 的 bridge"，而是：
+Open JSBridge（简称 **OJSB**）解决 **Web 页面与宿主 Native（iOS / Android / Flutter / React Native）之间的双向异步 RPC + 流式进度 + 事件推送通信**。它不是某家 App 的私有 bridge，而是：
 
-1. **一份协议规范**（[docs/protocol.md](docs/protocol.md)）：消息信封、错误码、握手、超时取消、事件、大数据、安全、生命周期、可观测性、版本演进。任何人都可以按规范独立实现一端。
-2. **参考实现路线**：
-   - Web：TypeScript SDK（[docs/web-sdk.md](docs/web-sdk.md)）
-   - iOS：基于 `WKWebView` 的注入实现（[docs/native-ios.md](docs/native-ios.md)）
-   - Android：基于 `androidx.webkit` 的注入实现（[docs/native-android.md](docs/native-android.md)）
-   - Flutter 宿主（规划中）：基于 `flutter_inappwebview` / `webview_flutter`，Dart 实现协议核心（[docs/flutter.md](docs/flutter.md)）
-   - React Native 宿主（规划中）：基于 `react-native-webview`，TS 实现协议核心，可选 TurboModule 复用原生层（[docs/react-native.md](docs/react-native.md)）
+1. **一份冻结的协议规范**（[docs/protocol.md](docs/protocol.md)）：定义消息信封、错误码、握手协商、超时取消、流式进度回调、事件订阅、媒体与上传、安全边界、生命周期与版本演进。任何团队都可以按规范独立实现任一端。
+2. **多端参考实现**：
+   - **Web SDK**（`@open-jsbridge/web@1.0.0`）：零运行时依赖、ESM-only、带完整 TypeScript 声明（[docs/web-sdk.md](docs/web-sdk.md)）
+   - **iOS 参考宿主**（SwiftPM `NativeIOSHost`）：基于 `WKScriptMessageHandlerWithReply` + 主文档 token 强校验（[docs/native-ios.md](docs/native-ios.md)）
+   - **Android 参考宿主**（Maven `io.github.josp3r:open-jsbridge-android`）：基于 `WebMessageListener` + `DOCUMENT_START_SCRIPT`，无回退通道（[docs/native-android.md](docs/native-android.md)）
+   - **仓内跨端参考实现**（随仓维护，不随 1.0 单独发版）：`packages/host-core`、`packages/flutter`（纯 Dart 方案 A，已接入 CI）、`packages/react-native`（方案 A）、`packages/devtools`、`packages/codegen`
 
-   所有宿主都注入满足同一 **Host Shim 契约**（protocol §2）的 shim，因此 **Web SDK 只有一份，新增宿主无需修改 SDK**。
-3. **一致性测试套件 + 单一事实来源的 method schema**（[docs/conformance.md](docs/conformance.md)）：JSON Schema 描述已定义的方法，跨端用例校验 Web、iOS 和 Android 的协议行为。代码生成列入路线图。
+   所有宿主注入满足同一 **Host Shim 契约**（protocol §2）的 `window.__OJSB_TRANSPORT__`，**Web SDK 只有一份，新增宿主无需修改 Web 业务代码**。
+3. **Spec-first 与一致性测试套件**（[docs/conformance.md](docs/conformance.md)）：以 `spec/` 下 JSON Schema 作为单一事实来源，`packages/codegen` 支持 TS / Swift / Kotlin / Dart 代码生成与 CI 漂移检查；7 项 CI 矩阵覆盖 Web/Mock、Flutter Dart、SwiftPM、iOS Release 模拟器、Android JVM、Android 11（API 30）Photo Picker 与 Android 15（API 35）Release 模拟器。
 
 ### 非目标（Non-goals）
 
-- **不提供同步调用**。所有调用都是异步的（Promise）。同步 bridge 依赖 `prompt()` 劫持或阻塞 JS 线程，会卡死渲染、行为不可移植。
-- **不规定业务 API**。规范只定义 `bridge.*` 等少量保留命名空间；`device.*`、`ui.*` 等标准库作为可选 "profile" 单独版本化。
-- **不兼容 UIWebView / Android 4.x 以下**。协议本身与传输无关，但参考实现只面向现代 WebView。
+- **绝不提供同步调用**：所有跨端调用均返回异步 `Promise`，不使用 `prompt()` 劫持或阻塞 JS 线程的方案。
+- **不将通用 Web 能力塞进桥**：`request`、WebSocket、Canvas 不进桥；支付、登录、广告等强厂商能力走业务/厂商命名空间（如 `acme.pay.create`）。
+- **不兼容 UIWebView / Android 4.x**：参考实现面向现代安全 WebView 通道，默认拒绝缺少可信 origin / frame 元数据的通道。
 
-## 2. 设计原则
+---
+
+## 2. 1.0 交付能力矩阵
+
+| 分类 | 能力 | Web SDK | iOS | Android | 契约 |
+|---|---|---|---|---|---|
+| 协议核心 | 握手协商 / 取消 / 重复去重 / 导航隔离 | ✅ | ✅ | ✅ | [envelope.schema.json](spec/protocol/envelope.schema.json) |
+| 流式回调 | `bridge.progress`（`seq` + `idleTimeout`） | ✅ | ✅ | ✅ | [protocol.md §8](docs/protocol.md#8-流式回调callback) |
+| 标准方法 | `device.getInfo@1` | ✅ `/device` | ✅ | ✅ | [device/getInfo.json](spec/methods/device/getInfo.json) |
+| 标准方法 | `network.getStatus@1` | ✅ `/network` | ✅ | ✅ | [network/getStatus.json](spec/methods/network/getStatus.json) |
+| 标准方法 | `ui.toast.show@1` | ✅ `/ui` | ✅ | ✅ | [native-profiles.md](docs/native-profiles.md) |
+| 标准方法 | `media.chooseMedia@1` | ✅ `/media` | ✅ | ✅ | [media/chooseMedia.json](spec/methods/media/chooseMedia.json) |
+| 标准方法 | `media.release@1` | ✅ `/media` | ✅ | ✅ | [media/release.json](spec/methods/media/release.json) |
+| 标准方法 | `transfer.upload@1` | ✅ `/transfer` | ✅ | ✅ | [transfer/upload.json](spec/methods/transfer/upload.json) |
+| 标准事件 | `network.statusChanged` | ✅ `/network` | ✅ | ✅ | [network/statusChanged.json](spec/methods/network/statusChanged.json) |
+| 标准事件 | `app.foregrounded` / `app.backgrounded` | ✅ `/app` | ✅ | ✅ | [app/foregrounded.json](spec/methods/app/foregrounded.json) |
+| 扩展能力 | 自定义业务方法（含流式进度）与业务事件 | ✅ | ✅ | ✅ | [native-host.md](docs/native-host.md) |
+
+> `media.preview@1`、下一批标准能力、原生 `rules` ACL、原生 Host→Web 反向调用与原生 iframe 文档绑定明确推迟至 1.0 之后（握手时按能力声明，不影响兼容，详见 [TODO.md](TODO.md) 与 `D-013`）。
+
+---
+
+## 3. 设计原则
 
 | # | 原则 | 落地方式 |
-|---|------|---------|
-| P1 | **Spec-first** | 先改 `spec/`，再生成代码；实现与规范冲突时以规范为准，并补 conformance 用例 |
-| P2 | **Transport-agnostic** | 每条 UTF-8 JSON 消息用 OJSB 信封承载一个 JSON-RPC 2.0 对象。iOS、Android、Flutter 和 React Native 的平台通道由宿主 shim 适配 |
-| P3 | **Secure by default** | 默认拒绝；使用可信 origin、frame 与 method 级 ACL；缺少可信来源的通道默认停用 |
-| P4 | **Async-only, 可取消, 有超时** | SDK 管理调用的 deadline，并用 `bridge.cancel` 通知取消已发送的请求 |
-| P5 | **能力协商而非版本猜测** | 握手返回 capabilities，Web 用 `bridge.has(method)` 做特性检测 |
-| P6 | **可观测** | 使用 `meta.traceId` 关联调用，三端统一日志字段与耗时埋点 |
-| P7 | **小而稳** | Web SDK 零运行时依赖，CI 校验主入口产物 min+gzip ≤ 7 KiB |
-| P8 | **三端行为一致** | 一致性测试是合入门槛，不是"有空再补" |
+|---|---|---|
+| P1 | **Spec-first** | 先改 `spec/`，再运行 `npm run codegen:ts`；CI 通过 `npm run codegen:check` 拦截漂移 |
+| P2 | **Transport-agnostic** | 每条 UTF-8 JSON 消息承载单个 JSON-RPC 2.0 对象，平台通道差异由 Host Shim 隔离 |
+| P3 | **Secure by default** | 精确 HTTPS origin 白名单 + main frame / document / `sid` 强绑定；缺少可信来源默认停用 |
+| P4 | **Async-only, 可取消, 有超时** | 每次调用具备 deadline，支持 `AbortSignal` 与 `bridge.cancel` 释放原生并发槽 |
+| P5 | **能力协商而非版本猜测** | 握手返回 `capabilities`，页面使用 `bridge.has()` / `bridge.hasEvent()` 做特性检测 |
+| P6 | **可观测** | `meta.traceId` 透传、插件管线 `use`/`onMetric`、仓内 `devtools` 浮层与 HAR 导出 |
+| P7 | **轻量零依赖** | `@open-jsbridge/web` 零运行时依赖、ESM-only、按需子路径导入，CI 持续观测主入口体积 |
+| P8 | **三端行为一致** | 共享 `wire.json` / `host-inbound-raw.json` 原始报文用例 + 双端真实 WebView 模拟器回归 |
 
-## 3. 与业内方案的取舍
+---
 
-以下只做概念层面比较，不涉及具体版本细节：
+## 4. 快速开始
 
-| 方案 | 特点 | OJSB 的取舍 |
-|------|------|------------|
-| **WebViewJavascriptBridge** | 经典的 iOS/OS X 方案，早期依赖 URL scheme 拦截做通知，handler 注册模型简洁 | 沿用"handler 注册"的简洁心智；放弃 URL scheme 拦截，改用 `WKScriptMessageHandler(WithReply)`，拿到可信的 frame/origin 信息 |
-| **DSBridge** | 跨 iOS/Android，支持同步调用和命名空间 | 沿用命名空间（`ns.method`）；**明确不做同步调用**；补上正式的错误码、能力协商和安全模型 |
-| **Cordova / Capacitor 插件体系** | 插件化成熟、生态大，但运行时和工程结构较重，偏"整个 App 是 Web" | 借鉴插件注册与权限声明；OJSB 只做"bridge 层"，可嵌入任意现有 App 的任意 WebView |
-| **JSON-RPC 2.0** | 请求、通知、响应与标准错误码 | 在 `{ "jsb": "1.0", "meta": { … }, "rpc": { "jsonrpc": "2.0", … } }` 中承载单条 RPC 消息。握手和会话信息由 OJSB 管理，事件、取消和进度使用显式通知 |
+### 安装 Web SDK（`1.0.0`）
 
-## 4. 仓库结构（monorepo）
+```sh
+npm install @open-jsbridge/web
+```
+
+主入口 `@open-jsbridge/web` 仅导出 `createBridge`、错误类型与核心类型，不自动初始化单例；默认单例位于 `@open-jsbridge/web/auto`，标准能力按需从 `/device`、`/network`、`/app`、`/ui`、`/media`、`/transfer`、`/reverse`、`/fallback`、`/mock` 导入。
+
+```ts
+import { bridge } from '@open-jsbridge/web/auto';
+import { device } from '@open-jsbridge/web/device';
+import { ui } from '@open-jsbridge/web/ui';
+
+await bridge.ready();
+if (bridge.has('device.getInfo')) {
+  const info = await device.getInfo();
+  await ui.toast.show({ text: `${info.os} ${info.osVersion}` });
+}
+```
+
+### 浏览器本地联调（Mock + Devtools）
+
+```ts
+import { bridge } from '@open-jsbridge/web/auto';
+import { installMockTransport } from '@open-jsbridge/web/mock';
+
+const mock = installMockTransport({
+  deviceInfo: { os: 'ios', osVersion: '18.4' },
+  events: ['network.statusChanged'],
+});
+
+const stop = bridge.on('network.statusChanged', console.log);
+await stop.ready;
+mock?.emit('network.statusChanged', { type: 'wifi' });
+```
+
+### 原生宿主接入
+
+- **iOS（SwiftPM）**：依赖 `https://github.com/Josp3r/open-jsbridge`（`exact: "1.0.0"`）并导入 `NativeIOSHost`，详见 [docs/native-ios.md](docs/native-ios.md) 与 [examples/native-ios/README.md](examples/native-ios/README.md)。
+- **Android（Gradle / Maven Central）**：添加 `io.github.josp3r:open-jsbridge-android:1.0.0`，详见 [docs/native-android.md](docs/native-android.md) 与 [examples/native-android/README.md](examples/native-android/README.md)。
+
+---
+
+## 5. 仓库结构与本地开发
 
 ```text
 open-jsbridge/
 ├── Package.swift                  # SwiftPM 的 NativeIOSHost 产品
-├── spec/
-│   ├── protocol/                  # 消息信封 JSON Schema 和错误码
-│   ├── methods/                   # 已定义的方法及参数和结果
-│   └── schemas/                   # 共享 JSON Schema
+├── spec/                          # 协议信封 Schema、错误码、标准方法/事件 Schema 与 RFC
 ├── packages/
 │   ├── protocol/                  # TypeScript 信封编解码
 │   ├── web-sdk/                   # @open-jsbridge/web
-│   └── web-mock/                  # @open-jsbridge/web/mock
+│   ├── web-mock/                  # @open-jsbridge/web/mock
+│   ├── host-core/                 # 参考 Host 状态机（含 §11.3 rules ACL 与反向调用）
+│   ├── devtools/                  # 调用记录器、HAR 导出与 Shadow DOM 浮层
+│   ├── codegen/                   # Spec Lint 与 TS / Swift / Kotlin / Dart 代码生成
+│   ├── flutter/                   # 纯 Dart 方案 A 宿主与 shim（66 项单测）
+│   └── react-native/              # React Native 方案 A 宿主与 shim
+├── site/                          # 社区首页与在线交互式 Playground 源码（GitHub Pages）
 ├── examples/
-│   ├── native-ios/                # Swift 宿主、示例及 iOS SDK Consumer
-│   ├── native-android/            # Kotlin 宿主及 Release 示例
-│   ├── android-sdk-consumer/      # 从本地 Maven 安装 AAR 的独立 App
-│   ├── sdk-consumer/              # 两端独立 App 共用的 H5 验收资源
-│   └── web-demo/                  # 浏览器和原生 WebView 联调页
-├── conformance-tests/             # 跨端测试及包安装验收
-│   └── fixtures/                  # 共享消息用例
-├── scripts/                       # SDK 打包、体积检查及验收页构建
-├── docs/                          # 协议、设计与接入指南
-└── .github/workflows/             # Web、Swift、Android 及 Release WebView CI
+│   ├── web-demo/                  # 本地浏览器与原生 WebView 联调页
+│   ├── native-ios/                # Swift 宿主、单测、模拟器测试与 iOS Consumer
+│   ├── native-android/            # Kotlin 宿主、JVM 单测与 Release 模拟器测试
+│   ├── android-sdk-consumer/      # 通过 Maven 坐标接入 AAR 的独立 Android App
+│   └── sdk-consumer/              # 双端独立 App 共用的 H5 验收资源
+├── conformance-tests/             # 跨端一致性测试与共享 wire/raw 用例
+├── scripts/                       # 打包、体积观测、代码生成与静态站点构建脚本
+└── docs/                          # 冻结协议规范、平台接入指南与团队治理文档
 ```
 
-Flutter 和 React Native 宿主、共享 TS 宿主核心、代码生成及调试工具见[路线图](#6-路线图)，均处于规划阶段。
-
-Web SDK 0.2.0 预览版使用 npm 的 `next` 频道。[CHANGELOG](CHANGELOG.md#020) · [从 0.1.x 升级](docs/migrate-0.2.0.md)
-
-### 本地构建与验证
+常用本地命令：
 
 ```sh
 npm ci
-npm test
+npm run lint
+npm run codegen:check
+npm test               # 编译 TS 并运行 236+ 项协议、SDK、Mock、Codegen 与站点验收测试
+npm run pack:web       # 生成 dist/open-jsbridge-web-1.0.0.tgz
+npm run build:site     # 构建 dist/site/（社区首页 + 在线 Playground）
+npm run demo:web       # 启动本地联调页（支持 ?devtools=1）
 ```
 
-`npm test` 先编译 TypeScript，再运行 wire 正反例与 Web SDK / Mock 一致性用例。单独运行 `npm run build` 可将 TypeScript 编译产物输出到 `dist/`。
+---
 
-使用 `npm run demo:web` 可以在浏览器里体验 Mock 通道注入、自动握手、调用和错误处理。[Web SDK 快速上手](examples/web-demo/README.md)
+## 6. 版本策略
 
-同一个 demo 也可在原生 WebView 中运行。Native 开发者可从 [最小接入要求](docs/native-host.md) 开始，并在 [Swift / iOS 示例](examples/native-ios/README.md) 或 [Kotlin / Android 示例](examples/native-android/README.md) 验证自动握手和 echo。
-
-在 Node.js 脚本中，可以显式创建带 Mock Adapter 的实例。首次调用会自动握手。
-
-```sh
-node --input-type=module <<'JS'
-import { createBridge } from './dist/packages/web-sdk/src/index.js';
-import { createMockAdapter } from './dist/packages/web-mock/src/index.js';
-
-const bridge = createBridge({ adapter: createMockAdapter() });
-console.log(await bridge.call('conformance.echo', { text: '你好' }));
-JS
-```
-
-### 安装 Web SDK
-
-npm 上已发布的稳定版是 `@open-jsbridge/web@0.1.0`。从该版本的主入口导入具名的 `bridge` 单例。
-
-```sh
-npm install @open-jsbridge/web@0.1.0
-```
-
-当前源码可构建 **0.2.0 候选包**。在仓库根目录运行 `npm run pack:web`，然后在 H5 项目安装本地 tarball。
-
-```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.2.0.tgz
-```
-
-候选包仅支持 ESM，随包提供 TypeScript 类型声明。从 `@open-jsbridge/web/auto` 导入具名的 `bridge` 单例，从主入口导入 `createBridge` 创建独立连接，从 `@open-jsbridge/web/mock` 安装浏览器联调通道。[独立项目接入](examples/web-demo/README.md#从源码打包安装)
-
-### 原生宿主 SDK
-
-iOS 通过 SwiftPM 验证 `NativeIOSHost`，Android 通过本地 Maven 安装 `io.github.josp3r:open-jsbridge-android:0.2.0`。两端和 Web 使用同一候选版本号。签名及正式发布由维护者在后续发布流程中处理。[独立 App 验收](examples/sdk-consumer/README.md) · [发布预检](docs/native-release.md)
-
-## 5. 版本策略
-
-存在**三条相互独立的版本线**，不要混用：
+存在**三条相互独立的版本线**：
 
 | 版本线 | 格式 | 含义 | 规则 |
-|--------|------|------|------|
-| **协议版本** `jsb` | `MAJOR.MINOR`，如 `1.0` | 信封与核心语义 | MINOR 只做向后兼容的新增；MAJOR 才允许破坏性变更，握手协商 |
-| **Method 版本** | 整数，如 `device.getInfo@2` | 单个 method 的 params/result 形状 | 新增可选字段不升版本；删除/改语义必须升版本，旧版本至少保留一个 MAJOR 周期 |
-| **包版本** | SemVer | npm / SPM / Maven / pub 产物 | 三端包独立发版；每个包在元数据中声明支持的协议版本范围 |
+|---|---|---|---|
+| **协议版本** `jsb` | `MAJOR.MINOR`（当前 `1.0` Frozen） | 信封与核心语义 | MINOR 向后兼容；MAJOR 破坏性变更须握手协商 |
+| **Method 版本** | 正整数（如 `device.getInfo@1`） | 单个 method 的 params/result 形状 | 新增可选字段不升版本；删除/改语义升版本 |
+| **包版本** | SemVer（当前 `1.0.0`） | npm / SwiftPM / Maven 产物 | 遵循语义化版本，1.0 达标后进入维护模式 |
 
-## 6. 路线图
-
-| 里程碑 | 目标 | 交付物 | 退出标准 |
-|--------|------|-------|---------|
-| **M0 规范冻结（Draft）** | 冻结可校验的 JSON-RPC wire 格式 | `docs/protocol.md`、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json`、`spec/methods/bridge/hello.json`、`conformance-tests/fixtures/wire.json` | 规范评审通过，wire 正反例通过 Schema 校验 |
-| **M1 最小闭环** | 先跑通 TypeScript Web SDK 与 Mock 宿主的 echo，再分别接入 iOS 和 Android 主 frame | Web SDK core、Mock 宿主、echo demo。单独交付 iOS WithReply 与 Android WebMessageListener 接入 | TypeScript 闭环通过握手、调用、错误、超时核心用例。各原生接入独立通过其核心用例 |
-| **M2 完整协议** | 事件、取消、流式回调、安全 ACL、生命周期 | blob 大数据通道、devtools。多 frame 和旧通道按平台隔离能力评估 | 参考三端通过所有适用的 conformance 用例。声明 iframe 或旧通道能力前，须验证跨 origin、frame 导航和迟到消息隔离 |
-| **M2.5 跨端框架宿主** | Flutter / RN 方案 A | 共享 TS 宿主核心、`@open-jsbridge/react-native`（react-native-webview）、`open_jsbridge_flutter`（flutter_inappwebview 优先，webview_flutter degraded） | 两者在 conformance 矩阵中按各自 trust 等级全绿；Web SDK 零改动 |
-| **M3 生态与 1.0** | 可被外部采用 | codegen（TS/Swift/Kotlin/Dart）、`device/ui/storage` profile、Flutter Pigeon 原生 handler 转发、RN 方案 B（TurboModule/Fabric）预研、文档站、性能基准、1.0 发布 | 至少一个真实 App 接入；协议 `1.0` 正式冻结；兼容性承诺生效 |
+---
 
 ## 7. 文档索引
 
-- [协议规范 docs/protocol.md](docs/protocol.md)（核心）
-- [Native Host 最小接入 docs/native-host.md](docs/native-host.md)
-- [原生基础能力 docs/native-profiles.md](docs/native-profiles.md)
-- [原生能力目录提案 docs/native-capability-catalog.md](docs/native-capability-catalog.md)
-- [iOS 实现层 docs/native-ios.md](docs/native-ios.md)
-- [Android 实现层 docs/native-android.md](docs/native-android.md)
-- [Flutter 宿主 docs/flutter.md](docs/flutter.md)
-- [React Native 宿主 docs/react-native.md](docs/react-native.md)
-- [Web SDK docs/web-sdk.md](docs/web-sdk.md)
-- [一致性测试与 Schema 单一事实来源 docs/conformance.md](docs/conformance.md)
-- [开发待办 TODO.md](TODO.md)
-- [Agent 协作规范 AGENTS.md](AGENTS.md)
-- [多 Agent 团队状态看板 docs/team-status.md](docs/team-status.md)
+- [协议规范（Frozen, `jsb: 1.0`）](docs/protocol.md)
+- [Web SDK 指南](docs/web-sdk.md) · [从 0.1.x 升级](docs/migrate-0.2.0.md)
+- [Native Host 最小接入要求](docs/native-host.md) · [原生基础能力](docs/native-profiles.md) · [能力准入目录](docs/native-capability-catalog.md)
+- [iOS 实现指南](docs/native-ios.md) · [Android 实现指南](docs/native-android.md)
+- [Flutter 宿主指南](docs/flutter.md) · [React Native 宿主指南](docs/react-native.md)
+- [一致性测试与 Schema 规范](docs/conformance.md) · [1.0.0 发版与产物验收](docs/native-release.md)
+- [开发待办与 1.0 退出标准](TODO.md) · [多 Agent 协作规范](AGENTS.md) · [团队基线与共享决策](docs/team-status.md)

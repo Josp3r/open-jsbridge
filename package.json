@@ -11,6 +11,7 @@
     "size:web": "npm run build --silent && node scripts/check-web-size.mjs",
     "pack:web": "node scripts/pack-web.mjs",
     "build:sdk-consumer": "node scripts/build-sdk-consumer.mjs",
+    "build:site": "node scripts/build-site.mjs",
     "test": "npm run build && node --test conformance-tests/*.test.mjs",
     "demo:web": "npm run build && node examples/web-demo/serve.mjs"
   },
