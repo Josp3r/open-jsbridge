@@ -1,6 +1,6 @@
 {
   "name": "@open-jsbridge/web",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Web SDK for Open JSBridge hosts",
   "license": "MIT",
   "type": "module",

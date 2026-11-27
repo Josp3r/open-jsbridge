@@ -1,6 +1,6 @@
 # Android SDK Release Consumer
 
-这是一个独立 Gradle 工程。App 只通过 Maven 坐标 `io.github.josp3r:open-jsbridge-android:0.2.0` 接入 Android SDK，不包含 `:host` 源码或 composite build。共享 H5 从 npm 打包产物安装 Web SDK 后构建；本工程只把产物按原样打进 APK，不重写页面或替换 transport。
+这是一个独立 Gradle 工程。App 只通过 Maven 坐标 `io.github.josp3r:open-jsbridge-android:1.0.0` 接入 Android SDK，不包含 `:host` 源码或 composite build。共享 H5 从 npm 打包产物安装 Web SDK 后构建；本工程只把产物按原样打进 APK，不重写页面或替换 transport。
 
 ## 构建与验收
 

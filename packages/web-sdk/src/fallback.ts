@@ -52,7 +52,7 @@ export class BrowserFallbackAdapter implements Adapter {
           jsonrpc: '2.0', id: rpc.id,
           result: {
             jsb: '1.0', sid,
-            host: { platform: 'browser', name: this.name, version: '0.2.0' },
+            host: { platform: 'browser', name: this.name, version: '1.0.0' },
             capabilities: { methods, events: [], features: [] },
             limits: { maxMessageBytes: 1_048_576, maxInflight: 64, defaultTimeoutMs: 15_000 },
           },

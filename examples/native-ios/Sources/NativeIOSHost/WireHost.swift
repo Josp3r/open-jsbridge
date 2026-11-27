@@ -600,7 +600,7 @@ final class WireHost {
         let result: [String: Any] = [
             "jsb": "1.0",
             "sid": sid,
-            "host": ["platform": platform, "name": "ios-wk", "version": "0.2.0"],
+            "host": ["platform": platform, "name": "ios-wk", "version": "1.0.0"],
             "capabilities": [
                 "methods": advertisedMethods,
                 "events": events,
