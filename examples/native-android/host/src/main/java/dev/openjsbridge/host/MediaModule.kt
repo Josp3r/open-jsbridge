@@ -30,6 +30,27 @@ internal data class MediaThumbnail(val width: Int, val height: Int, val jpeg: By
 
 internal class MediaFailure(val code: Int, message: String) : RuntimeException(message)
 
+/** The worker can read the original and check its deadline. Only the WebView thread changes the lease. */
+internal class MediaUploadLease(
+    val file: File,
+    timeLeft: () -> Long,
+    private var onInvalidated: (() -> Unit)?,
+) {
+    @Volatile private var timeLeft: (() -> Long)? = timeLeft
+
+    internal val isOpen: Boolean get() = timeLeft != null
+
+    fun remainingMillis(): Long = timeLeft?.invoke()?.coerceAtLeast(0L) ?: 0L
+
+    /** Finish this upload without releasing the original selection. */
+    fun close() {
+        timeLeft = null
+        onInvalidated = null
+    }
+
+    internal fun takeInvalidation(): (() -> Unit)? = onInvalidated.also { close() }
+}
+
 /** One presenter per attachment; each confirmed document gets a separate store. */
 internal class MediaModule(
     private val pick: suspend () -> MediaImage?,
@@ -65,8 +86,9 @@ internal class MediaSession(
 
     private class Selection(val file: File, val size: Int, val expiresAt: Long, val deadline: Long) {
         var cancelExpiry: (() -> Unit)? = null
+        var upload: MediaUploadLease? = null
 
-        fun isExpired(now: Long, elapsed: Long) = expiresAt <= now || deadline <= elapsed
+        fun remainingMillis(now: Long, elapsed: Long) = minOf(expiresAt - now, deadline - elapsed)
     }
 
     // Cancellation/retirement can unlink the copy before a blocked content provider
@@ -181,13 +203,27 @@ internal class MediaSession(
         pending = null
     }
 
+    /** Validate this document's handle and install its cancellation callback in the same WebView turn. */
+    fun acquireUpload(id: String, onInvalidated: () -> Unit): MediaUploadLease {
+        val selection = entries[id]
+        if (closed || selection == null) throw MediaFailure(-32003, "Permission denied")
+        val timeLeft = { selection.remainingMillis(epochMillis(), elapsedMillis()) }
+        if (timeLeft() <= 0) {
+            remove(id)
+            throw MediaFailure(-32003, "Permission denied")
+        }
+        if (!selection.file.isFile) throw MediaFailure(-32003, "Permission denied")
+        if (selection.upload?.isOpen == true) throw MediaFailure(-32010, "Resource busy")
+        return MediaUploadLease(selection.file, timeLeft, onInvalidated).also { selection.upload = it }
+    }
+
     fun release(ids: List<String>) {
         val now = epochMillis()
         val elapsed = elapsedMillis()
         for (id in ids) {
             val selection = entries[id] ?: continue
-            if (selection.isExpired(now, elapsed)) continue
-            check(remove(id)) { "Could not remove stored media" }
+            val expired = selection.remainingMillis(now, elapsed) <= 0
+            check(remove(id) || expired) { "Could not remove stored media" }
         }
     }
 
@@ -200,16 +236,22 @@ internal class MediaSession(
     private fun sweepExpired() {
         val elapsed = elapsedMillis()
         val now = epochMillis()
-        entries.filterValues { it.isExpired(now, elapsed) }.keys.forEach(::remove)
+        entries.filterValues { it.remainingMillis(now, elapsed) <= 0 }.keys.forEach(::remove)
     }
 
     private fun remove(id: String): Boolean {
         val previous = entries[id] ?: return true
-        if (!previous.file.delete() && previous.file.exists()) return false
-        entries.remove(id)
-        allocated -= previous.size
-        previous.cancelExpiry?.invoke()
-        return true
+        val cancelUpload = previous.upload?.takeInvalidation()
+        try {
+            if (!previous.file.delete() && previous.file.exists()) return false
+            entries.remove(id)
+            allocated -= previous.size
+            previous.cancelExpiry?.invoke()
+            return true
+        } finally {
+            // A blocked unlink may retain the quota for a later retry, but cannot keep an upload running.
+            cancelUpload?.invoke()
+        }
     }
 
     companion object {

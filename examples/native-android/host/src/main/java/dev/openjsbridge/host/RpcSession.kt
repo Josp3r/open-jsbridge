@@ -22,6 +22,7 @@ internal class RpcSession(
     businessMethods: List<BusinessMethod> = emptyList(),
     supportsCancellation: Boolean = false,
     private val businessEvents: Set<String> = emptySet(),
+    origin: String? = null,
 ) {
     internal class ProgressRoute : BusinessProgress {
         var post: ((JsonElement?) -> Boolean)? = null
@@ -36,6 +37,7 @@ internal class RpcSession(
         val supportsProgress: Boolean = false,
         val onCancel: (() -> Unit)? = null,
         val mediaSelection: Boolean = false,
+        val upload: TransferUploadTask? = null,
     ) {
         val progress = ProgressRoute()
 
@@ -56,6 +58,8 @@ internal class RpcSession(
     private val helloIds = HashSet<String>()
     private val requestIds = HashSet<String>()
     private val media = modules.media?.takeIf { supportsCancellation }?.newSession()
+    private val upload = modules.upload?.takeIf { media != null }
+    private val uploadOrigin = origin?.takeIf { upload?.allows(it) == true }
     private val methods = buildMap<String, (JsonObject?) -> JsonElement> {
         if (enableEcho) put(ECHO) { params -> params ?: JsonObject() }
         modules.device?.let { device -> put(DEVICE_INFO, query(device::info)) }
@@ -79,7 +83,8 @@ internal class RpcSession(
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
     private val canCancel = supportsCancellation && (this.businessMethods.isNotEmpty() || media != null)
-    private val canReportProgress = supportsCancellation && this.businessMethods.values.any { it.supportsProgress }
+    private val canReportProgress = uploadOrigin != null ||
+        (supportsCancellation && this.businessMethods.values.any { it.supportsProgress })
     private var callbacksNegotiated = false
     val maxMessageBytes = MAX_MESSAGE_BYTES
     private val observedEvents = buildMap<String, ((JsonElement) -> Unit) -> (() -> Unit)?> {
@@ -132,6 +137,8 @@ internal class RpcSession(
         onBusinessCall: ((BusinessCall) -> Unit)? = null,
         onCancellation: ((String) -> Unit)? = null,
         mediaBusy: Boolean = false,
+        uploadBusy: Boolean = false,
+        receivedAtMillis: Long? = null,
         afterResponse: (() -> Unit) -> Unit = {},
     ): String? {
         if (exceedsMessageLimit(raw)) return null
@@ -167,6 +174,7 @@ internal class RpcSession(
         val versionOne = method?.removeSuffix("@1").orEmpty()
         val business = businessMethods[versionOne]
         val activeMedia = media?.takeIf { versionOne == MEDIA_CHOOSE }
+        val activeUpload = upload?.takeIf { versionOne == UPLOAD }
         val invalidMeta = when {
             !envelope.has("meta") -> false
             meta == null -> true
@@ -181,13 +189,18 @@ internal class RpcSession(
         ) return failure(id, replySid, -32600, "Invalid request")
 
         if (!hello && incomingSid == null) return failure(id, activeSid, -32009, "Session expired")
+        if (activeUpload != null && uploadOrigin == null) return uploadFailure(id, replySid, -32003, "endpoint_not_allowed")
         if (activeMedia != null && mediaBusy) return failure(id, replySid, -32010, "Busy")
-        if (businessBusy) return failure(id, replySid, -32008, "Rate limited")
+        if (activeUpload != null && uploadBusy) return uploadFailure(id, replySid, -32010, "busy")
+        val releaseDuringUpload = uploadBusy && uploadOrigin != null && versionOne == MEDIA_RELEASE
+        if (businessBusy && !releaseDuringUpload) return failure(id, replySid, -32008, "Rate limited")
         val handler = methods[versionOne]
         val control = versionOne == SUBSCRIBE || versionOne == UNSUBSCRIBE
-        if ((hello || handler != null || control || business != null || activeMedia != null) &&
-            meta?.get("timeout").asSafeIntegerOrNull() == 0L
+        val timeout = meta?.get("timeout").asSafeIntegerOrNull()
+        if ((hello || handler != null || control || business != null || activeMedia != null || activeUpload != null) &&
+            timeout == 0L
         ) {
+            if (activeUpload != null) return uploadFailure(id, replySid, -32602, "invalid_params")
             return failure(id, replySid, -32602, "Invalid request timeout")
         }
 
@@ -195,6 +208,21 @@ internal class RpcSession(
         val requestSid = activeSid ?: return null
         if (activeMedia != null) {
             return chooseMedia(activeMedia, params ?: JsonObject(), id, requestSid, onBusinessCall)
+        }
+        if (activeUpload != null) {
+            if (onBusinessCall == null) return uploadFailure(id, requestSid, -32603, "internal_error")
+            if (hasRepeatedUploadHeader(raw, params)) return uploadFailure(id, requestSid, -32602, "invalid_params")
+            val task = try {
+                activeUpload.open(checkNotNull(uploadOrigin), checkNotNull(media), params,
+                    timeout ?: DEFAULT_TIMEOUT_MS, receivedAtMillis)
+            } catch (error: MediaFailure) {
+                return uploadFailure(id, requestSid, error.code, error.message)
+            } catch (_: RuntimeException) {
+                return uploadFailure(id, requestSid, -32603, "internal_error")
+            }
+            onBusinessCall(BusinessCall({ _, progress -> task.run(progress) }, JsonObject(), id, requestSid,
+                supportsProgress = true, upload = task))
+            return null
         }
         if (control) {
             val events = eventNames(params) ?: return failure(id, requestSid, -32602, "Invalid event names")
@@ -253,7 +281,7 @@ internal class RpcSession(
     }
 
     fun businessCancellationResponse(call: BusinessCall): String? =
-        if (sid == call.sid) failure(call.id, call.sid, -32002, "Cancelled") else null
+        if (sid == call.sid) callFailure(call, -32002, "Cancelled") else null
 
     fun progressNotification(call: BusinessCall, seq: Long, chunk: JsonElement?): String? {
         if (!call.supportsProgress || !callbacksNegotiated || sid != call.sid || seq !in 0L..MAX_SAFE_INTEGER) return null
@@ -267,19 +295,23 @@ internal class RpcSession(
     fun finishBusinessCall(call: BusinessCall, result: Result<JsonElement>): String? {
         if (sid != call.sid) return null
         val error = result.exceptionOrNull()
-        if (error is MediaFailure) return failure(call.id, call.sid, error.code, checkNotNull(error.message))
+        if (error is MediaFailure) return callFailure(call, error.code, checkNotNull(error.message))
         if (error is InvalidBusinessParamsException) return failure(call.id, call.sid, -32602, "Invalid params")
         return try {
-            val value = result.getOrNull() ?: return failure(call.id, call.sid, -32603, "Internal error")
+            val value = result.getOrNull() ?: return callFailure(call, -32603, "Internal error")
             validateOutboundValue(value, depth = 2, limit = maxMessageBytes) // envelope and RPC
             val reply = success(call.id, call.sid, value)
-            if (exceedsMessageLimit(reply)) failure(call.id, call.sid, -32006, "Payload too large") else reply
+            if (exceedsMessageLimit(reply)) callFailure(call, -32006, "Payload too large") else reply
         } catch (_: ReplyTooLargeException) {
-            failure(call.id, call.sid, -32006, "Payload too large")
+            callFailure(call, -32006, "Payload too large")
         } catch (_: RuntimeException) {
-            failure(call.id, call.sid, -32603, "Internal error")
+            callFailure(call, -32603, "Internal error")
         }
     }
+
+    private fun callFailure(call: BusinessCall, code: Int, message: String): String =
+        if (call.upload != null) uploadFailure(call.id, call.sid, code, message)
+        else failure(call.id, call.sid, code, message)
 
     private fun updateSubscriptions(
         id: String,
@@ -377,7 +409,8 @@ internal class RpcSession(
             add("capabilities", JsonObject().apply {
                 add("methods", JsonObject().apply {
                     val mediaMethods = if (media == null) emptySet() else setOf(MEDIA_CHOOSE)
-                    for (method in methods.keys + businessMethods.keys + mediaMethods) {
+                    val uploadMethods = if (uploadOrigin == null) emptySet() else setOf(UPLOAD)
+                    for (method in methods.keys + businessMethods.keys + mediaMethods + uploadMethods) {
                         add(method, JsonObject().apply { add("versions", JsonArray().apply { add(1) }) })
                     }
                 })
@@ -389,8 +422,9 @@ internal class RpcSession(
             })
             add("limits", JsonObject().apply {
                 addProperty("maxMessageBytes", maxMessageBytes)
-                addProperty("maxInflight", 1)
-                addProperty("defaultTimeoutMs", 15_000)
+                // A second wire slot lets the SDK release an in-use handle or observe upload busy.
+                addProperty("maxInflight", if (uploadOrigin == null) 1 else 2)
+                addProperty("defaultTimeoutMs", DEFAULT_TIMEOUT_MS)
             })
         }
         val reply = success(id, sessionId, result)
@@ -421,6 +455,7 @@ internal class RpcSession(
 
     companion object {
         const val MAX_MESSAGE_BYTES = 65_536
+        private const val DEFAULT_TIMEOUT_MS = 15_000L
         private const val MAX_RECORDED_IDS = 4_096
         private const val MAX_SAFE_INTEGER = 9_007_199_254_740_991
         private const val MAX_JSON_NESTING = 255
@@ -431,6 +466,22 @@ internal class RpcSession(
         private const val TOAST_SHOW = "ui.toast.show"
         private const val MEDIA_CHOOSE = "media.chooseMedia"
         private const val MEDIA_RELEASE = "media.release"
+        private const val UPLOAD = "transfer.upload"
+        private val UPLOAD_ERRORS = mapOf(
+            -32602 to ("Invalid params" to "invalid_params"),
+            -32603 to ("Internal error" to "internal_error"),
+            -32001 to ("Timeout" to "timeout"),
+            -32002 to ("Cancelled" to "cancelled"),
+            -32003 to ("Permission denied" to "permission_denied"),
+            -32006 to ("Payload too large" to "payload_too_large"),
+            -32007 to ("User denied" to "user_denied"),
+            -32008 to ("Rate limited" to "rate_limited"),
+            -32010 to ("Busy" to "busy"),
+        )
+        private val UPLOAD_REASONS = setOf(
+            "unsupported_image", "invalid_response", "network_failure", "redirect_denied",
+            "endpoint_not_allowed", "forbidden_header", "field_not_allowed", "compression_not_allowed",
+        )
         private val MEDIA_ID = Regex("[0-9a-f]{32}")
         private val CHOOSE_KEYS = setOf("mediaType", "sourceType", "count")
         private const val SUBSCRIBE = "bridge.subscribe"
@@ -574,6 +625,14 @@ internal class RpcSession(
         private fun success(id: String, sid: String, result: JsonElement) = response(id, sid, "result", result)
 
         private fun strings(values: Iterable<String>) = JsonArray().apply { values.forEach { add(it) } }
+
+        private fun uploadFailure(id: String, sid: String?, code: Int, detail: String?): String {
+            // Exceptions from image preparation, policy hooks or HTTPS must never expose their text.
+            val safeCode = if (code in UPLOAD_ERRORS) code else -32603
+            val (message, defaultReason) = UPLOAD_ERRORS.getValue(safeCode)
+            val reason = detail?.takeIf { it in UPLOAD_REASONS } ?: defaultReason
+            return failure(id, sid, safeCode, message, JsonObject().apply { addProperty("reason", reason) })
+        }
 
         private fun failure(id: String, sid: String?, code: Int, message: String, data: JsonObject? = null) =
             response(id, sid, "error", JsonObject().apply {

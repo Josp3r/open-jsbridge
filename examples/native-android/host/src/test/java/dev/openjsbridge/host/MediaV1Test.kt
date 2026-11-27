@@ -17,6 +17,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -156,6 +157,76 @@ class MediaV1Test {
         assertEquals(4L, fixture.dir.listFiles()!!.single().length())
         owner.call(RELEASE, params).assertNullResult()
         assertEquals(0, fixture.fileCount())
+    }
+
+    @Test fun uploadLeaseBelongsToItsDocumentAndClosingItPreservesTheOriginal() = runBlocking {
+        val fixture = Fixture().apply { image(4) }
+        val owner = fixture.module.newSession()
+        val other = fixture.module.newSession()
+        val id = owner.choose().getAsJsonArray("files").single().asJsonObject.mediaId()
+        assertEquals(-32003, assertThrows(MediaFailure::class.java) { other.acquireUpload(id) {} }.code)
+        assertEquals(-32003, assertThrows(MediaFailure::class.java) { owner.acquireUpload("0".repeat(32)) {} }.code)
+        val lease = owner.acquireUpload(id) { error("A finished upload has no pending invalidation") }
+        assertEquals(fixture.dir.listFiles()!!.single(), lease.file)
+        assertArrayEquals(ByteArray(4), lease.file.readBytes())
+        assertEquals(TTL, lease.remainingMillis())
+        assertEquals(-32010, assertThrows(MediaFailure::class.java) { owner.acquireUpload(id) {} }.code)
+        other.release(listOf(id))
+        other.close()
+        fixture.advance(50)
+        assertEquals(TTL - 50, lease.remainingMillis())
+        lease.close()
+        assertEquals(0L, lease.remainingMillis())
+
+        var invalidations = 0
+        val next = owner.acquireUpload(id) { invalidations++ }
+        assertEquals(lease.file, next.file)
+        owner.release(listOf(id, id))
+        owner.close()
+        assertEquals(1, invalidations)
+        assertEquals(0L, next.remainingMillis())
+        assertTrue(!next.file.exists())
+        assertEquals(-32003, assertThrows(MediaFailure::class.java) { owner.acquireUpload(id) {} }.code)
+    }
+
+    @Test fun eitherClockCanExpireAnUploadEvenWhenItsUnlinkIsBlocked() = runBlocking {
+        for (advanceWallClock in listOf(true, false)) {
+            val fixture = Fixture().apply { image(4) }
+            val owner = fixture.module.newSession()
+            val id = owner.choose().getAsJsonArray("files").single().asJsonObject.mediaId()
+            var invalidations = 0
+            val lease = owner.acquireUpload(id) { invalidations++ }
+            val blocker = blockUnlink(lease.file)
+            if (advanceWallClock) {
+                fixture.epoch += TTL
+                assertEquals(0L, lease.remainingMillis())
+                // A delayed timer cannot allow a fresh upload to start meanwhile.
+                assertEquals(-32003, assertThrows(MediaFailure::class.java) { owner.acquireUpload(id) {} }.code)
+            } else {
+                fixture.epoch -= TTL
+                fixture.advance(TTL)
+            }
+            assertEquals(1, invalidations)
+            assertEquals(0L, lease.remainingMillis())
+            assertTrue(blocker.delete())
+            owner.close()
+            assertEquals(1, invalidations)
+            assertTrue(!lease.file.exists())
+        }
+    }
+
+    @Test fun retiringTheDocumentRevokesALiveUploadAndDeletesItsOriginal() = runBlocking {
+        val fixture = Fixture().apply { image(4) }
+        val session = fixture.module.newSession()
+        val id = session.choose().getAsJsonArray("files").single().asJsonObject.mediaId()
+        var invalidations = 0
+        val lease = session.acquireUpload(id) { invalidations++ }
+        session.close()
+        lease.close()
+        fixture.advance(TTL)
+        assertEquals(1, invalidations)
+        assertEquals(0L, lease.remainingMillis())
+        assertTrue(!lease.file.exists())
     }
 
     @Test fun chooseParamsAreStrictAndSystemDismissalIsASuccess() {

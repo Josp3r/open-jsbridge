@@ -24,7 +24,7 @@ class BusinessMethodTest {
             "", "getConfig", "Acme.getConfig", "acme.GetConfig", "acme..getConfig",
             "acme.getConfig@1", "acme.getConfig\n", "acme.get_config", "acme.功能",
             "bridge.other", "conformance.echo", "ojsb.test", "rpc.test", "device.other",
-            "app.other", "ui.other", "storage.other", "network.other", "media.other",
+            "app.other", "ui.other", "storage.other", "network.other", "media.other", "transfer.upload",
         )) {
             assertThrows(name, IllegalArgumentException::class.java) {
                 BusinessMethod(name) { JsonNull.INSTANCE }
