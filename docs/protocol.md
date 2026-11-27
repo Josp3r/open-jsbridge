@@ -1,4 +1,4 @@
-# Open JSBridge 协议规范（Draft, `jsb: 1.0`）
+# Open JSBridge 协议规范（Frozen, `jsb: 1.0`）
 
 > 本文中的 **MUST / MUST NOT / SHOULD / SHOULD NOT / MAY** 按 RFC 2119 / RFC 8174 解释。
 > 术语："**Web 端**" 指运行在 WebView 中的页面与 SDK；"**Host 端**" 指宿主实现（iOS / Android / Flutter / React Native）；"**Peer**" 泛指任意一端。
@@ -103,7 +103,7 @@ declare global {
 
 - v1 消息 MUST 带 `jsb: "1.0"` 和 `rpc` 对象。`rpc.jsonrpc` MUST 为 `"2.0"`。`jsb` 标识外层 OJSB 协议版本，`jsonrpc` 标识内部 RPC 格式。
 - 此处的 1.0 是外层 wire 协议基线。方法的 `@1` 与事件的 Schema 版本独立，npm 包沿用自己的 SemVer。
-- `meta` MAY 省略。若存在，MUST 为对象。`meta.sid` 若存在 MUST 为非空字符串，会话内消息始终携带它（§6.2）。`meta.timeout` 与 `meta.ts` 若存在 MUST 为非负整数，分别表示剩余超时毫秒数与发送方 epoch 毫秒时间戳（§7）。`meta.traceId` 若存在 MUST 为字符串（§14）。
+- `meta` MAY 省略。若存在，MUST 为对象。`meta.sid` 若存在 MUST 为非空字符串，会话内消息始终携带它（§6.2）。`meta.timeout` 与 `meta.ts` 若存在 MUST 为非负整数，分别表示剩余超时毫秒数与发送方 epoch 毫秒时间戳（§7）。`meta.traceId` 若存在 MUST 为字符串（§14）。`meta.timing`（§14.3）等观测字段属于可选扩展字段，遵循下述未知 `meta` 字段忽略规则。
 - 接收方 MUST 忽略未知的信封字段与 `meta` 字段。`rpc` 及 `rpc.error` 只接受 §3.2 和 §4.1 列出的字段。实现可在校验后为内部消息设置类型标记。
 - 信封 JSON Schema 位于 `spec/protocol/envelope.schema.json`。会话、权限和分派规则由运行时执行。
 
@@ -149,7 +149,7 @@ declare global {
 | `ojsb.*` | 未来扩展保留 |
 | `rpc.*` | JSON-RPC 保留，OJSB v1 禁止在 wire 消息中使用 |
 
-- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`。已定义的契约见 [原生基础能力](native-profiles.md)。首批名称和候选归属见 [原生能力目录提案](native-capability-catalog.md)。
+- 标准 profile（可选实现）：`device.*`、`app.*`、`ui.*`、`storage.*`、`network.*`、`media.*`、`transfer.*`。已定义的契约见 [原生基础能力](native-profiles.md)。首批名称和候选归属见 [原生能力目录提案](native-capability-catalog.md)。
 - 厂商/业务扩展 SHOULD 使用反域名或公司前缀：`acme.pay.create`，避免与未来标准冲突。
 - Method 版本在 schema 中用 `x-ojsb-version` 声明。调用 MAY 写 `device.getInfo@2`。后缀使用无前导零的十进制正整数。省略时选择 Host 声明支持的最低版本。
 
@@ -275,8 +275,8 @@ sequenceDiagram
 ```jsonc
 {
   "protocols": [1],                              // SDK 支持的主版本
-  "sdk": { "name": "open-jsbridge", "version": "1.2.0" },
-  "wants": ["events", "callbacks", "blob"]        // MAY，SDK 希望使用的可选特性
+  "sdk": { "name": "open-jsbridge", "version": "1.0.0" },
+  "wants": ["callbacks"]                         // MAY，SDK 希望使用的可选特性
 }
 ```
 
@@ -286,14 +286,14 @@ sequenceDiagram
 {
   "jsb": "1.0",                    // 协商后的协议版本
   "sid": "a1b2c3d4",               // 非空会话 id，此后的会话消息在 meta.sid 中携带
-  "host": { "platform": "ios", "name": "ios-wk", "version": "1.0.3", "appId": "com.acme.app", "appVersion": "8.2.0" },
+  "host": { "platform": "ios", "name": "ios-wk", "version": "1.0.0", "appId": "com.acme.app", "appVersion": "8.2.0" },
   "capabilities": {
     "methods": {                   // 当前宿主已启用且可调用的方法
       "device.getInfo": { "versions": [1, 2] },
       "ui.toast.show":  { "versions": [1] }
     },
     "events": ["app.backgrounded", "network.statusChanged"],
-    "features": ["callbacks", "cancel", "blob"]
+    "features": ["callbacks", "cancel"]
   },
   "limits": { "maxMessageBytes": 1048576, "maxInflight": 64, "defaultTimeoutMs": 15000 }
 }
@@ -429,11 +429,10 @@ Host 可调用 Web 侧通过 `bridge.handle('page.getShareInfo', fn)` 注册的 
 - Web SDK 用这份缩略图创建本地对象 URL，作为 `thumbUrl` 交给应用。SDK 在过期、`pagehide` 和实例清理时撤销 URL。原生句柄在有效期结束或文档会话退出时回收。到期时间使用 Unix 毫秒时间戳。
 - 原生访问校验发生在缩略图 RPC 交付时。对象 URL 的读取和撤销采用浏览器的存储分区规则，已被页面复制的像素或字节可被该页面保留。[文件 API](https://www.w3.org/TR/FileAPI/#access-restrictions-on-blob-urls)
 
-### 10.2 大文件能力候选
+### 10.2 媒体释放、前台上传与后续大文件候选
 
-前台单图上传的候选契约使用当前文档的媒体句柄，由宿主校验业务端点、注入凭据并发送图片。进度复用 §8 的请求回调，启用条件、终态和双端验收见[前台上传 RFC 草案](../spec/rfcs/transfer-upload.md)。
-
-原图预览、原生上传及进度、按需原图 URL 与主动释放是候选能力。原生本地资源 URL 扩展需要能证明图片请求的来源和文档，并定义等效的访问控制、过期和清理。平台的普通子资源拦截回调不足以证明调用 frame。早期 `bridge.blob.read` / `bridge.blob.release` 分片方案退出首批，宿主不通告对应方法和 `blob` 特性。
+- 主动释放与前台单图上传已在 v1 标准能力中定义并在 Web、iOS、Android 参考实现落地：`media.release@1`（[release.json](../spec/methods/media/release.json)）按会话批量回收句柄与配额；`transfer.upload@1`（[upload.json](../spec/methods/transfer/upload.json)）消费当前文档的媒体句柄，由宿主校验白名单 HTTPS 端点、注入凭据并发送图片，进度复用 §8 的 `bridge.progress`（设计背景与验收细则见 [前台上传 RFC](../spec/rfcs/transfer-upload.md)）。
+- 原图预览（`media.preview`）与按需原图 URL 留待 1.0 之后评估。原生本地资源 URL 扩展需要能证明图片请求的来源和文档，并定义等效的访问控制、过期和清理；平台的普通子资源拦截回调不足以证明调用 frame。早期 `bridge.blob.read` / `bridge.blob.release` 分片方案已退出首批，宿主不通告对应方法和 `blob` 特性。
 
 ### 10.3 上限
 

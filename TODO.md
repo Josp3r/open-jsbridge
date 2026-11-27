@@ -6,9 +6,9 @@
 
 达到以下全部条件后，停止 1.0 功能扩张并转入维护模式（只修 bug、做安全修复、跟进平台兼容；新能力须先在 `#21` 通过准入四问并获维护者批准）：
 
-- [ ] **协议冻结**：完成下方 M0 信封与握手规范评审，`jsb 1.0` 从 Draft 改为冻结。
+- [x] **协议冻结**：完成下方 M0 信封与握手规范评审，`jsb 1.0` 已从 Draft 改为 Frozen（2026-11-27）。
 - [x] **能力三端对齐**：首批 7 项 v1 能力、`media.release@1`、`bridge.progress` 与 `transfer.upload@1` 在 Web（#58）、iOS（#65）、Android（#67）三端均已落地并通过回归测试。
-- [x] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（iOS 权限链抛错 `-32603` 单测 #68 与 Android 缺少 `WebMessageListener` 回退关闭回归测试均已补齐）；iframe 明确推迟至 1.0 之后。
+- [x] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（iOS 权限链抛错 `-32603` 单测 #68 与 Android 缺少 `WebMessageListener` 回退关闭回归测试 #69 均已补齐）；iframe 明确推迟至 1.0 之后。
 - [x] **Android 10–12 兼容替代验收**：补齐 Android 10–12（API 30–32）模拟器 / CI Photo Picker 验收用例（`AndroidPhotoPickerCompatTest` 在 CI `Android 11 Photo Picker Compat` API 30 与 `Android Release WebView` API 35 模拟器上双跑通过），不以物理真机阻塞发版（见 `D-014`）。
 - [ ] **三端正式发版**：npm `@open-jsbridge/web`、iOS SwiftPM 标签、Android Maven Central 全部发布。
 - [x] **Web SDK 体积门禁拍板**：当前体积非瓶颈，`npm run size:web` 改为非阻断观测输出（见 `D-011`）。
@@ -24,7 +24,7 @@
 
 ## M0 · JSON-RPC wire 格式
 
-- [ ] 评审 [JSON-RPC 信封规范](docs/protocol.md#3-消息信封envelope)、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json` 和 `spec/methods/bridge/hello.json`。（待维护者指定评审人并在评审结论后勾选）
+- [x] 评审 [JSON-RPC 信封规范](docs/protocol.md#3-消息信封envelope)、`spec/protocol/envelope.schema.json`、`spec/protocol/errors.json` 和 `spec/methods/bridge/hello.json`。（2026-11-27 完成一致性复核并经维护者确认冻结 `jsb: 1.0`。）
 - [x] 校验 `conformance-tests/fixtures/wire.json` 中的正反例。运行时用例覆盖缺失请求 id、握手关联、`rpc.id: null` 不结算 pending、重复请求静默丢弃及通知无应答。
 
 ## M0 · PR #1 审查后续

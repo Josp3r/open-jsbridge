@@ -18,9 +18,9 @@
 - **最新主干基线**：`main` @ `a0eff27`（最后更新日期：`2026-11-27`）
 - **本地验证基线**（`linux-agent`，`a0eff27`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` `7127 bytes`（观测输出，非阻断，见 `D-011`）
 - **版本线状态**：
-  - 协议版本 `jsb`：`1.0`（Draft，待维护者完成 M0 冻结评审）
-  - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）待完成协议冻结与 `1.0.0` 发版
-  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：Agent 可执行的 1.0 必选开发与回归测试已**全部收齐**（能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅）；仅剩维护者拍板 **M0 协议冻结** 与 **三端正式发版**。
+  - 协议版本 `jsb`：**`1.0`（Frozen，2026-11-27 冻结）**
+  - 仓库当前标签 `0.2.0`（`52d94f5`）；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）准备对齐 `1.0.0` 发版
+  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：协议冻结 ✅、能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅；仅剩 **三端 `1.0.0` 正式发版**。
 - **v1 标准能力（三端已合入 `main`）**：
   - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`、`transfer.upload@1`
   - 控制/流式：`bridge.progress`
@@ -79,8 +79,8 @@
 
 ## 5. 待决议事项（Open Decisions）
 
-> 当前无阻塞中的待决议事项（此前 `O-001`～`O-004` 均已于 `2026-11-27` 拍板并转入下方 `D-011`～`D-014`）。
-> 唯一需维护者推动的人工收尾项：指定 [TODO.md](../TODO.md) M0 信封规范冻结评审人并完成三端 1.0 发版。
+> 当前无阻塞中的待决议事项（此前 `O-001`～`O-004` 均已于 `2026-11-27` 拍板并转入下方 `D-011`～`D-014`；`jsb 1.0` 协议规范已于 `2026-11-27` 冻结）。
+> 唯一剩余人工收尾项：维护者执行三端 `1.0.0` 正式发版（npm / SwiftPM 标签 / Maven Central），发版后按 `D-013` 转入维护模式。
 
 ---
 
@@ -133,6 +133,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-27 | Android M0 回退通道关闭回归测试（`SEC-JSI-DEFAULT-001`）与 1.0 看板收口 | `#69` (`500cb88`) |
 | 2026-11-27 | Android 原生 `transfer.upload@1` 前台单图上传与 RPC 注册（三端对齐完成） | `#67` (`a0eff27`) |
 | 2026-11-27 | iOS M0 权限链异常隔离回归单测（`SEC-ACL-ERROR-001`） | `#68` (`bc18787`) |
 | 2026-11-27 | iOS 原生 `transfer.upload@1` 前台单图上传与 RPC 注册 | `#65` (`ef0ea9f`) |
