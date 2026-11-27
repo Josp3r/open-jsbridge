@@ -1,9 +1,16 @@
 package dev.openjsbridge.host
 
 import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -256,6 +263,119 @@ class DocumentTransportTest {
     }
 
     @Test
+    fun streamingSendsOrderedNotificationsBeforeEachResultAndStopsOnSettlement() = runBlocking {
+        lateinit var progress: BusinessProgress
+        val accepted = mutableListOf<Boolean>()
+        val host = streamingHost { _, emitter ->
+            progress = emitter
+            accepted += emitter.send(null)
+            accepted += emitter.send(JsonNull.INSTANCE)
+            JsonPrimitive("done")
+        }
+        val sid = host.confirmAndGetSid(wantsCallbacks = true)
+        for (id in listOf("first", "second")) {
+            val replies = mutableListOf<String>()
+            host.startStream(id, sid, post = replies::add)
+            assertFalse(progress.send(JsonPrimitive("late")))
+            assertEquals(3, replies.size)
+            assertEquals(progressEnvelope(sid, id, 0), envelope(replies[0]))
+            assertEquals(progressEnvelope(sid, id, 1, JsonNull.INSTANCE), envelope(replies[1]))
+            val response = envelope(replies[2]).getAsJsonObject("rpc")
+            assertEquals(id, response.get("id").asString)
+            assertEquals("done", response.get("result").asString)
+        }
+        assertEquals(listOf(true, true, true, true), accepted)
+    }
+
+    @Test
+    fun sameDocumentReconfirmationDropsPausedProgressAndResumesOnTheOriginalRoute() = runBlocking {
+        lateinit var progress: BusinessProgress
+        val result = CompletableDeferred<JsonElement>()
+        val host = streamingHost { _, emitter ->
+            progress = emitter
+            result.await()
+        }
+        val sid = host.confirmAndGetSid(wantsCallbacks = true)
+        val replies = mutableListOf<String>()
+        var proxyUnavailable = false
+        host.startStream("stream", sid) { message ->
+            check(!proxyUnavailable) { "Reply proxy unavailable" }
+            replies.add(message)
+        }
+
+        assertFalse(progress.send(JsonPrimitive("界".repeat(RpcSession.MAX_MESSAGE_BYTES / 3))))
+        assertFalse(progress.send(JsonPrimitive(Double.NaN)))
+        assertTrue(progress.send(JsonPrimitive("first")))
+        val challenge = host.onPageCommitVisible(ORIGIN)!!.nonce
+        assertFalse(progress.send(JsonPrimitive("paused")))
+        assertEquals("ready:$challenge:$token", host.exchange("commit:$challenge:$token", ORIGIN, true, proxy))
+        assertTrue(progress.send(JsonPrimitive("resumed")))
+        proxyUnavailable = true
+        assertFalse(progress.send(JsonPrimitive("undeliverable")))
+        proxyUnavailable = false
+        result.complete(JsonPrimitive("done"))
+
+        assertEquals(3, replies.size)
+        assertEquals(progressEnvelope(sid, "stream", 0, JsonPrimitive("first")), envelope(replies[0]))
+        assertEquals(progressEnvelope(sid, "stream", 1, JsonPrimitive("resumed")), envelope(replies[1]))
+        assertEquals("done", envelope(replies[2]).getAsJsonObject("rpc").get("result").asString)
+    }
+
+    @Test
+    fun cancellingAStreamRetiresItsEmitterEvenWhileAnotherCallIsRunning() = runBlocking {
+        lateinit var progress: BusinessProgress
+        val host = streamingHost { _, emitter ->
+            progress = emitter
+            awaitCancellation()
+        }
+        val sid = host.confirmAndGetSid(wantsCallbacks = true)
+        val replies = mutableListOf<String>()
+        host.startStream("first", sid, post = replies::add)
+        val cancelled = progress
+        assertTrue(cancelled.send(null))
+        assertNull(host.exchange(frame(token, cancel(sid, "first")), ORIGIN, true, proxy))
+        val next = mutableListOf<String>()
+        host.startStream("second", sid, post = next::add)
+
+        assertFalse(cancelled.send(null))
+        assertTrue(progress.send(null))
+        assertEquals(progressEnvelope(sid, "first", 0), envelope(replies.first()))
+        assertEquals(2, replies.size)
+        val response = envelope(replies[1]).getAsJsonObject("rpc")
+        assertEquals("first", response.get("id").asString)
+        assertEquals(-32002, response.getAsJsonObject("error").get("code").asInt)
+        assertEquals(progressEnvelope(sid, "second", 0), envelope(next.single()))
+        host.invalidate()
+        assertFalse(progress.send(null))
+    }
+
+    @Test
+    fun replacingEitherTokenOrProxyRetiresProgressEvenWhenTheRequestIdIsReused() = runBlocking {
+        for ((nextToken, nextProxy) in listOf(token to Any(), "b".repeat(32) to proxy)) {
+            lateinit var progress: BusinessProgress
+            val host = streamingHost { _, emitter ->
+                progress = emitter
+                awaitCancellation()
+            }
+            val oldSid = host.confirmAndGetSid(wantsCallbacks = true)
+            val oldReplies = mutableListOf<String>()
+            host.startStream("same", oldSid, post = oldReplies::add)
+            val oldEmitter = progress
+            val nextSid = host.confirmAndGetSid(nextToken, nextProxy, wantsCallbacks = true)
+            val nextReplies = mutableListOf<String>()
+            host.startStream("same", nextSid, nextToken, nextProxy, nextReplies::add)
+
+            assertNotEquals(oldSid, nextSid)
+            assertFalse(oldEmitter.send(JsonPrimitive("stale")))
+            assertTrue(progress.send(JsonPrimitive("new")))
+            assertTrue(oldReplies.isEmpty())
+            assertEquals(progressEnvelope(nextSid, "same", 0, JsonPrimitive("new")),
+                envelope(nextReplies.single(), nextToken))
+            host.invalidate()
+        }
+    }
+
+    @Test
     fun replacingTheDocumentCancelsThePendingBusinessCall() {
         val runner = PendingBusiness()
         val host = runner.host()
@@ -474,11 +594,18 @@ class DocumentTransportTest {
         return challenge
     }
 
-    private fun DocumentTransport.confirmAndGetSid(documentToken: String = token, documentProxy: Any = proxy): String {
+    private fun DocumentTransport.confirmAndGetSid(
+        documentToken: String = token,
+        documentProxy: Any = proxy,
+        wantsCallbacks: Boolean = false,
+    ): String {
         val challenge = onPageCommitVisible(ORIGIN)!!.nonce
         assertEquals("ready:$challenge:$documentToken",
             exchange("commit:$challenge:$documentToken", ORIGIN, true, documentProxy))
-        val response = exchange(frame(documentToken, hello("hello")), ORIGIN, true, documentProxy)!!
+        val handshake = if (wantsCallbacks) {
+            request("hello", method = "bridge.hello", params = """{"protocols":[1],"wants":["callbacks"]}""")
+        } else hello("hello")
+        val response = exchange(frame(documentToken, handshake), ORIGIN, true, documentProxy)!!
         return envelope(response, documentToken).getAsJsonObject("rpc").getAsJsonObject("result").get("sid").asString
     }
 
@@ -496,6 +623,36 @@ class DocumentTransportTest {
             },
             scheduleReply = scheduleReply,
         )
+    }
+
+    private fun CoroutineScope.streamingHost(handler: suspend (JsonObject, BusinessProgress) -> JsonElement) =
+        DocumentTransport(
+            listOf(ORIGIN),
+            enableEcho = false,
+            businessMethods = listOf(BusinessMethod.streaming(STREAM_METHOD, handler)),
+            runBusiness = { call, finish ->
+                val job = launch(Dispatchers.Unconfined) {
+                    finish(runCatching { call.handler() })
+                }
+                ({ job.cancel() })
+            },
+        )
+
+    private fun DocumentTransport.startStream(
+        id: String,
+        sid: String,
+        documentToken: String = token,
+        documentProxy: Any = proxy,
+        post: (String) -> Unit,
+    ) = receive(frame(documentToken, request(id, sid, STREAM_METHOD)), ORIGIN, true, documentProxy, post)
+
+    private fun progressEnvelope(sid: String, id: String, seq: Int, chunk: JsonElement? = null): JsonElement {
+        val params = JsonObject().apply {
+            addProperty("requestId", id)
+            addProperty("seq", seq)
+            if (chunk != null) add("chunk", chunk)
+        }
+        return JsonParser.parseString(request(null, sid, "bridge.progress", params.toString()))
     }
 
     private fun DocumentTransport.exchange(raw: String, origin: String, isMainFrame: Boolean, proxy: Any): String? {
@@ -541,5 +698,6 @@ class DocumentTransportTest {
     private companion object {
         const val ORIGIN = "https://10.0.2.2:4173"
         const val BUSINESS_METHOD = "acme.app.getConfig"
+        const val STREAM_METHOD = "acme.app.stream"
     }
 }

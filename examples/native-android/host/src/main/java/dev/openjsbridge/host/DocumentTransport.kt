@@ -29,6 +29,7 @@ internal class DocumentTransport(
         var cancel: (() -> Unit)? = null
 
         fun abort() {
+            call.progress.post = null
             try {
                 call.onCancel?.invoke()
             } finally {
@@ -162,9 +163,26 @@ internal class DocumentTransport(
         val runner = checkNotNull(runBusiness)
         val work = BusinessWork(call) { response -> reply(current, response, prefix, postReply) }
         current.businessWork = work
+        var nextSeq = 0L
+        fun active() = document === current && pendingChallenge == null && current.businessWork === work
+        call.progress.post = send@{ chunk ->
+            if (!active()) return@send false
+            val seq = nextSeq
+            val raw = current.session.progressNotification(call, seq, chunk) ?: return@send false
+            // App-owned JSON can run code during encoding. Recheck before using the original reply proxy.
+            if (!active() || nextSeq != seq) return@send false
+            try {
+                postReply(prefix + raw)
+                nextSeq++
+                true
+            } catch (_: RuntimeException) {
+                false // A lost route drops optional progress; the handler still owns its final result.
+            }
+        }
         work.cancel = runner(call) { result ->
             if (current.businessWork === work) {
                 current.businessWork = null
+                call.progress.post = null
                 current.session.finishBusinessCall(call, result)?.let(work.reply)
             }
         }

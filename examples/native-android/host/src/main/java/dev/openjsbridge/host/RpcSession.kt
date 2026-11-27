@@ -23,14 +23,27 @@ internal class RpcSession(
     supportsCancellation: Boolean = false,
     private val businessEvents: Set<String> = emptySet(),
 ) {
-    internal data class BusinessCall(
-        val handler: suspend (JsonObject) -> JsonElement,
+    internal class ProgressRoute : BusinessProgress {
+        var post: ((JsonElement?) -> Boolean)? = null
+        override suspend fun send(chunk: JsonElement?): Boolean = post?.invoke(chunk) ?: false
+    }
+
+    internal class BusinessCall(
+        private val execute: suspend (JsonObject, BusinessProgress) -> JsonElement,
         val params: JsonObject,
         val id: String,
         val sid: String,
+        val supportsProgress: Boolean = false,
         val onCancel: (() -> Unit)? = null,
         val mediaSelection: Boolean = false,
-    )
+    ) {
+        val progress = ProgressRoute()
+
+        suspend fun handler(
+            params: JsonObject = this.params,
+            progress: BusinessProgress = this.progress,
+        ): JsonElement = execute(params, progress)
+    }
 
     private class EventSubscription {
         var acknowledged = false
@@ -66,6 +79,8 @@ internal class RpcSession(
     }
     private val businessMethods = businessMethods.indexBusinessMethods()
     private val canCancel = supportsCancellation && (this.businessMethods.isNotEmpty() || media != null)
+    private val canReportProgress = supportsCancellation && this.businessMethods.values.any { it.supportsProgress }
+    private var callbacksNegotiated = false
     val maxMessageBytes = MAX_MESSAGE_BYTES
     private val observedEvents = buildMap<String, ((JsonElement) -> Unit) -> (() -> Unit)?> {
         modules.networkEvents?.let { source ->
@@ -93,17 +108,16 @@ internal class RpcSession(
         val activeSid = sid ?: return false
         val post = eventReceiver ?: return false
         val subscription = subscriptions[name]?.takeIf { it.acknowledged } ?: return false
-        val raw = try {
-            validateOutboundValue(payload, depth = 3, limit = maxMessageBytes) // envelope, RPC, and params
-            eventNotification(activeSid, name, payload)
-        } catch (_: RuntimeException) {
-            return false
-        }
-        return !exceedsMessageLimit(raw) && subscriptions[name] === subscription && post(raw)
+        val raw = checkedNotification(activeSid, "bridge.event", JsonObject().apply {
+            addProperty("name", name)
+            add("payload", payload)
+        }) ?: return false
+        return subscriptions[name] === subscription && post(raw)
     }
 
     fun close() {
         sid = null
+        callbacksNegotiated = false
         eventReceiver = null
         try {
             media?.close()
@@ -200,7 +214,7 @@ internal class RpcSession(
         }
         if (business != null) {
             if (onBusinessCall == null) return failure(id, requestSid, -32603, "Internal error")
-            onBusinessCall(BusinessCall(business.handler, params ?: JsonObject(), id, requestSid))
+            onBusinessCall(BusinessCall(business.execute, params ?: JsonObject(), id, requestSid, business.supportsProgress))
             return null
         }
         return failure(id, requestSid, -32601, "Method not found")
@@ -219,7 +233,7 @@ internal class RpcSession(
             (params.has("count") && params.get("count").asSafeIntegerOrNull() != 1L)
         ) return failure(id, sid, -32602, "Invalid params")
         if (startCall == null) return failure(id, sid, -32603, "Internal error")
-        startCall(BusinessCall({ media.choose() }, params, id, sid,
+        startCall(BusinessCall({ _, _ -> media.choose() }, params, id, sid,
             onCancel = media::abortCopy, mediaSelection = true))
         return null
     }
@@ -240,6 +254,15 @@ internal class RpcSession(
 
     fun businessCancellationResponse(call: BusinessCall): String? =
         if (sid == call.sid) failure(call.id, call.sid, -32002, "Cancelled") else null
+
+    fun progressNotification(call: BusinessCall, seq: Long, chunk: JsonElement?): String? {
+        if (!call.supportsProgress || !callbacksNegotiated || sid != call.sid || seq !in 0L..MAX_SAFE_INTEGER) return null
+        return checkedNotification(call.sid, "bridge.progress", JsonObject().apply {
+            addProperty("requestId", call.id)
+            addProperty("seq", seq)
+            if (chunk != null) add("chunk", chunk)
+        })
+    }
 
     fun finishBusinessCall(call: BusinessCall, result: Result<JsonElement>): String? {
         if (sid != call.sid) return null
@@ -342,6 +365,7 @@ internal class RpcSession(
         }
 
         val sessionId = sid ?: UUID.randomUUID().toString()
+        val wantsCallbacks = canReportProgress && wants?.any { it.asStringOrNull() == "callbacks" } == true
         val result = JsonObject().apply {
             addProperty("jsb", "1.0")
             addProperty("sid", sessionId)
@@ -360,6 +384,7 @@ internal class RpcSession(
                 add("events", strings(availableEvents()))
                 add("features", JsonArray().apply {
                     if (canCancel) add("cancel")
+                    if (wantsCallbacks) add("callbacks")
                 })
             })
             add("limits", JsonObject().apply {
@@ -371,7 +396,24 @@ internal class RpcSession(
         val reply = success(id, sessionId, result)
         if (exceedsMessageLimit(reply)) return failure(id, null, -32006, "Payload too large")
         sid = sessionId
+        callbacksNegotiated = wantsCallbacks
         return reply
+    }
+
+    private fun checkedNotification(sid: String, method: String, params: JsonObject): String? = try {
+        validateOutboundValue(params, depth = 2, limit = maxMessageBytes) // envelope and RPC
+        val raw = JsonObject().apply {
+            addProperty("jsb", "1.0")
+            add("meta", JsonObject().apply { addProperty("sid", sid) })
+            add("rpc", JsonObject().apply {
+                addProperty("jsonrpc", "2.0")
+                addProperty("method", method)
+                add("params", params)
+            })
+        }.toString()
+        raw.takeUnless(::exceedsMessageLimit)
+    } catch (_: RuntimeException) {
+        null
     }
 
     private fun exceedsMessageLimit(raw: String) =
@@ -532,19 +574,6 @@ internal class RpcSession(
         private fun success(id: String, sid: String, result: JsonElement) = response(id, sid, "result", result)
 
         private fun strings(values: Iterable<String>) = JsonArray().apply { values.forEach { add(it) } }
-
-        private fun eventNotification(sid: String, name: String, payload: JsonElement) = JsonObject().apply {
-            addProperty("jsb", "1.0")
-            add("meta", JsonObject().apply { addProperty("sid", sid) })
-            add("rpc", JsonObject().apply {
-                addProperty("jsonrpc", "2.0")
-                addProperty("method", "bridge.event")
-                add("params", JsonObject().apply {
-                    addProperty("name", name)
-                    add("payload", payload)
-                })
-            })
-        }.toString()
 
         private fun failure(id: String, sid: String?, code: Int, message: String, data: JsonObject? = null) =
             response(id, sid, "error", JsonObject().apply {

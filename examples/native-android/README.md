@@ -77,6 +77,20 @@ attachment?.emit("acme.app.configChanged", JsonNull.INSTANCE)
 
 `emit` 接收符合协议的 `JsonElement`，使用 `JsonNull.INSTANCE` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
 
+### 业务方法的进度通知
+
+仅为方法 Schema 已声明 `x-ojsb-callbacks` 的业务方法使用 `BusinessMethod.streaming`。例如，下面的方法生成一个标识符，并可在开始时通知页面。将 `generate` 加入上例的 `methods = listOf(getConfig, generate)` 即可注册。
+
+```kotlin
+val generate = BusinessMethod.streaming("acme.app.generate") { params, progress ->
+    if (params.size() != 0) throw InvalidBusinessParamsException()
+    progress.send(JsonObject().apply { addProperty("stage", "started") })
+    JsonObject().apply { addProperty("id", java.util.UUID.randomUUID().toString()) }
+}
+```
+
+页面在握手的 `wants` 中请求 `callbacks`，宿主在 `capabilities.features` 中确认后才可发送 `bridge.progress`。挂起函数 `progress.send(chunk: JsonElement?): Boolean` 返回本次通知是否已送入原文档的通道。`progress.send(null)` 省略 `chunk` 字段，`progress.send(JsonNull.INSTANCE)` 则发送显式 JSON `null`。进度通知可能丢弃，页面通过原请求的最终响应取得结果。[协议 §8 流式回调](../../docs/protocol.md#8-流式回调callback)
+
 ## 单图 Photo Picker（可选）
 
 在 App 的 Activity 进入 `STARTED` 前注册 Activity Result launcher。用 `AndroidMediaPicker.createIntent(context)` 获取 AndroidX `PickVisualMedia` 选择的系统单图 Intent。可用范围包含系统内置选择器、扩展更新和已安装的 OEM 或 Google Play 服务回移实现，覆盖符合条件的 API 24–32 设备。App 可在启动时用 `isAvailable(context)` 探测，并在每次打开时重新调用 `createIntent(context)`。Activity Result 回调可用 `PickVisualMedia().parseResult(resultCode, data)` 解析 URI，再交给 `picker.onResult`。挂载时显式传 `AndroidBridge.Options(media = true)` 和 `mediaPicker = picker`。 [Android Photo Picker](https://developer.android.com/training/data-storage/shared/photo-picker) · [独立 Release App 接入](../android-sdk-consumer/README.md)
