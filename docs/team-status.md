@@ -15,8 +15,8 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `a56de2c`（最后更新日期：`2026-11-26`）
-- **本地验证基线**（`linux-agent`，`a56de2c`）：`npm test` 236/236、`npm run codegen:check` 通过、`npm run size:web` **`7127 / 7168 bytes`（仅剩 41 bytes，见 §5 O-001）**
+- **最新主干基线**：`main` @ `fbae0a2`（最后更新日期：`2026-11-27`）
+- **本地验证基线**（`linux-agent`，`fbae0a2`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` **`7127 / 7168 bytes`（仅剩 41 bytes，见 §5 O-001）**
 - **版本线状态**：
   - 协议版本 `jsb`：`1.0`（Draft）
   - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
@@ -24,15 +24,15 @@
 - **v1 标准能力（三端已合入 `main`）**：
   - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`
   - 事件：`network.statusChanged`、`app.foregrounded`、`app.backgrounded`
-- **已定契约、原生宿主未完成**：`transfer.upload@1`（RFC #44 + Schema/Web/Mock #58；iOS 图片预处理 #47 已合入，详见 §3）
+- **已定契约、原生宿主推进中**：`transfer.upload@1`（RFC #44 + Schema/Web/Mock #58；iOS 图片预处理 #47、Android 图片预处理 #59 及双端 `bridge.progress` #61/#62 均已合入，详见 §3）
 - **Web SDK 子路径**：`/auto`、`/app`、`/device`、`/network`、`/ui`、`/media`、`/transfer`、`/reverse`、`/fallback`、`/mock`
-- **仓内参考实现（未单独发布）**：`packages/host-core`、`packages/devtools`、`packages/react-native`、`packages/codegen`、`packages/flutter`（`publish_to: none`）
+- **仓内参考实现（未单独发布）**：`packages/host-core`、`packages/devtools`、`packages/react-native`、`packages/codegen`、`packages/flutter`（`publish_to: none`，已接入 CI `Flutter Dart host`）
 - **当前发版 / 验收跟进项**：
   - Maven Central 正式发布仍需 Android 10–12 真机 Photo Picker 验收（详见 [docs/native-release.md](native-release.md)），**目前无认领人**（见 §5 O-004）。
 - **主干活跃 Issue**：
   - `#41`：**置顶多 Agent 实时认领锁与跨端交接控制面**
   - `#21`：v1 标准能力集（首批 7 项与后续候选）
-  - `#24`：媒体句柄 + 原生预览/上传方案（选图、主动释放已三端落地；上传契约已定、原生投递未完成；预览未开始）
+  - `#24`：媒体句柄 + 原生预览/上传方案（选图、主动释放已三端落地；上传契约、双端图片预处理与原生进度回调已合入，网络投递推进中；预览未开始）
 
 ---
 
@@ -43,7 +43,7 @@
 | 角色标识 | 典型会话 / 环境 | 可本地验证范围 | 局限与交接约定 |
 |---|---|---|---|
 | `macos-agent` | 本地 macOS（如 Codex worktree + Xcode） | Web/Mock、SwiftPM、iOS Release Simulator、Xcode 真机、Android JVM | 负责 iOS 编译/模拟器验收与双端发版验收 |
-| `linux-agent` | 云端 Ubuntu 24.04（如 Antigravity VM） | Spec、Web SDK/Mock、Codegen、Conformance、Android JVM/Gradle、GitHub CLI | 无本地 Swift/Xcode；涉及 Swift 改动时靠 GitHub Actions CI 或在 `#41` 发起 `HANDOFF` 给 `macos-agent` |
+| `linux-agent` | 云端 Ubuntu 24.04（如 Antigravity VM） | Spec、Web SDK/Mock、Codegen、Conformance、Android JVM/Gradle、Dart/Flutter、GitHub CLI | 无本地 Swift/Xcode；涉及 Swift 改动时靠 GitHub Actions CI 或在 `#41` 发起 `HANDOFF` 给 `macos-agent` |
 | `other-agent` | 其他会话环境 | 按实际可用工具链在认领时注明 | 严格遵循 `AGENTS.md` 中的诚实验证原则 |
 
 ---
@@ -56,9 +56,9 @@
 |---|---|---|---|---|---|
 | 首批 7 项 v1 能力 | ✅ | ✅ | ✅ | ✅ | `0.2.0` |
 | `media.release@1` | ✅ #56 | ✅ #56 | ✅ #55 | ✅ #57 | #49 契约 |
-| `bridge.progress` 流式回调 | ✅ #38 | ✅ #38 | — | — | Android 仅把入站 `bridge.progress` 当通知忽略；Flutter 已实现 |
+| `bridge.progress` 流式回调 | ✅ #38 | ✅ #38 | ✅ #62 | ✅ #61 | Flutter 已于 #45 实现 |
 | Host → Web 反向调用（§9.2） | ✅ #46（`/reverse`） | ✅ #46 | — | — | Flutter / RN 经 host-core 支持 |
-| `transfer.upload@1` | ✅ #58（`/transfer`） | ✅ #58 | 🚧 图片预处理 #47 | 🚧 图片预处理认领中 | 网络投递 + RPC 注册未认领；依赖原生 `bridge.progress` |
+| `transfer.upload@1` | ✅ #58（`/transfer`） | ✅ #58 | 🚧 图片预处理 #47 | 🚧 图片预处理 #59 | 双端网络投递 + RPC 注册均已在 #41 认领推进中 |
 | `rules` ACL / 限流（§11.3） | n/a | ✅ #54 | — | — | 原生宿主仍只支持精确 HTTPS origin 白名单 |
 | `media.preview@1` | — | — | — | — | 无契约 |
 
@@ -70,10 +70,8 @@
 
 | 候选方向 | 建议优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **原生 `bridge.progress` 发送端（iOS + Android）** | 高 | `linux-agent`（Android）+ `macos-agent`（iOS） | `RpcSession.kt`、`WireHost.swift`（**均为热点文件，须串行**）及对应测试 | `transfer.upload` 原生落地的前置；对齐 [docs/protocol.md](protocol.md) 与 `conformance-tests/progress.test.mjs` 语义 |
-| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | 高 | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；依赖上一项及双端图片预处理（iOS #47 已合入，Android 认领中） |
+| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | 高 | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；前置图片预处理（#47/#59）与原生 `bridge.progress`（#61/#62）均已合入（当前实时认领态见 #41） |
 | **原生反向调用（§9.2）** | 中 | `linux-agent` + `macos-agent` 接力 | 双端宿主会话层（热点文件） | Web/host-core 已于 #46 落地；原生未实现前不得声明能力 |
-| **Flutter Dart 测试接入 CI** | 中 | 具备 Flutter SDK 的环境 | `.github/workflows/conformance.yml` | `packages/flutter/test/flutter_host_test.dart` 目前未在 CI 执行，仅有 Node 侧 shim 测试 |
 | **M0 收尾：补两条原生回归用例** | 中 | `macos-agent`（iOS）/ `linux-agent`（Android） | `examples/native-ios/Tests/**`、`examples/native-android/host/src/test/**` | 见 [TODO.md](../TODO.md) M0：iOS 权限链抛错时 handler 零调用并返回 `-32603`；Android 缺少 WebMessageListener 时 `attach` 返回 `null` |
 | **`media.preview@1` 契约** | 中 | `macos-agent` / `linux-agent` | `spec/methods/media/**`、双端宿主 | Refs #24；先出契约 PR，再分端实现 |
 | **下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`）** | 中低 | `linux-agent` + `macos-agent` 接力 | `spec/methods/**`、`packages/web-sdk/**`、双端原生宿主 | Refs #21 建议顺序；每项须先满足 `docs/native-capability-catalog.md` 四问并同步三端与 conformance；**受 §5 O-001 体积预算约束** |
@@ -140,6 +138,10 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-27 | Android 原生 `bridge.progress` 进度回调发送端 | `#61` (`fbae0a2`) |
+| 2026-11-27 | iOS 原生 `bridge.progress` 进度回调发送端 | `#62` (`07c686f`) |
+| 2026-11-26 | 同步规划与治理文档（`team-status.md`、`TODO.md`、`CHANGELOG.md`） | `#60` (`c29c13e`) |
+| 2026-11-26 | Android 前台上传图片预处理（`AndroidUploadImage.kt` + 单测/真机测试） | `#59` (`60258e3`) |
 | 2026-11-26 | iOS 参考宿主接入 `media.release@1`（批量释放、会话配额回收） | `#55` (`a56de2c`) |
 | 2026-11-26 | Android 参考宿主接入 `media.release@1` | `#57` (`b1393f9`) |
 | 2026-11-26 | `transfer.upload@1` Schema、`@open-jsbridge/web/transfer` 与 Mock `uploadMedia` | `#58` (`915256b`) |
