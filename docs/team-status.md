@@ -70,9 +70,8 @@
 
 | 候选方向 | 优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | **高（1.0 必选）** | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；前置图片预处理（#47/#59）与原生 `bridge.progress`（#61/#62）均已合入（当前双端均已在 #41 认领推进中） |
+| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | **高（1.0 必选）** | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；iOS 已提 PR #65，Android 认领推进中（实时状态见 #41） |
 | **M0 收尾：补两条原生回归用例** | **高（1.0 必选）** | `macos-agent`（iOS）/ `linux-agent`（Android） | `examples/native-ios/Tests/**`、`examples/native-android/host/src/test/**` | 见 [TODO.md](../TODO.md) M0：iOS 权限链抛错时 handler 零调用并返回 `-32603`；Android 缺少 `WebMessageListener` 时 `attach` 返回 `null` |
-| **Android 10–12 模拟器 / CI Photo Picker 替代验收** | **高（1.0 必选）** | `linux-agent` / `macos-agent` | `.github/workflows/conformance.yml`、`examples/native-android/**`、`docs/native-release.md` | 见 `D-014`：以 Android 10–12（API 30–32）模拟器 / CI 验证替代物理真机，解除 Maven Central 1.0 发版阻塞 |
 | `media.preview@1` 契约与实现 | 推迟至 1.0 后 | — | `spec/methods/media/**`、双端宿主 | 见 `D-013`：不进 1.0，达标发版后按需并经维护者审批启动 |
 | 原生反向调用（§9.2） | 推迟至 1.0 后 | — | 双端宿主会话层 | 见 `D-013`：不进 1.0；握手按能力声明，不影响兼容 |
 | 下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`） | 推迟至 1.0 后 | — | `spec/methods/**`、`packages/web-sdk/**`、双端宿主 | 见 `D-012`、`D-013`：须先在 `#21` 通过四问并获维护者批准 |
