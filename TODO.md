@@ -10,7 +10,7 @@
 - [x] **能力三端对齐**：首批 7 项 v1 能力、`media.release@1`、`bridge.progress` 与 `transfer.upload@1` 在 Web（#58）、iOS（#65）、Android（#67）三端均已落地并通过回归测试。
 - [x] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（iOS 权限链抛错 `-32603` 单测 #68 与 Android 缺少 `WebMessageListener` 回退关闭回归测试 #69 均已补齐）；iframe 明确推迟至 1.0 之后。
 - [x] **Android 10–12 兼容替代验收**：补齐 Android 10–12（API 30–32）模拟器 / CI Photo Picker 验收用例（`AndroidPhotoPickerCompatTest` 在 CI `Android 11 Photo Picker Compat` API 30 与 `Android Release WebView` API 35 模拟器上双跑通过），不以物理真机阻塞发版（见 `D-014`）。
-- [ ] **三端正式发版**：npm `@open-jsbridge/web`、iOS SwiftPM 标签、Android Maven Central 全部发布。
+- [x] **三端正式发版**：npm `@open-jsbridge/web@1.0.0`（`latest`）、iOS SwiftPM 标签 `1.0.0`（GitHub Release `1.0.0`）、Android Maven Central `io.github.josp3r:open-jsbridge-android:1.0.0`（Actions Run `#45968251285` `PUBLISHED`）均已正式发布（2026-11-27）。**1.0 全部退出标准已达成，仓库正式转入维护模式。**
 - [x] **Web SDK 体积门禁拍板**：当前体积非瓶颈，`npm run size:web` 改为非阻断观测输出（见 `D-011`）。
 
 ### 明确不进 1.0（推迟至 1.0 之后按真实需求与维护者审批决定）
