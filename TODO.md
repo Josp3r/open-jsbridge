@@ -8,7 +8,7 @@
 
 - [ ] **协议冻结**：完成下方 M0 信封与握手规范评审，`jsb 1.0` 从 Draft 改为冻结。
 - [ ] **能力三端对齐**：首批 7 项 v1 能力、`media.release@1`、`bridge.progress` 与 `transfer.upload@1` 在 Web、iOS、Android 三端均落地并通过回归测试（当前仅剩双端原生 `transfer.upload@1` 网络投递与 RPC 注册）。
-- [ ] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（补齐 iOS 权限链抛错 `-32603` 与 Android 缺少 `WebMessageListener` 回退关闭两条回归单测）；iframe 明确推迟至 1.0 之后。
+- [ ] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（iOS 权限链抛错 `-32603` 单测已补齐；仅剩 Android 缺少 `WebMessageListener` 回退关闭回归单测）；iframe 明确推迟至 1.0 之后。
 - [x] **Android 10–12 兼容替代验收**：补齐 Android 10–12（API 30–32）模拟器 / CI Photo Picker 验收用例（`AndroidPhotoPickerCompatTest` 在 CI `Android 11 Photo Picker Compat` API 30 与 `Android Release WebView` API 35 模拟器上双跑通过），不以物理真机阻塞发版（见 `D-014`）。
 - [ ] **三端正式发版**：npm `@open-jsbridge/web`、iOS SwiftPM 标签、Android Maven Central 全部发布。
 - [x] **Web SDK 体积门禁拍板**：当前体积非瓶颈，`npm run size:web` 改为非阻断观测输出（见 `D-011`）。
@@ -31,7 +31,7 @@
 
 下列条目跟踪从规范到一致性验证的交付。设计修订见对应文档，待实现并通过用例后勾选。
 
-- [ ] **iOS 权限链出错时拒绝请求。** 意外异常映射为 `-32603`，确认业务 handler 未被调用。[iOS 接收与权限校验](docs/native-ios.md#7-接收与权限校验链)（2026-11-26 复核：TypeScript `host-core` 已由 #54 的 `SEC-ACL-ERROR-001` 覆盖；iOS `WireHostTests` 仍缺"权限链抛错时 handler 零调用"的专门用例。）
+- [x] **iOS 权限链出错时拒绝请求。** 意外异常映射为 `-32603`，确认业务 handler 未被调用。[iOS 接收与权限校验](docs/native-ios.md#7-接收与权限校验链)（TypeScript `host-core` 由 #54 `SEC-ACL-ERROR-001` 覆盖；iOS `WireHostTests.testAuthorizationUnexpectedErrorRejectsWithInternalErrorWithoutInvokingHandler` 已覆盖。）
 - [ ] **Android 回退通道默认关闭。** 首选 `addWebMessageListener`，缺失时保持 bridge 不可用。仅在宿主可独立保证受控内容隔离时评估显式启用回退，并验证主 frame 与来源的权限边界。[Android 通道选择](docs/native-android.md#1-通道选择)（2026-11-26 复核：实现已具备——参考宿主在缺少 `WEB_MESSAGE_LISTENER` 或 `DOCUMENT_START_SCRIPT` 时 `attach` 返回 `null`，不提供回退通道，见 `AndroidBridge.kt`；仍缺对应单测，补齐后勾选。）
 - [x] **隔离文档切换后的迟到应答。** iOS 和 Android 的真实 WebView 测试验证延迟应答不会进入新文档。Android JVM 测试覆盖重新确认窗口内的请求和连续挑战。[一致性测试](docs/conformance.md#23-pr-1-审查回归用例)
 - [x] **验证异步业务处理器的取消。** iOS 和 Android Release WebView 测试覆盖文档失效和 `bridge.cancel`，验证取消能释放原生并发槽。[一致性测试](docs/conformance.md#32-原生-release-webview-回归)

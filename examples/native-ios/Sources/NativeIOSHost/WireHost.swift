@@ -41,6 +41,11 @@ final class WireHost {
         case subscribed
     }
 
+    enum AuthorizationError: Error {
+        case denied
+        case rateLimited
+    }
+
     static let maxMessageBytes = 1_048_576
     static let maxInflight = 64
     private static let qualifiedName = #"\A(?!rpc\.)[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+"#
@@ -123,6 +128,7 @@ final class WireHost {
     /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
                  verifiedOrigin: String? = nil, receivedAt: DispatchTime = .now(),
+                 authorize: ((String, String?, String?) throws -> Void)? = nil,
                  isForeground: @escaping () -> Bool = { false },
                  presentToast: (String) -> Bool = { _ in false },
                  chooseMedia: NativeIOSHost.BusinessMethod.Handler? = nil,
@@ -195,6 +201,10 @@ final class WireHost {
             guard register(id, handshake: true) else { return nil }
             if exceedsInflightLimit { return failure(-32008, "Rate limited", id: id, meta: responseMeta) }
             if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
+            if let authFailure = evaluateAuthorization(authorize, method: "bridge.hello", origin: verifiedOrigin,
+                                                       sid: sid, id: id, meta: responseMeta) {
+                return authFailure
+            }
             return negotiate(id: id, params: params, responseMeta: responseMeta, verifiedOrigin: verifiedOrigin)
         }
 
@@ -203,6 +213,10 @@ final class WireHost {
         guard incomingSID == sid else { return failure(-32009, "Session expired", id: id, meta: responseMeta) }
         if exceedsInflightLimit { return failure(-32008, "Rate limited", id: id, meta: responseMeta) }
         let name = method.hasSuffix("@1") ? String(method.dropLast(2)) : method
+        if let authFailure = evaluateAuthorization(authorize, method: name, origin: verifiedOrigin,
+                                                   sid: sid, id: id, meta: responseMeta) {
+            return authFailure
+        }
         let isUpload = name == UploadRequest.method && hasUploadEndpoints
         guard isUpload || methods[name] != nil || name == Self.subscribe || name == Self.unsubscribe else {
             return failure(-32601, "Method not found", id: id, meta: responseMeta)
@@ -607,6 +621,22 @@ final class WireHost {
         sessionEndpoints = endpoints
         callbacksEnabled = callbacks
         return reply
+    }
+
+    private func evaluateAuthorization(_ authorize: ((String, String?, String?) throws -> Void)?,
+                                       method: String, origin: String?, sid: String?,
+                                       id: String, meta: [String: String]) -> String? {
+        guard let authorize else { return nil }
+        do {
+            try authorize(method, origin, sid)
+            return nil
+        } catch AuthorizationError.denied {
+            return failure(-32003, "Permission denied", id: id, meta: meta)
+        } catch AuthorizationError.rateLimited {
+            return failure(-32008, "Rate limited", id: id, meta: meta)
+        } catch {
+            return failure(-32603, "Internal error", id: id, meta: meta)
+        }
     }
 
     private func failure(_ code: Int, _ message: String, id: String?, meta: [String: String], data: [String: Any]? = nil) -> String? {
