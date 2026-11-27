@@ -117,6 +117,18 @@ class AndroidBridge private constructor(
             methods: List<BusinessMethod> = emptyList(),
             events: List<String> = emptyList(),
             mediaPicker: AndroidMediaPicker? = null,
+        ): AndroidBridge? = attach(webView, allowedOrigins, options, methods, events, mediaPicker, uploadPolicy = null)
+
+        /** Enable foreground uploads to the endpoints registered for each trusted origin. */
+        @MainThread
+        fun attach(
+            webView: WebView,
+            allowedOrigins: Collection<String>,
+            options: Options = Options(),
+            methods: List<BusinessMethod> = emptyList(),
+            events: List<String> = emptyList(),
+            mediaPicker: AndroidMediaPicker? = null,
+            uploadPolicy: TransferUploadPolicy?,
         ): AndroidBridge? {
             requireUiThread()
             val origins = DocumentTransport.exactOrigins(allowedOrigins)
@@ -124,7 +136,7 @@ class AndroidBridge private constructor(
             registeredMethods.indexBusinessMethods()
             val registeredEvents = events.toList()
             registeredEvents.indexBusinessEvents()
-            return install(webView, origins, modulesFor(webView, options, mediaPicker), registeredMethods,
+            return install(webView, origins, modulesFor(webView, options, mediaPicker, uploadPolicy), registeredMethods,
                 events = registeredEvents)
         }
 
@@ -139,10 +151,22 @@ class AndroidBridge private constructor(
             mediaPicker: AndroidMediaPicker? = null,
         ): AndroidBridge? = attach(webView, listOf(allowedOrigin), options, methods, events, mediaPicker)
 
+        @MainThread
+        fun attach(
+            webView: WebView,
+            allowedOrigin: String,
+            options: Options = Options(),
+            methods: List<BusinessMethod> = emptyList(),
+            events: List<String> = emptyList(),
+            mediaPicker: AndroidMediaPicker? = null,
+            uploadPolicy: TransferUploadPolicy?,
+        ): AndroidBridge? = attach(webView, listOf(allowedOrigin), options, methods, events, mediaPicker, uploadPolicy)
+
         internal fun modulesFor(
             webView: WebView,
             options: Options,
             mediaPicker: AndroidMediaPicker? = null,
+            uploadPolicy: TransferUploadPolicy? = null,
         ): BridgeModules {
             val network = if (options.networkStatus || options.networkChanges) AndroidNetwork(webView.context) else null
             return BridgeModules(
@@ -151,6 +175,10 @@ class AndroidBridge private constructor(
                 networkEvents = if (options.networkChanges) network?.events else null,
                 toast = if (options.toast) androidToastModule(webView.context) else null,
                 appLifecycle = if (options.appLifecycle) androidAppLifecycleEvents() else null,
+                upload = uploadPolicy?.takeIf {
+                    webView.context.checkSelfPermission(android.Manifest.permission.INTERNET) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                }?.let(::androidTransferUpload),
                 media = if (options.media && mediaPicker != null && AndroidMediaPicker.isAvailable(webView.context)) {
                     mediaPicker.module(webView.context)
                 } else null,

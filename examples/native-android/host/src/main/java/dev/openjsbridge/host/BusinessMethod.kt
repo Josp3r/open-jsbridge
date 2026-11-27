@@ -51,7 +51,7 @@ internal fun List<String>.indexBusinessEvents(): Set<String> = toSet().also { na
 }
 
 private val RESERVED_NAMESPACES = setOf(
-    "bridge", "conformance", "ojsb", "rpc", "device", "app", "ui", "storage", "network", "media",
+    "bridge", "conformance", "ojsb", "rpc", "device", "app", "ui", "storage", "network", "media", "transfer",
 )
 
 private fun isQualifiedBusinessName(name: String): Boolean =

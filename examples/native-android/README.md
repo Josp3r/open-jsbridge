@@ -121,6 +121,53 @@ export async function chooseThumbnail(preview: HTMLImageElement): Promise<void> 
 
 一次可提交 1–32 个句柄。成功返回 `null`，回收的配额可立即用于下一次选图，已显示的 `thumbUrl` 仍按原有效期和页面生命周期撤销。重复提交同一句柄只回收一次，已过期或当前会话查无记录的句柄会被跳过。若任一句柄格式错误，整批返回 `-32602`，原有句柄均保留。[主动释放契约](../../spec/methods/media/release.json)
 
+## 前台上传选中的图片
+
+在 App 的 manifest 中声明 `android.permission.INTERNET`，启用上节的 Photo Picker，并在挂载时传入 `uploadPolicy`。每个 `TransferUploadEndpoint` 将一个页面来源绑定到一个完整的 HTTPS URL，路径和显式端口都参与匹配。下面只允许 `https://app.example.com` 把所选图片提交到头像端点，原生端在请求获准后提供该端点的凭据。
+
+```kotlin
+import android.webkit.WebView
+import dev.openjsbridge.host.AndroidBridge
+import dev.openjsbridge.host.AndroidMediaPicker
+import dev.openjsbridge.host.TransferUploadEndpoint
+import dev.openjsbridge.host.TransferUploadPolicy
+
+fun attachAvatarUpload(view: WebView, picker: AndroidMediaPicker, accessToken: () -> String): AndroidBridge? {
+    val origin = "https://app.example.com"
+    val endpoint = TransferUploadEndpoint(
+        origin = origin,
+        url = "https://uploads.example.com/v1/avatar",
+        credentials = { mapOf("Authorization" to "Bearer ${accessToken()}") },
+    )
+    return AndroidBridge.attach(
+        webView = view, allowedOrigins = listOf(origin), options = AndroidBridge.Options(media = true),
+        mediaPicker = picker, uploadPolicy = TransferUploadPolicy(listOf(endpoint)),
+    )
+}
+```
+
+页面握手后分别检查选图和上传能力。上传使用当前会话的句柄，宿主将图片转成 JPEG 并以 `multipart/form-data` 发送一次 POST。可在调用选项中传 `timeout`、`signal` 和 `onProgress`。进度按完整请求体的字节报告。收到最终响应后，页面根据实际 HTTP 状态和正文判断业务结果，空正文表示为空字符串。
+
+```ts
+import { bridge, media } from '@open-jsbridge/web/auto'
+import { transfer } from '@open-jsbridge/web/transfer'
+
+export async function uploadAvatar(signal: AbortSignal) {
+  await bridge.ready()
+  if (!bridge.has('media.chooseMedia', 1) || !bridge.has('transfer.upload', 1)) return
+  const choice = await media.chooseMedia()
+  if (choice.status === 'cancelled') return
+  return transfer.upload({
+    id: choice.files[0].id,
+    request: { url: 'https://uploads.example.com/v1/avatar' },
+  }, { timeout: 60_000, signal })
+}
+```
+
+端点可以返回未压缩的正文，或只含一个完整成员的 gzip 正文。解压后最多 32 KiB，非空正文须为端点允许的 UTF-8 文本或 JSON。收到重定向时，宿主以 `redirect_denied` 结束调用。
+
+切到后台会取消进行中的上传。句柄到期或页面主动释放句柄时，上传以 `-32003` 结束。上传成功后，页面仍可按上节示例调用 `media.release` 提前归还配额。[上传契约](../../spec/methods/transfer/upload.json) · [前台上传 RFC](../../spec/rfcs/transfer-upload.md)
+
 ## 在模拟器验证
 
 准备 JDK 17、Android SDK Platform 35、Build Tools 34.0.0 和 Platform Tools。命令行使用 `JAVA_HOME` 和 `ANDROID_HOME`，并将 `platform-tools` 加入 `PATH`。启动一台 API 24+ 且支持上述 WebView 功能的 Android Emulator。Windows 使用 `gradlew.bat`。

@@ -9,6 +9,7 @@ internal data class BridgeModules(
     val toast: ToastModule? = null,
     val media: MediaModule? = null,
     val appLifecycle: AppLifecycleEvents? = null,
+    val upload: TransferUploadModule? = null,
 )
 
 internal class DeviceModule(private val osVersion: String) {

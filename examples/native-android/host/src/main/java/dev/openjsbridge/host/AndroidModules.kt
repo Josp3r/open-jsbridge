@@ -47,6 +47,26 @@ internal fun androidAppLifecycleEvents() = AppLifecycleEvents { onTransition ->
     })
 }
 
+internal fun androidTransferUpload(policy: TransferUploadPolicy): TransferUploadModule {
+    val lifecycle = ProcessLifecycleOwner.get().lifecycle
+    val main = Handler(Looper.getMainLooper())
+    return TransferUploadModule(
+        policy,
+        isForeground = { lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) },
+        observeBackground = { onBackground ->
+            val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) onBackground() }
+            lifecycle.addObserver(observer)
+            ({ lifecycle.removeObserver(observer) })
+        },
+        schedule = { delay, action ->
+            val timer = Runnable(action)
+            main.postDelayed(timer, delay)
+            ({ main.removeCallbacks(timer) })
+        },
+        elapsedMillis = android.os.SystemClock::elapsedRealtime,
+    )
+}
+
 internal class AndroidNetwork(context: Context) : NetworkModule {
     private val app = context.applicationContext
     private val connectivity = app.getSystemService(ConnectivityManager::class.java)

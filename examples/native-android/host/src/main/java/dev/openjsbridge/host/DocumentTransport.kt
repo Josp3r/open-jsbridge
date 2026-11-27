@@ -27,9 +27,14 @@ internal class DocumentTransport(
 
     private class BusinessWork(val call: RpcSession.BusinessCall, val reply: (String) -> Unit) {
         var cancel: (() -> Unit)? = null
+        var aborted = false
+            private set
 
         fun abort() {
+            if (aborted) return
+            aborted = true
             call.progress.post = null
+            call.upload?.close()
             try {
                 call.onCancel?.invoke()
             } finally {
@@ -47,6 +52,7 @@ internal class DocumentTransport(
     ) {
         val parked = ArrayDeque<ParkedFrame>()
         var parkedBytes = 0
+        var parkedUploadTerminal: (() -> Unit)? = null
         var businessWork: BusinessWork? = null
     }
 
@@ -72,7 +78,14 @@ internal class DocumentTransport(
             return null
         }
         if (document?.origin != origin) retireDocument()
-        return CommitChallenge(origin, UUID.randomUUID().toString()).also { pendingChallenge = it }
+        val challenge = CommitChallenge(origin, UUID.randomUUID().toString())
+        pendingChallenge = challenge
+        // Until the token is confirmed, a same-origin navigation can already be a new document.
+        document?.let { current ->
+            val work = current.businessWork
+            if (work?.call?.upload != null) stopUpload(current, work, MediaFailure(-32002, "Cancelled"))
+        }
+        return challenge
     }
 
     fun receive(raw: String, sourceOrigin: String, isMainFrame: Boolean, proxy: Any, postReply: (String) -> Unit) {
@@ -95,7 +108,7 @@ internal class DocumentTransport(
             } else {
                 retireDocument()
                 val session = RpcSession(enableEcho, modules, businessMethods,
-                    supportsCancellation = runBusiness != null, businessEvents = registeredEvents)
+                    supportsCancellation = runBusiness != null, businessEvents = registeredEvents, origin = origin)
                 Document(origin, token, proxy, session, challenge.nonce).also { document = it }
             }
             current.challenge = challenge.nonce
@@ -134,6 +147,7 @@ internal class DocumentTransport(
         }
         if (!raw.startsWith(prefix) || raw.length - prefix.length > current.session.maxMessageBytes) return
         val payload = raw.substring(prefix.length)
+        val receivedAt = modules.upload?.elapsedMillis?.invoke()
         whenActive(current, payload) {
             var acknowledge: (() -> Unit)? = null
             var businessCall: RpcSession.BusinessCall? = null
@@ -142,6 +156,8 @@ internal class DocumentTransport(
                 payload,
                 businessBusy = pending != null,
                 mediaBusy = pending?.mediaSelection == true,
+                uploadBusy = pending?.upload != null,
+                receivedAtMillis = receivedAt,
                 onBusinessCall = runBusiness?.let { { call -> businessCall = call } },
                 onCancellation = { id -> cancelBusiness(current, id) },
                 afterResponse = { acknowledge = it },
@@ -160,8 +176,22 @@ internal class DocumentTransport(
         prefix: String,
         postReply: (String) -> Unit,
     ) {
+        // App-supplied authorization callbacks can re-enter the host before receive() returns.
+        if (document !== current || pendingChallenge != null || current.businessWork != null) {
+            call.upload?.close()
+            if (document === current) {
+                val failure = if (current.businessWork?.call?.upload != null && call.upload != null)
+                    MediaFailure(-32010, "Busy") else MediaFailure(-32008, "Rate limited")
+                current.session.finishBusinessCall(call, Result.failure(failure))?.let {
+                    reply(current, it, prefix, postReply)
+                }
+            }
+            return
+        }
         val runner = checkNotNull(runBusiness)
-        val work = BusinessWork(call) { response -> reply(current, response, prefix, postReply) }
+        val work = BusinessWork(call) { response ->
+            reply(current, response, prefix, postReply, uploadTerminal = call.upload != null)
+        }
         current.businessWork = work
         var nextSeq = 0L
         fun active() = document === current && pendingChallenge == null && current.businessWork === work
@@ -179,19 +209,43 @@ internal class DocumentTransport(
                 false // A lost route drops optional progress; the handler still owns its final result.
             }
         }
-        work.cancel = runner(call) { result ->
+        val upload = call.upload
+        if (upload != null) {
+            try {
+                upload.bind { cause -> stopUpload(current, work, cause) }
+            } catch (error: RuntimeException) {
+                stopUpload(current, work, error)
+            }
+            if (current.businessWork !== work) return
+        }
+        val cancel = runner(call) { result ->
             if (current.businessWork === work) {
                 current.businessWork = null
                 call.progress.post = null
-                current.session.finishBusinessCall(call, result)?.let(work.reply)
+                val finalResult = upload?.elapsedFailure()?.let { Result.failure(it) } ?: result
+                upload?.close()
+                current.session.finishBusinessCall(call, finalResult)?.let(work.reply)
             }
         }
-        if (document !== current) work.abort()
+        work.cancel = cancel
+        if (work.aborted) cancel()
+    }
+
+    private fun stopUpload(current: Document, work: BusinessWork, cause: RuntimeException) {
+        if (current.businessWork !== work) return
+        val first = work.call.upload?.elapsedFailure() ?: cause
+        current.businessWork = null
+        work.abort()
+        current.session.finishBusinessCall(work.call, Result.failure(first))?.let(work.reply)
     }
 
     private fun cancelBusiness(current: Document, requestId: String) {
         val work = current.businessWork ?: return
         if (work.call.id != requestId) return
+        if (work.call.upload != null) {
+            stopUpload(current, work, MediaFailure(-32002, "Cancelled"))
+            return
+        }
         val response = current.session.businessCancellationResponse(work.call) ?: return
         current.businessWork = null
         work.abort()
@@ -204,15 +258,26 @@ internal class DocumentTransport(
         prefix: String,
         postReply: (String) -> Unit,
         acknowledge: (() -> Unit)? = null,
+        uploadTerminal: Boolean = false,
     ) {
+        val deliver: () -> Unit = {
+            postReply(prefix + response)
+            acknowledge?.invoke()
+        }
+        fun parkUploadTerminal(): Boolean {
+            if (!uploadTerminal || document !== current || pendingChallenge == null || current.parkedUploadTerminal != null) {
+                return false
+            }
+            current.parkedUploadTerminal = deliver
+            return true
+        }
+        // Reserve the interrupted upload's response before a delayed scheduler or a full frame queue.
+        if (parkUploadTerminal()) return
         var completed = false
         scheduleReply {
             if (!completed) {
                 completed = true
-                whenActive(current, response) {
-                    postReply(prefix + response)
-                    acknowledge?.invoke()
-                }
+                if (!parkUploadTerminal()) whenActive(current, response, deliver)
             }
         }
     }
@@ -224,6 +289,7 @@ internal class DocumentTransport(
         val work = previous.businessWork
         previous.businessWork = null
         previous.parked.clear()
+        previous.parkedUploadTerminal = null
         try {
             work?.abort()
         } finally {
@@ -245,6 +311,10 @@ internal class DocumentTransport(
     }
 
     private fun replay(current: Document) {
+        if (document !== current || pendingChallenge != null) return
+        val terminal = current.parkedUploadTerminal
+        current.parkedUploadTerminal = null
+        terminal?.invoke()
         while (document === current && pendingChallenge == null && current.parked.isNotEmpty()) {
             val frame = current.parked.removeFirst()
             current.parkedBytes -= frame.bytes
