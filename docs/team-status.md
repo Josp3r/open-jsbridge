@@ -15,24 +15,24 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `46cc74b`（最后更新日期：`2026-11-27`）
-- **本地验证基线**（`linux-agent`，`46cc74b`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` `7127 bytes`（观测输出，非阻断，见 `D-011`）
+- **最新主干基线**：`main` @ `a0eff27`（最后更新日期：`2026-11-27`）
+- **本地验证基线**（`linux-agent`，`a0eff27`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` `7127 bytes`（观测输出，非阻断，见 `D-011`）
 - **版本线状态**：
-  - 协议版本 `jsb`：`1.0`（Draft，待 M0 评审后冻结）
-  - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）对齐 `0.2.0`
-  - **1.0 退出标准已确立（见 [TODO.md](../TODO.md) 与 `D-013`）**：当前处于 1.0 收尾阶段，停止功能扩张，达标发版后转入维护模式。
+  - 协议版本 `jsb`：`1.0`（Draft，待维护者完成 M0 冻结评审）
+  - 仓库已于 `52d94f5` 打上 **`0.2.0`** 标签；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）待完成协议冻结与 `1.0.0` 发版
+  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：Agent 可执行的 1.0 必选开发与回归测试已**全部收齐**（能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅）；仅剩维护者拍板 **M0 协议冻结** 与 **三端正式发版**。
 - **v1 标准能力（三端已合入 `main`）**：
-  - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`
+  - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`、`transfer.upload@1`
+  - 控制/流式：`bridge.progress`
   - 事件：`network.statusChanged`、`app.foregrounded`、`app.backgrounded`
-- **已定契约、原生宿主推进中**：`transfer.upload@1`（RFC #44 + Schema/Web/Mock #58；iOS 图片预处理 #47、Android 图片预处理 #59 及双端 `bridge.progress` #61/#62 均已合入，详见 §3）
 - **Web SDK 子路径**：`/auto`、`/app`、`/device`、`/network`、`/ui`、`/media`、`/transfer`、`/reverse`、`/fallback`、`/mock`
 - **仓内参考实现（不随 1.0 单独发布）**：`packages/host-core`、`packages/devtools`、`packages/react-native`、`packages/codegen`、`packages/flutter`（`publish_to: none`，已接入 CI `Flutter Dart host` #63）
 - **当前发版 / 验收跟进项**：
-  - Android 10–12（API 30–32）Photo Picker 验收改由模拟器 / CI 补齐替代，不强制物理真机阻塞发版（见 `D-014`）。
+  - Android 10–12（API 30–32）Photo Picker 替代验收已由 CI `Android 11 Photo Picker Compat`（API 30，#66）覆盖（见 `D-014`）。
 - **主干活跃 Issue**：
   - `#41`：**置顶多 Agent 实时认领锁与跨端交接控制面**
-  - `#21`：v1 标准能力集（首批 7 项与后续候选）
-  - `#24`：媒体句柄 + 原生预览/上传方案（选图、主动释放已三端落地；上传契约、双端图片预处理与原生进度回调已合入，网络投递推进中；预览推迟至 1.0 后）
+  - `#21`：v1 标准能力集（首批能力与后续准入审批）
+  - `#24`：媒体句柄 + 原生上传（选图、主动释放、进度回调、单图前台上传已三端落地；预览推迟至 1.0 后）
 
 ---
 
@@ -57,21 +57,19 @@
 | 首批 7 项 v1 能力 | ✅ | ✅ | ✅ | ✅ | `0.2.0` |
 | `media.release@1` | ✅ #56 | ✅ #56 | ✅ #55 | ✅ #57 | #49 契约 |
 | `bridge.progress` 流式回调 | ✅ #38 | ✅ #38 | ✅ #62 | ✅ #61 | Flutter 已于 #45 实现 |
-| Host → Web 反向调用（§9.2） | ✅ #46（`/reverse`） | ✅ #46 | — | — | Flutter / RN 经 host-core 支持 |
-| `transfer.upload@1` | ✅ #58（`/transfer`） | ✅ #58 | 🚧 图片预处理 #47 | 🚧 图片预处理 #59 | 双端网络投递 + RPC 注册均已在 #41 认领推进中 |
-| `rules` ACL / 限流（§11.3） | n/a | ✅ #54 | — | — | 原生宿主仍只支持精确 HTTPS origin 白名单 |
-| `media.preview@1` | — | — | — | — | 无契约 |
+| Host → Web 反向调用（§9.2） | ✅ #46（`/reverse`） | ✅ #46 | — | — | 推迟至 1.0 后（Flutter / RN 经 host-core 支持） |
+| `transfer.upload@1` | ✅ #58（`/transfer`） | ✅ #58 | ✅ #65 | ✅ #67 | 三端对齐完成（RFC #44） |
+| `rules` ACL / 限流（§11.3） | n/a | ✅ #54 | — | — | 推迟至 1.0 后（原生宿主仍只支持精确 HTTPS origin 白名单） |
+| `media.preview@1` | — | — | — | — | 推迟至 1.0 后（无契约） |
 
 ---
 
 ## 4. 待认领候选池（Backlog / Ready to Claim）
 
-> **停止扩张规则（见 [AGENTS.md](../AGENTS.md) §2.5）**：当前处于 **1.0 收尾期**。仅下表标记为 **`高`** 的 1.0 退出必选项允许主动认领；一旦全部 `高` 优先级项完成，Agent MUST 停止开新任务，仅在 Issue [#41](https://github.com/Josp3r/open-jsbridge/issues/41) 报告空闲。标记为「推迟至 1.0 后」的条目未经维护者明确批准不得认领。
+> **停止扩张规则（见 [AGENTS.md](../AGENTS.md) §2.5）**：当前 **1.0 必选开发与测试项已全部完成，候选池无任何 `高` 优先级项**。在维护者完成 M0 协议冻结、1.0 发版或明确指派新任务（bugfix / 安全修复 / 平台兼容修复）前，所有 Agent **MUST 停止开新功能任务**，仅在 Issue [#41](https://github.com/Josp3r/open-jsbridge/issues/41) 报告空闲。下表「推迟至 1.0 后」条目未经维护者明确批准不得认领。
 
 | 候选方向 | 优先级 | 建议角色 | 预估主要 Scope | 关联来源 / 说明 |
 |---|---|---|---|---|
-| **原生 `transfer.upload@1` 网络投递与 RPC 注册** | **高（1.0 必选）** | `linux-agent`（Android）+ `macos-agent`（iOS） | 双端宿主上传模块、`RpcSession.kt` / `WireHost.swift` | Refs #24、#44、#58；iOS 已提 PR #65，Android 认领推进中（实时状态见 #41） |
-| **M0 收尾：补两条原生回归用例** | **高（1.0 必选）** | `macos-agent`（iOS）/ `linux-agent`（Android） | `examples/native-ios/Tests/**`、`examples/native-android/host/src/test/**` | 见 [TODO.md](../TODO.md) M0：iOS 权限链抛错时 handler 零调用并返回 `-32603`；Android 缺少 `WebMessageListener` 时 `attach` 返回 `null` |
 | `media.preview@1` 契约与实现 | 推迟至 1.0 后 | — | `spec/methods/media/**`、双端宿主 | 见 `D-013`：不进 1.0，达标发版后按需并经维护者审批启动 |
 | 原生反向调用（§9.2） | 推迟至 1.0 后 | — | 双端宿主会话层 | 见 `D-013`：不进 1.0；握手按能力声明，不影响兼容 |
 | 下一批标准能力（`ui.dialog.confirm` / `clipboard.*` / `permissions.getState` / `media.scan.qr`） | 推迟至 1.0 后 | — | `spec/methods/**`、`packages/web-sdk/**`、双端宿主 | 见 `D-012`、`D-013`：须先在 `#21` 通过四问并获维护者批准 |
@@ -135,6 +133,11 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-27 | Android 原生 `transfer.upload@1` 前台单图上传与 RPC 注册（三端对齐完成） | `#67` (`a0eff27`) |
+| 2026-11-27 | iOS M0 权限链异常隔离回归单测（`SEC-ACL-ERROR-001`） | `#68` (`bc18787`) |
+| 2026-11-27 | iOS 原生 `transfer.upload@1` 前台单图上传与 RPC 注册 | `#65` (`ef0ea9f`) |
+| 2026-11-27 | Android 11（API 30）Photo Picker 兼容仪器测试与 CI 替代验收（`D-014`） | `#66` (`8414141`) |
+| 2026-11-27 | 确立 1.0 退出标准、Agent 停止规则与 O-001～O-004 拍板（`D-011`–`D-014`） | `#64` (`b17f584`) |
 | 2026-11-27 | Flutter Dart 静态分析与 66 项测试接入 CI（`Flutter Dart host`） | `#63` (`46cc74b`) |
 | 2026-11-27 | Android 原生 `bridge.progress` 进度回调发送端 | `#61` (`fbae0a2`) |
 | 2026-11-27 | iOS 原生 `bridge.progress` 进度回调发送端 | `#62` (`07c686f`) |

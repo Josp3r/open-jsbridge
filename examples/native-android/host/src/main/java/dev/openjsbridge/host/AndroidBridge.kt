@@ -185,6 +185,11 @@ class AndroidBridge private constructor(
             )
         }
 
+        internal fun hasRequiredWebViewFeatures(
+            isFeatureSupported: (String) -> Boolean = { WebViewFeature.isFeatureSupported(it) },
+        ): Boolean = isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+
         @MainThread
         internal fun install(
             webView: WebView,
@@ -194,15 +199,14 @@ class AndroidBridge private constructor(
             enableEcho: Boolean = false,
             events: List<String> = emptyList(),
             scheduleReply: (() -> Unit) -> Unit = { it() },
+            isFeatureSupported: (String) -> Boolean = { WebViewFeature.isFeatureSupported(it) },
         ): AndroidBridge? {
             requireUiThread()
             check(webView !in attachments) { "A bridge is already attached to this WebView" }
             check(webView.url == null && webView.copyBackForwardList().currentItem == null) {
                 "Attach the bridge before navigating the WebView"
             }
-            if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
-                !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-            ) return null
+            if (!hasRequiredWebViewFeatures(isFeatureSupported)) return null
 
             val main = Handler(Looper.getMainLooper())
             val webViewDispatcher = Executor { main.post(it) }.asCoroutineDispatcher()
