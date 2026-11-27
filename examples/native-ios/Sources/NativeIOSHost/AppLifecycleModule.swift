@@ -8,10 +8,18 @@ enum AppLifecycleEvent: String, CaseIterable {
     case backgrounded = "app.backgrounded"
 }
 
-/// Subscribes to UIKit's application-level transitions only while a document listens.
+/// Observes UIKit transitions for document subscriptions and foreground uploads.
 @MainActor
 final class AppLifecycleModule: NSObject {
     private var onChange: ((AppLifecycleEvent) -> Void)?
+
+    static var isForeground: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState != .background
+        #else
+        return false
+        #endif
+    }
 
     func start(_ onChange: @escaping (AppLifecycleEvent) -> Void) {
         #if os(iOS)

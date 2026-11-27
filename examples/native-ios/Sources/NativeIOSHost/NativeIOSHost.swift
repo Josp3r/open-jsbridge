@@ -1,4 +1,5 @@
 import Network
+import ObjectiveC
 import WebKit
 
 /// Hosts the native bridge in an app-owned WebView or the standalone Debug demo.
@@ -10,15 +11,18 @@ public enum NativeIOSHost {
         public let toast: Bool
         public let media: Bool
         public let appLifecycle: Bool
+        public let uploadEndpoints: [UploadEndpoint]
 
         public init(deviceInfo: Bool = false, networkStatus: Bool = false, networkChanges: Bool = false,
-                    toast: Bool = false, media: Bool = false, appLifecycle: Bool = false) {
+                    toast: Bool = false, media: Bool = false, appLifecycle: Bool = false,
+                    uploadEndpoints: [UploadEndpoint] = []) {
             self.deviceInfo = deviceInfo
             self.networkStatus = networkStatus
             self.networkChanges = networkChanges
             self.toast = toast
             self.media = media
             self.appLifecycle = appLifecycle
+            self.uploadEndpoints = uploadEndpoints
         }
     }
 
@@ -115,7 +119,7 @@ public enum NativeIOSHost {
                               enableEcho: false, handlerName: handlerName, watchNetwork: nil) { _, complete in
             _ = complete()
         }
-        host.webView = webView
+        host.bind(to: webView)
         host.install(in: controller)
         attachments.setObject(host, forKey: controller)
         return Attachment(host: host, controller: controller)
@@ -127,8 +131,7 @@ public enum NativeIOSHost {
             attachments.removeObject(forKey: controller)
             host.uninstall(from: controller)
         }
-        host.webView = nil
-        host.webContentProcessDidTerminate()
+        host.unbind()
     }
 
     @MainActor
@@ -155,7 +158,7 @@ public enum NativeIOSHost {
             let controller = configuration.userContentController
             adapter.install(in: controller)
             let webView = WKWebView(frame: .zero, configuration: configuration)
-            adapter.webView = webView
+            adapter.bind(to: webView)
             webView.navigationDelegate = adapter
             attachments.setObject(adapter, forKey: controller)
             return webView
@@ -165,7 +168,7 @@ public enum NativeIOSHost {
     }
 }
 
-private struct AllowedOrigin {
+struct AllowedOrigin {
     let scheme: String
     let host: String
     let port: Int
@@ -280,10 +283,24 @@ final class DeferredReplies {
 
 @MainActor
 private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
+    /// The view owns this token even when the app retains its Attachment or user content controller.
+    private final class ViewLifetime {
+        var host: WebKitHost?
+
+        init(_ host: WebKitHost) { self.host = host }
+
+        deinit {
+            guard let host else { return }
+            Task { @MainActor in host.webContentProcessDidTerminate() }
+        }
+    }
+
+    private static var lifetimeKey: UInt8 = 0
     private struct Delivery {
         let document: String
         let origin: String
         let raw: String
+        let receivedAt: DispatchTime
         let exceedsBacklogLimit: Bool
         let reply: (String?) -> Void
     }
@@ -312,7 +329,22 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
     private var validationEpoch = 0
     private var navigationEpoch = 0
     private var userScript: WKUserScript?
-    weak var webView: WKWebView?
+    private(set) weak var webView: WKWebView?
+
+    func bind(to webView: WKWebView) {
+        self.webView = webView
+        objc_setAssociatedObject(webView, &Self.lifetimeKey, ViewLifetime(self), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    func unbind() {
+        if let webView {
+            let lifetime = objc_getAssociatedObject(webView, &Self.lifetimeKey) as? ViewLifetime
+            lifetime?.host = nil
+            objc_setAssociatedObject(webView, &Self.lifetimeKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+        webView = nil
+        webContentProcessDidTerminate()
+    }
 
     init(origins: [AllowedOrigin], options: NativeIOSHost.Options,
          businessMethods: [String: NativeIOSHost.BusinessMethod], businessEvents: [String] = [],
@@ -327,7 +359,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         self.network = network
         toast = options.toast ? ToastModule() : nil
         #if os(iOS)
-        appLifecycle = options.appLifecycle ? AppLifecycleModule() : nil
+        appLifecycle = options.appLifecycle || (options.media && !options.uploadEndpoints.isEmpty) ? AppLifecycleModule() : nil
         mediaPicker = options.media ? MediaPicker() : nil
         #else
         appLifecycle = nil
@@ -377,7 +409,7 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         }
 
         // Bound the transport backlog independently of active business work.
-        pending.append(Delivery(document: body[0], origin: origin.serialized, raw: body[1],
+        pending.append(Delivery(document: body[0], origin: origin.serialized, raw: body[1], receivedAt: .now(),
                                 exceedsBacklogLimit: backlog >= WireHost.maxInflight,
                                 reply: { replyHandler($0 as Any? ?? NSNull(), nil) }))
         verifyNext()
@@ -450,6 +482,8 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
                     // Earlier verified cancellations can release work before this request is admitted.
                     let exceedsInflightLimit = delivery.exceedsBacklogLimit || self.businessWork.count >= WireHost.maxInflight
                     if let response = self.wire.receive(delivery.raw, exceedsInflightLimit: exceedsInflightLimit,
+                                                        verifiedOrigin: delivery.origin, receivedAt: delivery.receivedAt,
+                                                        isForeground: { [weak webView] in webView != nil && AppLifecycleModule.isForeground },
                                                         presentToast: { self.toast?.show($0, in: webView) ?? false },
                                                         chooseMedia: { [weak self] _ in
                                                             guard let picker = self?.mediaPicker, let webView = self?.webView else {
@@ -565,9 +599,11 @@ private final class WebKitHost: NSObject, WKScriptMessageHandlerWithReply, WKNav
         } else {
             network?.stop()
         }
-        if wire.watchesAppLifecycle {
+        if wire.watchesAppLifecycle || wire.hasUploadEndpoints {
             appLifecycle?.start { [weak self] event in
-                guard let self, let raw = self.wire.appLifecycleEvent(event, for: sid) else { return }
+                guard let self else { return }
+                if event == .backgrounded { self.wire.cancelUploadForBackground() }
+                guard let raw = self.wire.appLifecycleEvent(event, for: sid) else { return }
                 self.deliverEvent(raw, to: document)
             }
         } else {

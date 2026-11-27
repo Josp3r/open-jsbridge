@@ -7,16 +7,19 @@ final class WireHost {
         private let handler: NativeIOSHost.BusinessMethod.StreamingHandler
         private let params: [String: Any]
         let isMedia: Bool
+        fileprivate let upload: UploadOperation?
         fileprivate let id: String
         fileprivate let sid: String
         fileprivate let meta: [String: String]
         fileprivate var nextSeq: Int?
 
         fileprivate init(handler: @escaping NativeIOSHost.BusinessMethod.StreamingHandler, params: [String: Any],
-                         isMedia: Bool, id: String, sid: String, meta: [String: String], callbacks: Bool) {
+                         isMedia: Bool, id: String, sid: String, meta: [String: String], callbacks: Bool,
+                         upload: UploadOperation? = nil) {
             self.handler = handler
             self.params = params
             self.isMedia = isMedia
+            self.upload = upload
             self.id = id
             self.sid = sid
             self.meta = meta
@@ -56,6 +59,10 @@ final class WireHost {
     private let businessEvents: Set<String>
     private let networkType: () -> NetworkConnection
     private let media: MediaStore?
+    private let uploadEndpoints: [NativeIOSHost.UploadEndpoint]
+    private var sessionEndpoints: [NativeIOSHost.UploadEndpoint] = []
+    private var activeUpload: UploadOperation?
+    var hasUploadEndpoints: Bool { !sessionEndpoints.isEmpty }
     private var subscriptions: [String: EventSubscription] = [:]
     private(set) var sid: String?
     private var callbacksEnabled = false
@@ -72,6 +79,7 @@ final class WireHost {
         self.networkType = networkType
         let mediaEnabled = options.media && supportsMedia
         media = mediaEnabled ? MediaStore() : nil
+        uploadEndpoints = mediaEnabled ? options.uploadEndpoints : []
         var methods = businessMethods.mapValues { _ in ["versions": [1]] }
         if enableEcho { methods[Self.echo] = ["versions": [1]] }
         if options.deviceInfo { methods[DeviceModule.method] = ["versions": [1]] }
@@ -96,6 +104,9 @@ final class WireHost {
     }
 
     func reset() {
+        activeUpload?.cancel(UploadFailure(-32002, "session_closed"))
+        activeUpload = nil
+        sessionEndpoints.removeAll()
         media?.reset()
         sid = nil
         callbacksEnabled = false
@@ -104,9 +115,15 @@ final class WireHost {
         requestIDs.removeAll()
     }
 
+    func cancelUploadForBackground() {
+        activeUpload?.cancel(UploadFailure(-32002, "backgrounded"))
+    }
+
     /// Called only after the adapter has authorized the current document.
     /// The adapter runs the after-reply callback once it has sent the acknowledgement.
     func receive(_ raw: String, exceedsInflightLimit: Bool = false,
+                 verifiedOrigin: String? = nil, receivedAt: DispatchTime = .now(),
+                 isForeground: @escaping () -> Bool = { false },
                  presentToast: (String) -> Bool = { _ in false },
                  chooseMedia: NativeIOSHost.BusinessMethod.Handler? = nil,
                  mediaBusy: Bool = false,
@@ -178,7 +195,7 @@ final class WireHost {
             guard register(id, handshake: true) else { return nil }
             if exceedsInflightLimit { return failure(-32008, "Rate limited", id: id, meta: responseMeta) }
             if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
-            return negotiate(id: id, params: params, responseMeta: responseMeta)
+            return negotiate(id: id, params: params, responseMeta: responseMeta, verifiedOrigin: verifiedOrigin)
         }
 
         // Without an established route there is no valid session to attach to an error.
@@ -186,10 +203,18 @@ final class WireHost {
         guard incomingSID == sid else { return failure(-32009, "Session expired", id: id, meta: responseMeta) }
         if exceedsInflightLimit { return failure(-32008, "Rate limited", id: id, meta: responseMeta) }
         let name = method.hasSuffix("@1") ? String(method.dropLast(2)) : method
-        guard methods[name] != nil || name == Self.subscribe || name == Self.unsubscribe else {
+        let isUpload = name == UploadRequest.method && hasUploadEndpoints
+        guard isUpload || methods[name] != nil || name == Self.subscribe || name == Self.unsubscribe else {
             return failure(-32601, "Method not found", id: id, meta: responseMeta)
         }
         if zeroTimeout { return failure(-32602, "Invalid request timeout", id: id, meta: responseMeta) }
+
+        if isUpload, let media {
+            let timeout = meta["timeout"].flatMap(Self.safeInteger) ?? Self.defaultTimeoutMs
+            return beginUpload(params, media: media, id: id, sid: sid, meta: responseMeta,
+                               receivedAt: receivedAt, timeout: timeout,
+                               isForeground: isForeground, dispatch: onBusinessCall)
+        }
 
         let isMedia = name == MediaStore.chooseMethod
         let businessMethod = businessMethods[name]
@@ -266,6 +291,27 @@ final class WireHost {
         return reply
     }
 
+    private func beginUpload(_ params: NSDictionary?, media: MediaStore, id: String, sid: String,
+                             meta: [String: String], receivedAt: DispatchTime, timeout: Int64,
+                             isForeground: @escaping () -> Bool, dispatch: ((BusinessCall) -> Void)?) -> String? {
+        if let activeUpload, activeUpload.outcome == nil { return failure(-32010, "Busy", id: id, meta: meta) }
+        guard let dispatch else { return failure(-32603, "Internal error", id: id, meta: meta) }
+        do {
+            let request = try UploadRequest.parse(params as? [String: Any] ?? [:], endpoints: sessionEndpoints)
+            // Queuing and WebKit's asynchronous document verification consume the same deadline.
+            let elapsed = Int64((DispatchTime.now().uptimeNanoseconds - receivedAt.uptimeNanoseconds) / 1_000_000)
+            guard elapsed < timeout else { throw UploadFailure(-32001, "timeout") }
+            let upload = try UploadOperation(request: request, media: media, timeout: timeout - elapsed,
+                                             isForeground: isForeground)
+            activeUpload = upload
+            dispatch(BusinessCall(handler: { _, progress in try await upload.run(progress: progress) }, params: [:],
+                                  isMedia: false, id: id, sid: sid, meta: meta, callbacks: callbacksEnabled, upload: upload))
+            return nil
+        } catch {
+            return uploadFailure(error, id: id, meta: meta)
+        }
+    }
+
     private func subscribe(_ names: [String], for sid: String, afterReply: (@escaping () -> Void) -> Void) {
         var awaitingAcknowledgement: [String: UUID] = [:]
         for name in names {
@@ -291,7 +337,8 @@ final class WireHost {
 
     @MainActor
     func sendProgress(for call: BusinessCall, chunk: Any? = nil, deliver: (String) async -> Bool) async -> Bool {
-        guard sid == call.sid, let seq = call.nextSeq, seq <= 9_007_199_254_740_991 else { return false }
+        guard sid == call.sid, call.upload?.outcome == nil, let seq = call.nextSeq,
+              seq <= 9_007_199_254_740_991 else { return false }
         var params: [String: Any] = ["requestId": call.id, "seq": seq]
         if let chunk { params["chunk"] = chunk }
         guard JSONSerialization.isValidJSONObject(params), Self.isPortableJSON(params),
@@ -306,7 +353,8 @@ final class WireHost {
     func finishBusinessCall(_ call: BusinessCall, result: Result<Any, Error>) -> String? {
         call.nextSeq = nil
         guard sid == call.sid else { return nil }
-        switch result {
+        if let upload = call.upload, activeUpload === upload { activeUpload = nil }
+        switch call.upload?.outcome ?? result {
         case .success(let value):
             var insertedID: String?
             let result: Any
@@ -341,12 +389,18 @@ final class WireHost {
             }
             return reply
         case .failure(let error):
+            if call.upload != nil { return uploadFailure(error, id: call.id, meta: call.meta) }
             if call.isMedia { return mediaFailure(error, id: call.id, meta: call.meta) }
             if case NativeIOSHost.BusinessMethodError.invalidParams = error {
                 return failure(-32602, "Invalid params", id: call.id, meta: call.meta)
             }
             return failure(-32603, "Internal error", id: call.id, meta: call.meta)
         }
+    }
+
+    private func uploadFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
+        let problem = error as? UploadFailure ?? UploadFailure(-32603, "internal_error")
+        return failure(problem.code, "Upload failed", id: id, meta: meta, data: ["reason": problem.reason])
     }
 
     private func mediaFailure(_ error: Error, id: String, meta: [String: String]) -> String? {
@@ -363,6 +417,11 @@ final class WireHost {
     }
 
     func cancelBusinessCall(_ call: BusinessCall) -> String? {
+        if let upload = call.upload {
+            let error = UploadFailure(-32002, "cancelled")
+            upload.cancel(error)
+            return finishBusinessCall(call, result: .failure(error))
+        }
         call.nextSeq = nil
         guard sid == call.sid else { return nil }
         return failure(-32002, "Call cancelled", id: call.id, meta: call.meta)
@@ -486,7 +545,10 @@ final class WireHost {
         return requestIDs.insert(key).inserted
     }
 
-    private func negotiate(id: String, params: NSDictionary?, responseMeta: [String: String]) -> String? {
+    private static let defaultTimeoutMs: Int64 = 15_000
+
+    private func negotiate(id: String, params: NSDictionary?, responseMeta: [String: String],
+                           verifiedOrigin: String?) -> String? {
         guard let protocols = params?["protocols"] as? [Any], !protocols.isEmpty,
               Self.validHelloOptionalFields(params)
         else {
@@ -503,8 +565,20 @@ final class WireHost {
         }
 
         let wants = params?["wants"] as? [String] ?? []
+        let endpoints: [NativeIOSHost.UploadEndpoint]
+        if self.sid == nil {
+            let grants = uploadEndpoints.filter { $0.origin == verifiedOrigin }
+            // Two policies for the same destination are ambiguous. Omit that destination.
+            endpoints = Dictionary(grouping: grants, by: { $0.url.absoluteString }).values.compactMap {
+                $0.count == 1 ? $0.first : nil
+            }
+        } else {
+            endpoints = sessionEndpoints
+        }
+        var advertisedMethods = methods
+        if !endpoints.isEmpty { advertisedMethods[UploadRequest.method] = ["versions": [1]] }
         let callbacks = self.sid == nil
-            ? wants.contains("callbacks") && businessMethods.values.contains(where: \.supportsCallbacks)
+            ? wants.contains("callbacks") && (!endpoints.isEmpty || businessMethods.values.contains(where: \.supportsCallbacks))
             : callbacksEnabled
         var features = media != nil || !businessMethods.isEmpty ? ["cancel"] : []
         if callbacks { features.append("callbacks") }
@@ -514,11 +588,11 @@ final class WireHost {
             "sid": sid,
             "host": ["platform": platform, "name": "ios-wk", "version": "0.2.0"],
             "capabilities": [
-                "methods": methods,
+                "methods": advertisedMethods,
                 "events": events,
                 "features": features
             ],
-            "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": 15_000]
+            "limits": ["maxMessageBytes": Self.maxMessageBytes, "maxInflight": Self.maxInflight, "defaultTimeoutMs": Self.defaultTimeoutMs]
         ]
         var meta = responseMeta
         meta["sid"] = sid
@@ -530,6 +604,7 @@ final class WireHost {
             return failure(-32006, "Payload too large", id: id, meta: responseMeta)
         }
         self.sid = sid
+        sessionEndpoints = endpoints
         callbacksEnabled = callbacks
         return reply
     }

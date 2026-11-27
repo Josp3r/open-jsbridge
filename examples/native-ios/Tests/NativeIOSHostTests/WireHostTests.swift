@@ -4,6 +4,27 @@ import XCTest
 @testable import NativeIOSHost
 
 final class WireHostTests: XCTestCase {
+    func testBusinessMethodCannotOverrideTheStandardUploadPolicy() {
+        XCTAssertThrowsError(try NativeIOSHost.BusinessMethod("transfer.upload") { _ in NSNull() })
+    }
+
+    func testUploadRequiresMediaSupportAndAnUnambiguousEndpointGrant() throws {
+        let page = URL(string: "https://app.example.test")!
+        let url = URL(string: "https://images.example.test/avatar")!
+        let endpoint = try NativeIOSHost.UploadEndpoint(origin: page, url: url)
+        for host in [
+            WireHost(platform: "ios", options: .init(uploadEndpoints: [endpoint])),
+            WireHost(platform: "ios", options: .init(media: true, uploadEndpoints: [endpoint]), supportsMedia: false),
+            WireHost(platform: "ios", options: .init(media: true, uploadEndpoints: [endpoint, endpoint]))
+        ] {
+            let reply = try unpack(host.receive(hello(id: "hello", wantsCallbacks: true), verifiedOrigin: page.absoluteString))
+            let result = try XCTUnwrap(reply.rpc["result"] as? [String: Any])
+            let caps = try XCTUnwrap(result["capabilities"] as? [String: Any])
+            XCTAssertNil((caps["methods"] as? [String: Any])?["transfer.upload"])
+            XCTAssertFalse((caps["features"] as? [String] ?? []).contains("callbacks"))
+        }
+    }
+
     func testHandshakeIsIdempotentAndAdvertisesOnlyEcho() throws {
         let host = WireHost(platform: "ios")
         let first = try unpack(host.receive(hello(id: "first")))
@@ -374,6 +395,83 @@ final class WireHostTests: XCTestCase {
         let result = try await completeMedia(.cancelled, id: "pick", sid: sid, in: host)
         XCTAssertEqual(result["status"] as? String, "cancelled")
         XCTAssertEqual((result["files"] as? [Any])?.count, 0)
+    }
+
+    @MainActor
+    func testUploadAdmissionBindsOriginHandleAndTerminalToTheOriginalCall() async throws {
+        let origin = URL(string: "https://app.example.test")!
+        let url = URL(string: "https://api.example.test/avatar")!
+        let endpoint = try NativeIOSHost.UploadEndpoint(origin: origin, url: url)
+        let host = WireHost(platform: "ios", options: .init(media: true, uploadEndpoints: [endpoint]))
+        func handshake(_ origin: String) throws -> [String: Any] {
+            let reply = try unpack(host.receive(hello(id: "hello", wantsCallbacks: true), verifiedOrigin: origin))
+            return try XCTUnwrap(reply.rpc["result"] as? [String: Any])
+        }
+        let denied = try handshake("https://app.example.test:8443")
+        let capabilities = try XCTUnwrap(denied["capabilities"] as? [String: Any])
+        XCTAssertNil((capabilities["methods"] as? NSDictionary)?["transfer.upload"])
+        XCTAssertFalse((capabilities["features"] as? [String] ?? []).contains("callbacks"))
+        host.reset()
+        let allowed = try handshake(origin.absoluteString)
+        let advertised = try XCTUnwrap(allowed["capabilities"] as? [String: Any])
+        XCTAssertEqual((advertised["methods"] as? [String: [String: [Int]]])?["transfer.upload"], ["versions": [1]])
+        XCTAssertEqual(Set(advertised["features"] as? [String] ?? []), ["callbacks", "cancel"])
+        let sid = try XCTUnwrap(allowed["sid"] as? String)
+        let pick = try await completeMedia(mediaSelection(bytes: 4096), id: "pick", sid: sid, in: host)
+        let handle = try XCTUnwrap((pick["files"] as? [[String: Any]])?.first?["id"] as? String)
+        let params = #"{"id":"\#(handle)","request":{"url":"https://api.example.test/avatar"}}"#
+        func upload(_ id: String) -> String { echo(id: id, sid: sid, params: params, method: "transfer.upload@1") }
+        func unexpected(_ call: WireHost.BusinessCall) { XCTFail("Unexpected upload dispatch") }
+        XCTAssertEqual(try unpack(host.receive(upload("background"), isForeground: { false },
+                                               onBusinessCall: unexpected)).error?["code"] as? Int, -32003)
+        XCTAssertEqual(try unpack(host.receive(upload("expired"), receivedAt: .now() - .seconds(16),
+                                               isForeground: { true }, onBusinessCall: unexpected)).error?["code"] as? Int, -32001)
+        var call: WireHost.BusinessCall?
+        XCTAssertNil(host.receive(upload("one"), isForeground: { true }, onBusinessCall: { call = $0 }))
+        let pending = try XCTUnwrap(call)
+        XCTAssertNil(host.receive(upload("one"), isForeground: { true }, onBusinessCall: unexpected))
+        XCTAssertEqual(try unpack(host.receive(upload("busy"), isForeground: { true },
+                                               onBusinessCall: unexpected)).error?["code"] as? Int, -32010)
+        let release = echo(id: "release", sid: sid, params: #"{"ids":["\#(handle)"]}"#, method: "media.release")
+        XCTAssertTrue(try unpack(host.receive(release)).rpc["result"] is NSNull)
+        let terminal = try unpack(host.cancelBusinessCall(pending))
+        XCTAssertEqual(terminal.rpc["id"] as? String, "one")
+        XCTAssertEqual(terminal.error?["code"] as? Int, -32003)
+        XCTAssertEqual(try unpack(host.receive(upload("released"), isForeground: { true },
+                                               onBusinessCall: unexpected)).error?["code"] as? Int, -32003)
+    }
+
+    @MainActor
+    func testUploadStopsOnBackgroundAndDocumentResetWithoutEventSubscriptions() async throws {
+        let origin = URL(string: "https://app.example.test")!
+        let endpoint = try NativeIOSHost.UploadEndpoint(origin: origin, url: URL(string: "https://cdn.example.test/avatar")!)
+        let host = WireHost(platform: "ios", options: .init(media: true, uploadEndpoints: [endpoint]))
+        _ = host.receive(hello(id: "hello"), verifiedOrigin: origin.absoluteString)
+        let sid = try XCTUnwrap(host.sid)
+        XCTAssertFalse(host.watchesAppLifecycle)
+        XCTAssertTrue(host.hasUploadEndpoints)
+        let pick = try await completeMedia(mediaSelection(bytes: 4096), id: "pick", sid: sid, in: host)
+        let handle = try XCTUnwrap((pick["files"] as? [[String: Any]])?.first?["id"] as? String)
+        let params = #"{"id":"\#(handle)","request":{"url":"https://cdn.example.test/avatar"}}"#
+        func admitted(_ id: String) throws -> WireHost.BusinessCall {
+            var pending: WireHost.BusinessCall?
+            XCTAssertNil(host.receive(echo(id: id, sid: sid, params: params, method: "transfer.upload"),
+                                      isForeground: { true }, onBusinessCall: { pending = $0 }))
+            return try XCTUnwrap(pending)
+        }
+        let first = try admitted("first")
+        host.cancelUploadForBackground()
+        let retry = try admitted("retry")
+        let error = try unpack(host.finishBusinessCall(first, result: .success(["status": 201, "body": "late"]))).error
+        XCTAssertEqual(error?["code"] as? Int, -32002)
+        XCTAssertEqual((error?["data"] as? [String: String])?["reason"], "backgrounded")
+        host.reset()
+        XCTAssertFalse(host.hasUploadEndpoints)
+        _ = host.receive(hello(id: "new-hello"), verifiedOrigin: origin.absoluteString)
+        XCTAssertNil(host.finishBusinessCall(retry, result: .success(["status": 201, "body": "late"])))
+        let foreign = echo(id: "foreign", sid: try XCTUnwrap(host.sid), params: params, method: "transfer.upload")
+        let denied = host.receive(foreign, isForeground: { true }, onBusinessCall: { _ in XCTFail("Stale handle dispatched") })
+        XCTAssertEqual(try unpack(denied).error?["code"] as? Int, -32003)
     }
 
     @MainActor
