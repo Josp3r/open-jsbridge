@@ -895,6 +895,125 @@ final class WireHostTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testAuthorizationUnexpectedErrorRejectsWithInternalErrorWithoutInvokingHandler() async throws {
+        struct PolicyCrash: LocalizedError {
+            var errorDescription: String? { "secret policy rule detail" }
+        }
+
+        let origin = "https://app.example.test"
+        let method = "acme.app.getConfig"
+        var handlerCalls = 0
+        var dispatchedCalls = 0
+        var toastCalls = 0
+        let business = try NativeIOSHost.BusinessMethod(method) { _ in
+            handlerCalls += 1
+            return ["status": "ok"]
+        }
+        let host = WireHost(platform: "ios", options: .init(toast: true), businessMethods: [method: business])
+
+        let failedHelloRaw = try XCTUnwrap(host.receive(
+            hello(id: "hello-crash"),
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in throw PolicyCrash() }
+        ))
+        XCTAssertFalse(failedHelloRaw.contains("secret"))
+        let failedHello = try unpack(failedHelloRaw)
+        XCTAssertEqual(failedHello.rpc["id"] as? String, "hello-crash")
+        XCTAssertNil(failedHello.rpc["result"])
+        XCTAssertEqual(failedHello.error?["code"] as? Int, -32603)
+        XCTAssertEqual(failedHello.error?["message"] as? String, "Internal error")
+        XCTAssertNil(failedHello.error?["data"])
+        XCTAssertNil(host.sid)
+
+        let sid = try session(host, id: "hello-ok")
+
+        var observed: [(String, String?, String?)] = []
+        let businessRequest = echo(id: "acl-crash", sid: sid, method: "\(method)@1")
+        let crashRaw = try XCTUnwrap(host.receive(
+            businessRequest,
+            verifiedOrigin: origin,
+            authorize: { seenMethod, seenOrigin, seenSID in
+                observed.append((seenMethod, seenOrigin, seenSID))
+                throw PolicyCrash()
+            },
+            onBusinessCall: { _ in dispatchedCalls += 1 }
+        ))
+        XCTAssertFalse(crashRaw.contains("secret"))
+        let crashReply = try unpack(crashRaw)
+        XCTAssertEqual(crashReply.rpc["id"] as? String, "acl-crash")
+        XCTAssertEqual(crashReply.meta?["sid"] as? String, sid)
+        XCTAssertEqual(crashReply.meta?["traceId"] as? String, "trace")
+        XCTAssertNil(crashReply.rpc["result"])
+        XCTAssertEqual(crashReply.error?["code"] as? Int, -32603)
+        XCTAssertEqual(crashReply.error?["message"] as? String, "Internal error")
+        XCTAssertNil(crashReply.error?["data"])
+        XCTAssertEqual(observed.count, 1)
+        XCTAssertEqual(observed.first?.0, method)
+        XCTAssertEqual(observed.first?.1, origin)
+        XCTAssertEqual(observed.first?.2, sid)
+
+        // Duplicate request ID after an authorization error is silently dropped without re-running auth or handler.
+        XCTAssertNil(host.receive(
+            businessRequest,
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in
+                observed.append(("duplicate", nil, nil))
+                throw PolicyCrash()
+            },
+            onBusinessCall: { _ in dispatchedCalls += 1 }
+        ))
+        XCTAssertEqual(observed.count, 1)
+
+        // Built-in handlers must also stay uninvoked when the permission chain throws.
+        let toastRequest = echo(id: "toast-crash", sid: sid, params: #"{"text":"Hi"}"#, method: "ui.toast.show")
+        let toastRaw = try XCTUnwrap(host.receive(
+            toastRequest,
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in throw PolicyCrash() },
+            presentToast: { _ in toastCalls += 1; return true }
+        ))
+        XCTAssertFalse(toastRaw.contains("secret"))
+        let toastReply = try unpack(toastRaw)
+        XCTAssertEqual(toastReply.error?["code"] as? Int, -32603)
+        XCTAssertEqual(toastReply.error?["message"] as? String, "Internal error")
+        XCTAssertNil(toastReply.error?["data"])
+
+        let deniedReply = try unpack(host.receive(
+            echo(id: "acl-denied", sid: sid, method: method),
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in throw WireHost.AuthorizationError.denied },
+            onBusinessCall: { _ in dispatchedCalls += 1 }
+        ))
+        XCTAssertEqual(deniedReply.error?["code"] as? Int, -32003)
+
+        let rateLimitedReply = try unpack(host.receive(
+            echo(id: "acl-rate", sid: sid, method: method),
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in throw WireHost.AuthorizationError.rateLimited },
+            onBusinessCall: { _ in dispatchedCalls += 1 }
+        ))
+        XCTAssertEqual(rateLimitedReply.error?["code"] as? Int, -32008)
+
+        XCTAssertEqual(dispatchedCalls, 0)
+        XCTAssertEqual(handlerCalls, 0)
+        XCTAssertEqual(toastCalls, 0)
+
+        // Session remains healthy for subsequent authorized requests.
+        var pending: WireHost.BusinessCall?
+        XCTAssertNil(host.receive(
+            echo(id: "acl-allowed", sid: sid, method: method),
+            verifiedOrigin: origin,
+            authorize: { _, _, _ in },
+            onBusinessCall: { pending = $0 }
+        ))
+        let call = try XCTUnwrap(pending)
+        let value = try await call.run()
+        let allowedReply = try unpack(host.finishBusinessCall(call, result: .success(value)))
+        XCTAssertEqual(allowedReply.rpc["result"] as? [String: String], ["status": "ok"])
+        XCTAssertEqual(handlerCalls, 1)
+    }
+
     func testBusinessCompletionIsDiscardedAfterItsSessionResets() throws {
         let method = "acme.getConfig"
         let host = WireHost(platform: "ios", businessMethods: [method: try .init(method) { _ in NSNull() }])
