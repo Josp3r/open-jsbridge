@@ -224,6 +224,7 @@ jobs:
           for module, variant, expected_class in [
               ("app", "release", "dev.openjsbridge.example.ReleaseActivityTest"),
               ("host", "debug", "dev.openjsbridge.host.AndroidUploadImageTest"),
+              ("host", "debug", "dev.openjsbridge.host.AndroidPhotoPickerCompatTest"),
           ]:
               results = Path("examples/native-android") / module / "build/outputs/androidTest-results/connected" / variant
               suites = [ET.parse(report).getroot() for report in results.glob("TEST-*.xml")]
@@ -258,5 +259,121 @@ jobs:
             ${{ runner.temp }}/android-release-webview/
             examples/native-android/app/build/outputs/androidTest-results/connected/release/
             examples/native-android/app/build/reports/androidTests/connected/release/
+            examples/native-android/host/build/outputs/androidTest-results/connected/debug/
+            examples/native-android/host/build/reports/androidTests/connected/debug/
+
+  android-api30-photopicker:
+    name: Android 11 Photo Picker Compat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANDROID_SERIAL: emulator-5554
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Install Android 11 (API 30) emulator and create AVD
+        timeout-minutes: 10
+        run: |
+          log_dir="$RUNNER_TEMP/android-api30-photopicker"
+          sdk_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          image='system-images;android-30;google_apis;x86_64'
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$log_dir" "$ANDROID_AVD_HOME"
+          printf 'ANDROID_USER_HOME=%s\nANDROID_AVD_HOME=%s\n' \
+            "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          "$sdk_tools/sdkmanager" --install emulator "$image" </dev/null 2>&1 | tee "$log_dir/sdk-install.log"
+          "$sdk_tools/avdmanager" create avd --name ojsb-api30 --package "$image" \
+            --device pixel_2 <<< no 2>&1 | tee "$log_dir/avd-create.log"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx ojsb-api30
+      - name: Boot Android 11 (API 30) emulator
+        timeout-minutes: 6
+        run: |
+          log_dir="$RUNNER_TEMP/android-api30-photopicker"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          emulator="$ANDROID_HOME/emulator/emulator"
+
+          if [[ ! -c /dev/kvm ]]; then
+            echo "::error::The Ubuntu runner did not provide /dev/kvm"
+            exit 1
+          fi
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          "$emulator" -accel-check 2>&1 | tee "$log_dir/acceleration.log"
+          "$adb" start-server
+          "$emulator" -avd ojsb-api30 -port 5554 -accel on -gpu swiftshader \
+            -no-window -no-audio -no-boot-anim -no-snapshot </dev/null > "$log_dir/emulator.log" 2>&1 &
+          emulator_pid=$!
+
+          deadline=$((SECONDS + 300))
+          while [[ "$(timeout 5s "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != 1 ]]; do
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              echo "::error::The Android 11 emulator exited during boot"
+              exit 1
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::The Android 11 emulator did not boot within five minutes"
+              exit 1
+            fi
+            sleep 2
+          done
+          timeout 15s "$adb" shell wm dismiss-keyguard
+          api_level="$(timeout 10s "$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
+          echo "Booted Android API level: $api_level"
+          [[ "$api_level" == "30" ]]
+      - name: Run Android 11 Photo Picker compatibility instrumentation
+        run: |
+          timeout --kill-after=30s 10m ./examples/native-android/gradlew -p examples/native-android \
+            --no-daemon --stacktrace \
+            -Pandroid.testInstrumentationRunnerArguments.class=dev.openjsbridge.host.AndroidPhotoPickerCompatTest \
+            :host:connectedDebugAndroidTest \
+            2>&1 | tee "$RUNNER_TEMP/android-api30-photopicker/gradle.log"
+
+          test -s examples/native-android/host/build/reports/androidTests/connected/debug/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          results = Path("examples/native-android/host/build/outputs/androidTest-results/connected/debug")
+          suites = [ET.parse(report).getroot() for report in results.glob("TEST-*.xml")]
+          cases = [case for suite in suites for case in suite.iter("testcase")]
+          expected_class = "dev.openjsbridge.host.AndroidPhotoPickerCompatTest"
+          matched = [case for case in cases if case.get("classname") == expected_class]
+          if len(matched) < 3:
+              raise SystemExit(f"Expected >= 3 {expected_class} cases on API 30, got {len(matched)}")
+          suite_failed = any(int(suite.get(outcome, "0")) for suite in suites
+                             for outcome in ("errors", "failures", "skipped"))
+          case_failed = any(case.find(outcome) is not None for case in cases
+                            for outcome in ("error", "failure", "skipped"))
+          if suite_failed or case_failed:
+              raise SystemExit("API 30 Photo Picker compatibility instrumentation reported errors, failures, or skipped tests")
+          print(f"Verified {len(matched)} Android 11 (API 30) Photo Picker compatibility test results")
+          PY
+      - name: Collect Android 11 emulator diagnostics
+        if: failure()
+        run: |
+          log_dir="$RUNNER_TEMP/android-api30-photopicker"
+          mkdir -p "$log_dir"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          timeout 10s "$adb" devices -l > "$log_dir/adb-devices.txt" 2>&1 || true
+          timeout 15s "$adb" logcat -d -t 2000 > "$log_dir/logcat.txt" 2>&1 || true
+          if [[ -f "$log_dir/emulator.log" ]]; then
+            tail -n 60 "$log_dir/emulator.log"
+          fi
+      - name: Upload Android 11 Photo Picker failure reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-api30-photopicker-report
+          path: |
+            ${{ runner.temp }}/android-api30-photopicker/
             examples/native-android/host/build/outputs/androidTest-results/connected/debug/
             examples/native-android/host/build/reports/androidTests/connected/debug/

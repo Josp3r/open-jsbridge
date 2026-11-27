@@ -26,3 +26,5 @@ unzip -l examples/native-android/host/build/central/open-jsbridge-android-0.2.0-
 ```
 
 ZIP 按 Maven 路径包含 Release AAR、POM、Gradle module metadata、源码 JAR、接入文档 JAR 和校验和。独立 Consumer 通过本地 Maven 仓库安装同一版本并构建 Release。候选构建产物可供后续签名和 Central 上传流程使用。[Central 产物要求](https://central.sonatype.org/publish/requirements/)
+
+Android 10–12（API 29–32）Photo Picker 兼容验收由 CI 中的 `Android 11 Photo Picker Compat`（API 30 模拟器）与 `Android Release WebView`（API 35 模拟器）执行 `AndroidPhotoPickerCompatTest` 替代物理真机（见 [docs/team-status.md](team-status.md) `D-014`），覆盖系统/回移 Photo Picker 解析、非 `ACTION_OPEN_DOCUMENT` 兜底、握手能力声明一致性与缩略图 EXIF 方向解码。

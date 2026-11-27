@@ -9,7 +9,7 @@
 - [ ] **协议冻结**：完成下方 M0 信封与握手规范评审，`jsb 1.0` 从 Draft 改为冻结。
 - [ ] **能力三端对齐**：首批 7 项 v1 能力、`media.release@1`、`bridge.progress` 与 `transfer.upload@1` 在 Web、iOS、Android 三端均落地并通过回归测试（当前仅剩双端原生 `transfer.upload@1` 网络投递与 RPC 注册）。
 - [ ] **质量与 M0 收尾**：下方 M0、M1 全部 1.0 必选项勾选（补齐 iOS 权限链抛错 `-32603` 与 Android 缺少 `WebMessageListener` 回退关闭两条回归单测）；iframe 明确推迟至 1.0 之后。
-- [ ] **Android 10–12 兼容替代验收**：补齐 Android 10–12（API 30–32）模拟器 / CI Photo Picker 验收用例，不以物理真机阻塞发版（见 `D-014`）。
+- [x] **Android 10–12 兼容替代验收**：补齐 Android 10–12（API 30–32）模拟器 / CI Photo Picker 验收用例（`AndroidPhotoPickerCompatTest` 在 CI `Android 11 Photo Picker Compat` API 30 与 `Android Release WebView` API 35 模拟器上双跑通过），不以物理真机阻塞发版（见 `D-014`）。
 - [ ] **三端正式发版**：npm `@open-jsbridge/web`、iOS SwiftPM 标签、Android Maven Central 全部发布。
 - [x] **Web SDK 体积门禁拍板**：当前体积非瓶颈，`npm run size:web` 改为非阻断观测输出（见 `D-011`）。
 
