@@ -2,15 +2,15 @@
 
 面向 Open JSBridge 宿主的 Web SDK。仅支持 ESM，随包提供 TypeScript 类型声明。
 
-## 安装 0.2.0 预览版
+## 安装
 
-通过 npm 的 `next` 频道安装。也可以从仓库运行 `npm run pack:web`，在应用中安装生成的 tarball。
+通过 npm 安装正式版，也可以从仓库运行 `npm run pack:web` 安装本地生成的 tarball。
 
 ```sh
-npm install @open-jsbridge/web@next
+npm install @open-jsbridge/web
 ```
 
-[CHANGELOG](https://github.com/Josp3r/open-jsbridge/blob/main/CHANGELOG.md#020) · [从 0.1.x 升级](https://github.com/Josp3r/open-jsbridge/blob/main/docs/migrate-0.2.0.md)
+[CHANGELOG](https://github.com/Josp3r/open-jsbridge/blob/main/CHANGELOG.md#100) · [从 0.1.x 升级](https://github.com/Josp3r/open-jsbridge/blob/main/docs/migrate-0.2.0.md)
 
 ## App WebView
 
@@ -52,4 +52,4 @@ stop()
 
 从主入口 `@open-jsbridge/web` 导入 `createBridge` 可创建独立的连接，主入口加载时不会创建默认单例。0.1.x 用户可将默认 `bridge` 和能力的导入移到 `@open-jsbridge/web/auto`。
 
-可通过 `@open-jsbridge/web/device`、`/network`、`/app`、`/ui` 和 `/media` 单独导入能力。模块和 `/auto` 共用一个连接。应用用 `bridge.has()` 和 `bridge.hasEvent()` 检测当前宿主声明的能力。
+可通过 `@open-jsbridge/web/device`、`/network`、`/app`、`/ui`、`/media`、`/transfer`、`/reverse` 和 `/fallback` 单独导入能力。模块和 `/auto` 共用一个连接。应用用 `bridge.has()` 和 `bridge.hasEvent()` 检测当前宿主声明的能力。

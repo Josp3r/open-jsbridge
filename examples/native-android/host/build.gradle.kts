@@ -50,7 +50,7 @@ dependencies {
 
 val sdkGroup = "io.github.josp3r"
 val sdkArtifactId = "open-jsbridge-android"
-val sdkVersion = "0.2.0"
+val sdkVersion = "1.0.0"
 val projectUrl = "https://github.com/Josp3r/open-jsbridge"
 val sdkRepository = providers.gradleProperty("ojsbSdkRepository")
     .map { rootProject.file(it) }

@@ -15,12 +15,12 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `a0eff27`（最后更新日期：`2026-11-27`）
-- **本地验证基线**（`linux-agent`，`a0eff27`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` `7127 bytes`（观测输出，非阻断，见 `D-011`）
+- **最新主干基线**：`main` @ `328cc7b`（最后更新日期：`2026-11-27`）
+- **本地验证基线**（`linux-agent`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run pack:web` 生成 `dist/open-jsbridge-web-1.0.0.tgz`、`npm run size:web` 观测输出（非阻断，见 `D-011`）
 - **版本线状态**：
-  - 协议版本 `jsb`：**`1.0`（Frozen，2026-11-27 冻结）**
-  - 仓库当前标签 `0.2.0`（`52d94f5`）；三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）准备对齐 `1.0.0` 发版
-  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：协议冻结 ✅、能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅；仅剩 **三端 `1.0.0` 正式发版**。
+  - 协议版本 `jsb`：**`1.0`（Frozen，#70）**
+  - 三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）版本号均已对齐 **`1.0.0`**，待维护者执行正式发版与打标（见 [docs/native-release.md](native-release.md)）
+  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：协议冻结 ✅、能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅；仅剩 **维护者执行三端 `1.0.0` 正式发版**。
 - **v1 标准能力（三端已合入 `main`）**：
   - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`、`transfer.upload@1`
   - 控制/流式：`bridge.progress`
@@ -133,6 +133,7 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-27 | 冻结 `jsb: 1.0` 协议规范并勾选 M0 评审项 | `#70` (`328cc7b`) |
 | 2026-11-27 | Android M0 回退通道关闭回归测试（`SEC-JSI-DEFAULT-001`）与 1.0 看板收口 | `#69` (`500cb88`) |
 | 2026-11-27 | Android 原生 `transfer.upload@1` 前台单图上传与 RPC 注册（三端对齐完成） | `#67` (`a0eff27`) |
 | 2026-11-27 | iOS M0 权限链异常隔离回归单测（`SEC-ACL-ERROR-001`） | `#68` (`bc18787`) |

@@ -6,7 +6,7 @@ import { BridgeError, createBridge, ErrorCode } from '../dist/packages/web-sdk/s
 import { createMockAdapter } from '../dist/packages/web-mock/src/index.js';
 
 const echo = 'conformance.echo';
-const host = { platform: 'mock', name: 'mock', version: '0.2.0' };
+const host = { platform: 'mock', name: 'mock', version: '1.0.0' };
 const hello = {
   jsb: '1.0',
   sid: 'test-session',

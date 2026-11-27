@@ -244,7 +244,7 @@ export function createHostCore(options: HostCoreOptions = {}): HostCore {
   const hostInfo: JsonObject = {
     platform: options.platform ?? 'mock',
     name: options.name ?? 'mock',
-    version: options.version ?? '0.2.0',
+    version: options.version ?? '1.0.0',
     ...(options.appId === undefined ? {} : { appId: options.appId }),
     ...(options.appVersion === undefined ? {} : { appVersion: options.appVersion }),
   };

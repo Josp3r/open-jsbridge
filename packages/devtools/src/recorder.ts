@@ -86,7 +86,7 @@ export interface DevtoolsHarLog {
     readonly version: '1.2';
     readonly creator: {
       readonly name: '@open-jsbridge/devtools';
-      readonly version: '0.2.0';
+      readonly version: '1.0.0';
     };
     readonly session: DevtoolsSessionSnapshot;
     readonly entries: readonly DevtoolsHarEntry[];
@@ -471,7 +471,7 @@ export function createDevtools(bridge?: Bridge, options: DevtoolsOptions = {}): 
         version: '1.2',
         creator: {
           name: '@open-jsbridge/devtools',
-          version: '0.2.0',
+          version: '1.0.0',
         },
         session: currentSession,
         entries,

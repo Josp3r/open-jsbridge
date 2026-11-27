@@ -101,7 +101,7 @@ export function createReactNativeHost(options: ReactNativeHostOptions): ReactNat
   const core = createHostCore({
     platform: options.platform ?? 'rn',
     name: 'rn',
-    version: options.version ?? '0.2.0',
+    version: options.version ?? '1.0.0',
     appId: options.appId,
     appVersion: options.appVersion,
     events: options.events,

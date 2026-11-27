@@ -303,7 +303,7 @@ export function createMockAdapter(options?: MockAdapterOptions): MockAdapter {
   const host = createHostCore({
     platform: options?.platform ?? 'mock',
     name: options?.hostName ?? 'mock',
-    version: options?.hostVersion ?? '0.2.0',
+    version: options?.hostVersion ?? '1.0.0',
     events: options?.events,
     deniedEvents: options?.deniedEvents,
     supportsCancel: options?.supportsCancel,

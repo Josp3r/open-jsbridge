@@ -18,7 +18,7 @@ const device = await bridge.call<{ os: string; osVersion: string }>('device.getI
 
 ## 从源码打包安装
 
-在 Open JSBridge 仓库根目录构建 0.2.0 候选包。
+在 Open JSBridge 仓库根目录构建 `1.0.0` 包。
 
 ```sh
 npm ci
@@ -28,10 +28,10 @@ npm run pack:web
 在自己的 Web 项目里安装生成的文件，将示例路径换成本机的实际路径。
 
 ```sh
-npm install /path/to/open-jsbridge/dist/open-jsbridge-web-0.2.0.tgz
+npm install /path/to/open-jsbridge/dist/open-jsbridge-web-1.0.0.tgz
 ```
 
-候选包仅支持 ESM，从 `/auto` 导入 `bridge` 单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
+该包仅支持 ESM，从 `/auto` 导入 `bridge` 单例。真实 App WebView 由宿主注入通道，首次调用会自动握手。
 
 ```ts
 import { bridge } from '@open-jsbridge/web/auto'

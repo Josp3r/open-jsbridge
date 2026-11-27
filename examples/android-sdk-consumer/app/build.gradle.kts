@@ -12,7 +12,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "0.2.0"
+        versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -94,7 +94,7 @@ androidComponents {
 }
 
 dependencies {
-    implementation("io.github.josp3r:open-jsbridge-android:0.2.0")
+    implementation("io.github.josp3r:open-jsbridge-android:1.0.0")
     implementation("androidx.activity:activity:1.9.3")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

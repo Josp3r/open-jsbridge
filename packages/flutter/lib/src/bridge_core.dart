@@ -113,7 +113,7 @@ class OJSBridge {
     this.allowDegradedTransport = false,
     this.platform = 'flutter',
     this.hostName = 'flutter',
-    this.hostVersion = '0.2.0',
+    this.hostVersion = '1.0.0',
     this.appId,
     this.appVersion,
     Iterable<String> events = const <String>[],
