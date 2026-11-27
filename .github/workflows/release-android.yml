@@ -117,6 +117,7 @@ jobs:
             done
           else
             echo "Public key ${fpr} already indexed on keyserver.ubuntu.com"
+            gpg --batch --keyserver hkps://keys.openpgp.org --send-keys "$fpr" || true
           fi
 
           mkdir -p "$work_dir"
@@ -129,10 +130,11 @@ jobs:
             test -s "$target"
             if [[ -n "$SIGNING_PASSWORD" ]]; then
               gpg --batch --yes --pinentry-mode loopback \
+                --local-user "${fpr}!" \
                 --passphrase-fd 3 --armor --detach-sign \
                 --output "${target}.asc" "$target" 3<<<"$SIGNING_PASSWORD"
             else
-              gpg --batch --yes --armor --detach-sign \
+              gpg --batch --yes --local-user "${fpr}!" --armor --detach-sign \
                 --output "${target}.asc" "$target"
             fi
             gpg --batch --verify "${target}.asc" "$target"
