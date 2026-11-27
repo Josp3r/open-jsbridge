@@ -27,6 +27,23 @@ jobs:
       - run: npm run size:web
       - run: node --test examples/native-android/test/shim.test.mjs
 
+  dart:
+    name: Flutter Dart host
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get --offline
+        working-directory: packages/flutter
+      - run: dart analyze --fatal-infos --fatal-warnings
+        working-directory: packages/flutter
+      - run: dart run test/all_tests.dart
+        working-directory: packages/flutter
+
   swift:
     name: Swift host
     runs-on: macos-15
