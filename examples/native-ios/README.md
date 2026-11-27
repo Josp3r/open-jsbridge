@@ -126,6 +126,40 @@ if (bridge.has('media.release', 1)) {
 
 同一 WebView 已有选择请求在进行时，新的选择请求返回 `-32010`。选择器无法打开、所选图片无法读取或解码时返回 `-32003`。用户关闭选择器时，结果为 `{ status: 'cancelled', files: [] }`。H5 通过 `AbortSignal` 中止本次 RPC 时，SDK 以 `-32002` 拒绝该调用。
 
+## 将所选图片上传到业务端点
+
+在 App 中为每个页面来源分别登记可接收图片、且响应正文可向该页面公开的 HTTPS 端点。开启 `media` 后，只有获得端点授权的页面才能在握手中看到 `transfer.upload@1`。上传 URL 按完整字符串匹配，包含端口和路径。每个来源与端点组合配置一次。
+
+```swift
+let page = URL(string: "https://app.example.com")!
+let avatar = try NativeIOSHost.UploadEndpoint(
+    origin: page, url: URL(string: "https://uploads.example.com/v1/avatar")!,
+    formFields: ["purpose"], hostHeaders: ["Authorization": "Bearer \(uploadToken)"]
+)
+attachment = try NativeIOSHost.attach(
+    to: webView, allowing: page, options: .init(media: true, uploadEndpoints: [avatar])
+)
+```
+
+这里的 `uploadToken` 由 App 提供，专用于该端点。需要逐次询问用户时，可给端点传入 `confirm` 闭包。它在主 actor 上接收本次图片句柄，返回 `false` 时调用以 `-32007` 结束。页面可传入获准的表单字段和请求头。默认文件字段名为 `file`。下面的 `file.id` 来自当前页面本次会话的 `media.chooseMedia` 结果。
+
+```ts
+import { createTransferHelpers } from '@open-jsbridge/web/transfer'
+
+if (bridge.has('transfer.upload', 1)) {
+  const { transfer } = createTransferHelpers(bridge)
+  const { status, body } = await transfer.upload({
+    id: file.id,
+    request: { url: 'https://uploads.example.com/v1/avatar', formData: { purpose: 'avatar' } },
+  }, { timeout: 60_000, onProgress: ({ sent, total }) => updateProgress(sent / total) })
+  showUploadResult(status, body)
+}
+```
+
+每个 WebView 同时可执行一次上传。进度以整个 multipart 请求体的字节数计。最终响应包含 HTTP 状态和最多 32 KiB 的 UTF-8 正文。上传期间释放句柄、切到后台或切换文档都会终止本地任务，此时接收端可能已经收到图片。[上传契约](../../spec/rfcs/transfer-upload.md)
+
+宿主用 CFHTTPStream 发送一次性请求体，保留带认证挑战的 HTTP 401 正文。Apple 已将这个流 API 标记为弃用。更换传输实现时，应验证服务端在认证挑战、重定向和响应丢失这三种情况下均只收到一次 POST。[Apple API 文档](https://developer.apple.com/documentation/cfnetwork/cfreadstreamcreateforstreamedhttprequest%28_%3A_%3A_%3A%29)
+
 ## 宿主的关键代码
 
 - [NativeIOSHost.swift](Sources/NativeIOSHost/NativeIOSHost.swift) 在主文档开始加载时注入冻结的 transport。Swift 使用 WebKit 给出的 `securityOrigin` 和 `isMainFrame` 校验调用者。Debug Demo 使用回环地址，App 接入入口使用精确的 HTTPS origin。

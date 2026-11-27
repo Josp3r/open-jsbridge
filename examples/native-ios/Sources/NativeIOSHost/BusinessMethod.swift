@@ -26,7 +26,7 @@ public extension NativeIOSHost {
         }
 
         private init(_ name: String, supportsCallbacks: Bool, handler: @escaping StreamingHandler) throws {
-            guard Self.isAllowedName(name) else {
+            guard name != UploadRequest.method, Self.isAllowedName(name) else {
                 throw BusinessMethodError.invalidName(name)
             }
             self.name = name

@@ -9,6 +9,36 @@ final class ReleaseIOSTests: XCTestCase {
     private let origin = URL(string: "https://app.example.test/")!
 
     @MainActor
+    func testUploadCapabilityFollowsVerifiedPageOriginAcrossNavigation() async throws {
+        let secondary = URL(string: "https://app.example.test:8443/")!
+        let target = URL(string: "https://images.example.test/avatar")!
+        let endpoint = try NativeIOSHost.UploadEndpoint(origin: origin, url: target)
+        let (webView, delegate) = makeWebView()
+        let attachment = try NativeIOSHost.attach(to: webView, allowing: [origin, secondary],
+                                                  options: .init(media: true, uploadEndpoints: [endpoint]))
+        delegate.attachment = attachment
+        defer { attachment.detach() }
+        for (page, authorized) in [(origin, true), (secondary, false)] {
+            await loadPage(in: webView, with: delegate, at: page)
+            let result = try await request("bridge.hello", id: "hello", params: [
+                "protocols": [1], "wants": ["callbacks"]
+            ], in: webView) as? [String: Any]
+            let caps = try XCTUnwrap(result?["capabilities"] as? [String: Any])
+            XCTAssertEqual((caps["methods"] as? [String: Any])?["transfer.upload"] != nil, authorized)
+            XCTAssertEqual((caps["features"] as? [String] ?? []).contains("callbacks"), authorized)
+            let sid = try XCTUnwrap(result?["sid"] as? String)
+            let code = try await webView.callAsyncJavaScript("""
+                const raw = await window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                    jsb: '1.0', meta: {sid}, rpc: {jsonrpc: '2.0', id: 'upload', method: 'transfer.upload@1',
+                        params: {id: '0123456789abcdef0123456789abcdef', request: {url: target}}}
+                }));
+                return JSON.parse(raw).rpc.error.code;
+                """, arguments: ["sid": sid, "target": target.absoluteString], in: nil, contentWorld: .page) as? Int
+            XCTAssertEqual(code, authorized ? -32003 : -32601)
+        }
+    }
+
+    @MainActor
     func testMediaDistinguishesAnUnavailablePresenterFromAnActiveSelection() async throws {
         let appWebView = try await waitForAppWebView()
         let appWindow = try XCTUnwrap(appWebView.window)
@@ -522,6 +552,42 @@ final class ReleaseIOSTests: XCTestCase {
         XCTAssertEqual((afterLateReturn as? [String: String])?["os"], "ios")
         let progressIDs = try await webView.evaluateJavaScript("window.progressRequestIds") as? [String]
         XCTAssertEqual(progressIDs, ["held-0"])
+    }
+
+    @MainActor
+    func testDestroyingWebViewRetiresPendingWorkWhileAttachmentIsRetained() async throws {
+        let started = expectation(description: "Native work started")
+        let stopped = expectation(description: "Destruction cancelled native work")
+        let method = try NativeIOSHost.BusinessMethod("acme.job.wait") { _ in
+            started.fulfill()
+            do {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            } catch is CancellationError {
+                stopped.fulfill()
+            }
+            return NSNull()
+        }
+        let attachment: NativeIOSHost.Attachment
+        weak var destroyed: WKWebView?
+        do {
+            let (webView, delegate) = makeWebView()
+            destroyed = webView
+            attachment = try NativeIOSHost.attach(to: webView, allowing: origin, methods: [method])
+            delegate.attachment = attachment
+            await loadPage(in: webView, with: delegate, at: origin)
+            let sid = try await hello(in: webView)
+            _ = try await webView.callAsyncJavaScript("""
+                void window.__OJSB_TRANSPORT__.postMessage(JSON.stringify({
+                    jsb: '1.0', meta: {sid}, rpc: {jsonrpc: '2.0', id: 'pending', method: 'acme.job.wait'}
+                }));
+                return true;
+                """, arguments: ["sid": sid], in: nil, contentWorld: .page)
+            await fulfillment(of: [started], timeout: 5)
+            withExtendedLifetime(webView) {}
+        }
+        defer { attachment.detach() }
+        await fulfillment(of: [stopped], timeout: 5)
+        XCTAssertNil(destroyed)
     }
 
     @MainActor
