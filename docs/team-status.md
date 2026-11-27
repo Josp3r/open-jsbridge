@@ -15,12 +15,12 @@
 
 ## 1. 当前基线快照（Baseline Snapshot）
 
-- **最新主干基线**：`main` @ `328cc7b`（最后更新日期：`2026-11-27`）
-- **本地验证基线**（`linux-agent`）：`npm test` 236/236、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run pack:web` 生成 `dist/open-jsbridge-web-1.0.0.tgz`、`npm run size:web` 观测输出（非阻断，见 `D-011`）
+- **最新主干基线**：`main` @ `1.0.0`（最后更新日期：`2026-11-27`）
+- **本地验证基线**（`linux-agent`）：`npm test` 237/237、`dart run test/all_tests.dart` 66/66、`npm run codegen:check` 通过、`npm run size:web` `7127 bytes`（观测输出，非阻断，见 `D-011`）
 - **版本线状态**：
   - 协议版本 `jsb`：**`1.0`（Frozen，#70）**
-  - 三端 SDK（Web `@open-jsbridge/web`、iOS SwiftPM `NativeIOSHost`、Android Maven `io.github.josp3r:open-jsbridge-android`）版本号均已对齐 **`1.0.0`**，待维护者执行正式发版与打标（见 [docs/native-release.md](native-release.md)）
-  - **1.0 退出标准进展（见 [TODO.md](../TODO.md) 与 `D-013`）**：协议冻结 ✅、能力三端对齐 ✅、M0/M1 原生回归 ✅、Android 11 API 30 Photo Picker CI 替代验收 ✅、体积非阻断拍板 ✅；仅剩 **维护者执行三端 `1.0.0` 正式发版**。
+  - **1.0.0 三端正式发版已全部完成（2026-11-27）**：npm `@open-jsbridge/web@1.0.0`（`latest`）、iOS SwiftPM 标签 `1.0.0`（GitHub Release `1.0.0`）、Android Maven Central `io.github.josp3r:open-jsbridge-android:1.0.0`；社区首页与在线 Playground 已上线 `https://josp3r.github.io/open-jsbridge/`（#72）。
+  - **维护模式（见 [TODO.md](../TODO.md)、[AGENTS.md](../AGENTS.md) §2.5 与 `D-013`）**：1.0 退出标准已全部达成，仓库转入维护模式——默认只接受 bugfix、安全修复与平台兼容跟进，停止功能扩张。
 - **v1 标准能力（三端已合入 `main`）**：
   - 方法：`device.getInfo@1`、`network.getStatus@1`、`ui.toast.show@1`、`media.chooseMedia@1`、`media.release@1`、`transfer.upload@1`
   - 控制/流式：`bridge.progress`
@@ -79,8 +79,7 @@
 
 ## 5. 待决议事项（Open Decisions）
 
-> 当前无阻塞中的待决议事项（此前 `O-001`～`O-004` 均已于 `2026-11-27` 拍板并转入下方 `D-011`～`D-014`；`jsb 1.0` 协议规范已于 `2026-11-27` 冻结）。
-> 唯一剩余人工收尾项：维护者执行三端 `1.0.0` 正式发版（npm / SwiftPM 标签 / Maven Central），发版后按 `D-013` 转入维护模式。
+> 当前无待决议事项：`O-001`～`O-004` 已转入 `D-011`～`D-014`，`jsb 1.0` 已冻结（#70），三端 `1.0.0`（npm / SwiftPM / Maven Central）已全部发布完成，仓库按 [AGENTS.md](../AGENTS.md) §2.5 与 `D-013` 正式转入维护模式。
 
 ---
 
@@ -133,6 +132,8 @@
 
 | 完成日期 | 摘要 | PR / Commit |
 |---|---|---|
+| 2026-11-27 | **三端 `1.0.0` 正式发版完成**（npm + SwiftPM tag `1.0.0` + Maven Central `PUBLISHED`） | tag `1.0.0` / `#73`–`#75` |
+| 2026-11-27 | 同步 `README.md` 至 `1.0.0` 并上线社区首页与在线 Playground（GitHub Pages） | `#72` (`b9faabf`) |
 | 2026-11-27 | 对齐三端 `1.0.0` 版本号、整理 `CHANGELOG.md` 与 `docs/native-release.md` | `#71` (`133ffbc`) |
 | 2026-11-27 | 冻结 `jsb: 1.0` 协议规范并勾选 M0 评审项 | `#70` (`328cc7b`) |
 | 2026-11-27 | Android M0 回退通道关闭回归测试（`SEC-JSI-DEFAULT-001`）与 1.0 看板收口 | `#69` (`500cb88`) |
