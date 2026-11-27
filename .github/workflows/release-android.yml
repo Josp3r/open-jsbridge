@@ -96,6 +96,29 @@ jobs:
           export GNUPGHOME="$gnupg_home"
           printf '%s\n' "$SIGNING_KEY" | gpg --batch --import
 
+          fpr="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
+          if [[ -z "$fpr" ]]; then
+            echo "::error::Failed to extract GPG key fingerprint after import"
+            exit 1
+          fi
+          echo "Using GPG key fingerprint: $fpr"
+
+          if ! curl -fsS "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${fpr}" >/dev/null 2>&1; then
+            echo "Publishing public key ${fpr} to supported PGP keyservers..."
+            gpg --batch --keyserver hkps://keyserver.ubuntu.com --send-keys "$fpr" || true
+            gpg --batch --keyserver hkps://keys.openpgp.org --send-keys "$fpr" || true
+            for attempt in $(seq 1 18); do
+              if curl -fsS "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${fpr}" >/dev/null 2>&1; then
+                echo "Verified public key ${fpr} is live on keyserver.ubuntu.com (attempt ${attempt})"
+                break
+              fi
+              echo "Waiting for keyserver.ubuntu.com to index ${fpr} (attempt ${attempt})..."
+              sleep 5
+            done
+          else
+            echo "Public key ${fpr} already indexed on keyserver.ubuntu.com"
+          fi
+
           mkdir -p "$work_dir"
           unzip -q "$unsigned_zip" -d "$work_dir"
 
