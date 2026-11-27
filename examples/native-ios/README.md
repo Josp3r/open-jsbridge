@@ -74,6 +74,32 @@ attachment?.emit("acme.app.configChanged", payload: NSNull())
 
 `emit` 接收任意符合协议的 JSON 值，使用 `NSNull()` 表示 JSON `null`。页面通过 `bridge.on()` 订阅。 [订阅与状态同步](../../docs/native-host.md#app-自定义事件)
 
+## 向页面报告请求进度
+
+业务方法的 Schema 声明 `x-ojsb-callbacks` 后，使用 `streaming:` 注册处理器，并把方法加入 `attach` 的 `methods`。例如，下面的处理器每保存一行就报告已完成的行数；`store` 是 App 的异步存储接口。
+
+```swift
+let importRows = try NativeIOSHost.BusinessMethod("acme.records.importRows", streaming: { params, progress in
+    guard let rows = params["rows"] as? [String] else { throw NativeIOSHost.BusinessMethodError.invalidParams }
+    for (index, row) in rows.enumerated() {
+        try Task.checkCancellation()
+        try await store.save(row)
+        await progress.send(["completed": index + 1])
+    }
+    return ["imported": rows.count]
+})
+```
+
+Web SDK 在握手中请求 `callbacks`，页面通过原调用的 `onCallback` 接收进度。每个请求的 `seq` 从 0 开始，最终结果由同一个 Promise 返回。
+
+```ts
+const result = await bridge.call('acme.records.importRows@1', { rows }, {
+  onCallback(chunk, seq) { console.log(seq, chunk) }
+})
+```
+
+逐条 `await progress.send(...)`。返回 `true` 表示当前文档的接收器已收到通知。`send()` 省略 `chunk`，`send(NSNull())` 传递显式 JSON `null`。未协商回调、已有一条通知正在发送、载荷无效或超出消息上限时返回 `false`。取消、完成或切换文档后，保存的发送器也会返回 `false`。
+
 ## 订阅 App 前后台事件
 
 设置 `options: .init(appLifecycle: true)` 后，H5 可分别订阅 `app.foregrounded` 和 `app.backgrounded`。两项都返回 JSON `null`，分别来自 UIKit 的 `willEnterForegroundNotification` 和 `didEnterBackgroundNotification`。订阅确认后才发送后续转换。换页、退订和拆卸会结束对应的事件投递。

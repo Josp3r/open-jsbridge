@@ -473,7 +473,7 @@ final class WireHostTests: XCTestCase {
             let pending = try XCTUnwrap(call)
             let failure: Error
             do {
-                _ = try await pending.handler(pending.params)
+                _ = try await pending.run()
                 XCTFail("Expected handler failure")
                 continue
             } catch {
@@ -515,7 +515,7 @@ final class WireHostTests: XCTestCase {
         let call = try XCTUnwrap(pendingCall)
         host.reset()
         XCTAssertNotEqual(try session(host), sid)
-        let value = try await call.handler(call.params)
+        let value = try await call.run()
         XCTAssertNil(host.finishBusinessCall(call, result: .success(value)))
     }
 
@@ -532,7 +532,7 @@ final class WireHostTests: XCTestCase {
                            method: "media.chooseMedia@1")
         XCTAssertNil(host.receive(request, chooseMedia: { _ in selection }, onBusinessCall: { call = $0 }))
         let pending = try XCTUnwrap(call)
-        let value = try await pending.handler(pending.params)
+        let value = try await pending.run()
         return try unpack(host.finishBusinessCall(pending, result: .success(value))).rpc
     }
 
@@ -557,7 +557,7 @@ final class WireHostTests: XCTestCase {
     func testHelloAdvertisesBusinessMethodsWithoutEchoWhenDisabled() throws {
         let name = "acme.app.getConfig"
         let host = WireHost(platform: "ios", options: .init(deviceInfo: true),
-                            businessMethods: [name: { _ in NSNull() }], enableEcho: false)
+                            businessMethods: [name: try .init(name) { _ in NSNull() }], enableEcho: false)
         let reply = try unpack(host.receive(hello(id: "hello")))
         let result = try XCTUnwrap(reply.rpc["result"] as? [String: Any])
         let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any])
@@ -571,9 +571,140 @@ final class WireHostTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testProgressHandshakeKeepsCapabilitiesFromFirstSuccessfulHello() async throws {
+        let host = try streamingHost()
+        func features(_ host: WireHost, _ id: String, wantsCallbacks: Bool) throws -> Set<String> {
+            let request = hello(id: id, wantsCallbacks: wantsCallbacks)
+            let reply = try XCTUnwrap(unpack(host.receive(request)).rpc["result"] as? [String: Any])
+            let capabilities = try XCTUnwrap(reply["capabilities"] as? [String: Any])
+            return Set(try XCTUnwrap(capabilities["features"] as? [String]))
+        }
+        let ordinary = try NativeIOSHost.BusinessMethod("acme.jobs.plain") { _ in NSNull() }
+        let plainHost = WireHost(platform: "ios", businessMethods: [ordinary.name: ordinary])
+        XCTAssertEqual(try features(plainHost, "plain", wantsCallbacks: true), ["cancel"])
+        XCTAssertEqual(try features(host, "first", wantsCallbacks: true), ["callbacks", "cancel"])
+        XCTAssertEqual(try features(host, "repeat", wantsCallbacks: false), ["callbacks", "cancel"])
+        host.reset()
+        let unsupported = hello(id: "unsupported", protocols: "[2]", wantsCallbacks: true)
+        XCTAssertEqual(try unpack(host.receive(unsupported)).error?["code"] as? Int, -32004)
+        XCTAssertEqual(try features(host, "first", wantsCallbacks: false), ["cancel"])
+        XCTAssertEqual(try features(host, "repeat", wantsCallbacks: true), ["cancel"])
+        let call = try startBusinessCall(in: host, id: "no-callbacks")
+        await assertNoProgress(from: host, for: call, chunk: "idle")
+        XCTAssertEqual(try unpack(host.finishBusinessCall(call, result: .success("done"))).rpc["result"] as? String, "done")
+    }
+
+    @MainActor
+    func testProgressFramesAreCorrelatedOrderedAndWithinTheByteLimit() async throws {
+        let host = try streamingHost()
+        _ = try session(host, wantsCallbacks: true)
+        let first = try startBusinessCall(in: host, id: "first")
+        let second = try startBusinessCall(in: host, id: "second")
+        let ordinary = try startBusinessCall(in: host, id: "ordinary", method: "acme.jobs.plain")
+        await assertNoProgress(from: host, for: ordinary, chunk: "unregistered")
+        try await assertProgress(from: host, for: first, chunk: nil, expected: ["requestId": "first", "seq": 0])
+        try await assertProgress(from: host, for: second, chunk: NSNull(),
+                                 expected: ["requestId": "second", "seq": 0, "chunk": NSNull()])
+        let oversized = String(repeating: "界", count: WireHost.maxMessageBytes / 3)
+        for invalid: Any in [Date(), ["fraction": Double.nan], [9_007_199_254_740_992 as Int64], oversized] {
+            await assertNoProgress(from: host, for: first, chunk: invalid)
+        }
+        var declined: String?
+        let sent = await host.sendProgress(for: first, chunk: "declined") { declined = $0; return false }
+        XCTAssertFalse(sent)
+        XCTAssertEqual((try unpack(declined).rpc["params"] as? [String: Any])?["seq"] as? Int, 1)
+        let payload = ["sent": 3, "total": 10]
+        try await assertProgress(from: host, for: first, chunk: payload,
+                                 expected: ["requestId": "first", "seq": 1, "chunk": payload])
+        XCTAssertTrue(try unpack(host.finishBusinessCall(first, result: .success(NSNull()))).rpc["result"] is NSNull)
+        await assertNoProgress(from: host, for: first, chunk: "late")
+        try await assertProgress(from: host, for: second, chunk: "more",
+                                 expected: ["requestId": "second", "seq": 1, "chunk": "more"])
+        XCTAssertEqual(try unpack(host.cancelBusinessCall(second)).error?["code"] as? Int, -32002)
+        await assertNoProgress(from: host, for: second, chunk: "cancelled")
+    }
+
+    @MainActor
+    func testProgressFromOldDocumentCannotUseAReissuedRequestID() async throws {
+        let host = try streamingHost()
+        let oldSID = try session(host, wantsCallbacks: true)
+        let oldCall = try startBusinessCall(in: host, id: "same-id")
+        host.reset()
+        let newSID = try session(host, wantsCallbacks: true)
+        XCTAssertNotEqual(oldSID, newSID)
+        let newCall = try startBusinessCall(in: host, id: "same-id")
+        await assertNoProgress(from: host, for: oldCall, chunk: "late")
+        try await assertProgress(from: host, for: newCall, chunk: "current",
+                                 expected: ["requestId": "same-id", "seq": 0, "chunk": "current"])
+    }
+
+    @MainActor
+    func testProgressReporterDrainsAnOutstandingSendBeforeFinishing() async throws {
+        let sending = expectation(description: "first delivery started")
+        var receipt: CheckedContinuation<Bool, Never>?
+        var deliveries = 0
+        let progress = NativeIOSHost.ProgressReporter { _ in
+            deliveries += 1
+            guard deliveries == 1 else { return true }
+            return await withCheckedContinuation {
+                receipt = $0
+                sending.fulfill()
+            }
+        }
+        let first = Task { await progress.send("first") }
+        await fulfillment(of: [sending], timeout: 2)
+        var finished = false
+        progress.whenDrained { finished = true }
+        let overlap = await progress.send("overlap")
+        XCTAssertFalse(overlap)
+        XCTAssertEqual(deliveries, 1)
+        XCTAssertFalse(finished)
+        try XCTUnwrap(receipt).resume(returning: true)
+        let sent = await first.value
+        XCTAssertTrue(sent)
+        XCTAssertTrue(finished)
+    }
+
+    private func streamingHost() throws -> WireHost {
+        let stream = try NativeIOSHost.BusinessMethod("acme.jobs.stream", streaming: { _, _ in NSNull() })
+        let plain = try NativeIOSHost.BusinessMethod("acme.jobs.plain") { _ in NSNull() }
+        return WireHost(platform: "ios", businessMethods: [stream.name: stream, plain.name: plain])
+    }
+
+    private func startBusinessCall(in host: WireHost, id: String, method: String = "acme.jobs.stream@1") throws -> WireHost.BusinessCall {
+        let request = echo(id: id, sid: try XCTUnwrap(host.sid), method: method)
+        var call: WireHost.BusinessCall?
+        XCTAssertNil(host.receive(request, onBusinessCall: { call = $0 }))
+        return try XCTUnwrap(call)
+    }
+
+    @MainActor
+    private func assertNoProgress(from host: WireHost, for call: WireHost.BusinessCall, chunk: Any,
+                                  file: StaticString = #filePath, line: UInt = #line) async {
+        let sent = await host.sendProgress(for: call, chunk: chunk) { _ in
+            XCTFail("Unexpected progress delivery", file: file, line: line)
+            return true
+        }
+        XCTAssertFalse(sent, file: file, line: line)
+    }
+
+    @MainActor
+    private func assertProgress(from host: WireHost, for call: WireHost.BusinessCall, chunk: Any?, expected: NSDictionary,
+                                file: StaticString = #filePath, line: UInt = #line) async throws {
+        var raw: String?
+        let sent = await host.sendProgress(for: call, chunk: chunk) { raw = $0; return true }
+        XCTAssertTrue(sent, file: file, line: line)
+        let frame = try unpack(raw)
+        XCTAssertEqual(frame.meta?["sid"] as? String, host.sid, file: file, line: line)
+        XCTAssertEqual(frame.rpc["method"] as? String, "bridge.progress", file: file, line: line)
+        XCTAssertNil(frame.rpc["id"], file: file, line: line)
+        XCTAssertEqual(frame.rpc["params"] as? NSDictionary, expected, file: file, line: line)
+    }
+
     func testHelloKeepsOversizedCapabilityAdvertisementWithinTheWireLimit() throws {
         let name = "acme." + String(repeating: "a", count: WireHost.maxMessageBytes)
-        let host = WireHost(platform: "ios", businessMethods: [name: { _ in NSNull() }], enableEcho: false)
+        let host = WireHost(platform: "ios", businessMethods: [name: try .init(name) { _ in NSNull() }], enableEcho: false)
         let raw = try XCTUnwrap(host.receive(hello(id: "hello")))
         let reply = try unpack(raw)
         XCTAssertLessThanOrEqual(raw.utf8.count, WireHost.maxMessageBytes)
@@ -587,7 +718,7 @@ final class WireHostTests: XCTestCase {
         let method = try NativeIOSHost.BusinessMethod("acme.app.getConfig") { params in
             ["input": params, "extra": [true, NSNull(), 1.5]]
         }
-        let host = WireHost(platform: "ios", businessMethods: [method.name: method.handler])
+        let host = WireHost(platform: "ios", businessMethods: [method.name: method])
         let sid = try session(host)
         let requests = [
             #"{"jsb":"1.0","meta":{"sid":"\#(sid)","traceId":"trace"},"rpc":{"jsonrpc":"2.0","id":"base","method":"acme.app.getConfig"}}"#,
@@ -597,7 +728,7 @@ final class WireHostTests: XCTestCase {
             var call: WireHost.BusinessCall?
             XCTAssertNil(host.receive(request, onBusinessCall: { call = $0 }))
             let deferred = try XCTUnwrap(call)
-            let result = try await deferred.handler(deferred.params)
+            let result = try await deferred.run()
             let reply = try unpack(host.finishBusinessCall(deferred, result: .success(result)))
             XCTAssertEqual(reply.rpc["id"] as? String, index == 0 ? "base" : "v1")
             XCTAssertEqual(reply.meta?["sid"] as? String, sid)
@@ -610,7 +741,7 @@ final class WireHostTests: XCTestCase {
 
     func testBusinessDispatchRespectsVersionAndRequestAdmission() throws {
         let method = "acme.getConfig"
-        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        let host = WireHost(platform: "ios", businessMethods: [method: try .init(method) { _ in NSNull() }])
         var dispatched = 0
         let receive: (WireHost.BusinessCall) -> Void = { _ in dispatched += 1 }
         let early = echo(id: "early", sid: "wrong", method: method)
@@ -641,7 +772,7 @@ final class WireHostTests: XCTestCase {
         }
 
         let method = "acme.getConfig"
-        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        let host = WireHost(platform: "ios", businessMethods: [method: try .init(method) { _ in NSNull() }])
         let sid = try session(host)
         let cases: [(Result<Any, Error>, Int, String)] = [
             (.failure(NativeIOSHost.BusinessMethodError.invalidParams), -32602, "Invalid params"),
@@ -668,7 +799,7 @@ final class WireHostTests: XCTestCase {
 
     func testBusinessCompletionIsDiscardedAfterItsSessionResets() throws {
         let method = "acme.getConfig"
-        let host = WireHost(platform: "ios", businessMethods: [method: { _ in NSNull() }])
+        let host = WireHost(platform: "ios", businessMethods: [method: try .init(method) { _ in NSNull() }])
         let oldSID = try session(host)
         var oldCall: WireHost.BusinessCall?
         XCTAssertNil(host.receive(echo(id: "config", sid: oldSID, method: method), onBusinessCall: { oldCall = $0 }))
@@ -817,16 +948,17 @@ final class WireHostTests: XCTestCase {
         XCTAssertEqual((reply.rpc["result"] as? [String: String])?["text"]?.utf8.count, WireHost.maxMessageBytes - 200)
     }
 
-    private func hello(id: String, protocols: String = "[1]") -> String {
-        #"{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"\#(id)","method":"bridge.hello","params":{"protocols":\#(protocols)}}}"#
+    private func hello(id: String, protocols: String = "[1]", wantsCallbacks: Bool = false) -> String {
+        let wants = wantsCallbacks ? #","wants":["callbacks"]"# : ""
+        return #"{"jsb":"1.0","rpc":{"jsonrpc":"2.0","id":"\#(id)","method":"bridge.hello","params":{"protocols":\#(protocols)\#(wants)}}}"#
     }
 
     private func echo(id: String, sid: String, params: String = "{}", method: String = "conformance.echo@1") -> String {
         #"{"jsb":"1.0","meta":{"sid":"\#(sid)","traceId":"trace"},"rpc":{"jsonrpc":"2.0","id":"\#(id)","method":"\#(method)","params":\#(params)}}"#
     }
 
-    private func session(_ host: WireHost, id: String = "hello") throws -> String {
-        let reply = try unpack(host.receive(hello(id: id)))
+    private func session(_ host: WireHost, id: String = "hello", wantsCallbacks: Bool = false) throws -> String {
+        let reply = try unpack(host.receive(hello(id: id, wantsCallbacks: wantsCallbacks)))
         return try XCTUnwrap((reply.rpc["result"] as? [String: Any])?["sid"] as? String)
     }
 
